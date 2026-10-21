@@ -766,7 +766,7 @@ export function FileView({ path, line, side, full }: { path: string; line: numbe
 
       {file && (
         <div className="file-foot">
-          <button className="btn btn-primary" onClick={() => void markAndNext()} title="Mark as viewed and open the next file (j)">
+          <button className="btn btn-primary" onClick={() => void markAndNext()} title="Mark this file as viewed and open the next file">
             Mark as viewed and go to next file
           </button>
         </div>
@@ -852,8 +852,8 @@ function FileHeader({
               <input type="checkbox" checked={reviewed} onChange={(e) => void setReviewed(path, e.target.checked)} />
               Viewed
             </label>
-            <button className="btn btn-sm" onClick={onMarkNext} title="Mark as viewed and open the next file (j)">
-              Next file →
+            <button className="btn btn-sm" onClick={onMarkNext} title="Mark this file as viewed and open the next file">
+              Mark viewed & next →
             </button>
           </>
         )}
@@ -884,7 +884,13 @@ function FileSummary({ file, stale }: { file: FileEntry; stale: boolean }) {
       <div className="Box-body">
         {file.summary && <Markdown className="claude-summary" text={file.summary} />}
         {!hasNotes && !file.generated && (
-          <p className="color-muted">{file.annotated ? "Claude has nothing to add here." : "Claude has not read this file yet."}</p>
+          <p className="color-muted">
+            {!file.annotated
+              ? "Claude has not read this file yet."
+              : file.notes.length > 0
+                ? "Claude's notes for this file are next to the lines below."
+                : "Claude has nothing to add about this file."}
+          </p>
         )}
         {file.generated && <p className="color-muted">A tool made this file. You only need to skim it.</p>}
         {file.look_for.length > 0 && (

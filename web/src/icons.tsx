@@ -136,8 +136,15 @@ export const IconLink = (p: IconProps) => (
 /** GitHub's row of five green / red / grey squares that shows the size of a change. */
 export function DiffStat({ additions, deletions }: { additions: number; deletions: number }) {
   const total = additions + deletions;
-  const green = total ? Math.round((additions / total) * 5) : 0;
-  const red = total ? Math.min(5 - green, Math.round((deletions / total) * 5)) : 0;
+  let green = total ? Math.round((additions / total) * 5) : 0;
+  let red = total ? Math.round((deletions / total) * 5) : 0;
+  // A side that changed at least one line always gets at least one block (e.g. +1 −100).
+  if (additions && !green) green = 1;
+  if (deletions && !red) red = 1;
+  if (green + red > 5) {
+    if (green > red) green = 5 - red;
+    else red = 5 - green;
+  }
   return (
     <span className="diffstat" title={`${additions} added, ${deletions} removed`}>
       <span className="add">+{additions.toLocaleString()}</span>

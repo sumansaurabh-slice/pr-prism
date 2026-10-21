@@ -155,14 +155,15 @@ export function SubmitModal() {
               {preview && (
                 <div className="preview">
                   <p>
-                    <strong>{preview.inline_count}</strong> comment{preview.inline_count === 1 ? "" : "s"} on lines
+                    <strong>{preview.inline_count}</strong> comment{preview.inline_count === 1 ? "" : "s"} on lines.
                     {preview.unanchored.length > 0 && (
                       <>
-                        , and <strong>{preview.unanchored.length}</strong> more added to the summary as links (their lines
-                        are not in the diff)
+                        {" "}
+                        <strong>{preview.unanchored.length}</strong> more will go in the summary as links. Their lines are
+                        not in the diff.
                       </>
-                    )}
-                    . Posting as <strong>@{preview.viewer}</strong>.
+                    )}{" "}
+                    Posting as <strong>@{preview.viewer}</strong>.
                   </p>
                   {preview.unanchored.length > 0 && (
                     <ul className="unanchored">

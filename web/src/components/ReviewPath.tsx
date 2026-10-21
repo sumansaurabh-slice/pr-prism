@@ -5,6 +5,7 @@ import { fileHref, useRoute } from "../router";
 import { fileMap, isStaleReview, readLS, splitPath, useStore, writeLS } from "../store";
 import type { ChapterFile, FileEntry } from "../types";
 
+const OTHER_ID = "_other"; // the extra group for files the reading order left out
 const RISK_TEXT = { high: "High risk", medium: "Medium risk", low: "Low risk" } as const;
 
 function FileRow({ file, why, active }: { file: FileEntry; why: string; active: boolean }) {
@@ -83,12 +84,21 @@ export function ReviewPath() {
     const leftovers = analysis.files.filter((f) => !seen.has(f.path));
     if (leftovers.length) {
       out.push({
-        ch: { id: "_other", title: "Other files", goal: "", files: [] },
+        ch: { id: OTHER_ID, title: "Other files", goal: "", files: [] },
         entries: leftovers.map((f) => ({ cf: { path: f.path, why_now: "" } as ChapterFile, file: f })),
       });
     }
     return out;
   }, [analysis]);
+
+  // Moving to a file (j/k, a link, the chat) opens its chapter if it was folded. This runs only when the
+  // open file changes, not on every analysis poll, so a chapter you fold stays folded.
+  useEffect(() => {
+    const current = useStore.getState().analysis;
+    if (!activePath || !current) return;
+    const id = current.chapters.find((c) => c.files.some((f) => f.path === activePath))?.id ?? OTHER_ID;
+    setClosed((c) => (c[id] ? { ...c, [id]: false } : c));
+  }, [activePath]);
 
   if (!analysis) return <nav className="pane review-path" />;
 
@@ -128,15 +138,15 @@ export function ReviewPath() {
           const skim = entries.filter((e) => e.file.generated && visible(e.file));
           if (!main.length && !skim.length) return null;
           const done = entries.filter((e) => e.file.path in reviewedMap).length;
-          const hasActive = entries.some((e) => e.file.path === activePath);
-          const isClosed = !!closed[ch.id] && !hasActive && !needle;
+          const isClosed = !!closed[ch.id] && !needle;
           const skimOpen = openSkim[ch.id] || skim.some((e) => e.file.path === activePath) || !!needle;
           return (
             <section key={ch.id} className="tree-group">
               <button
                 className="tree-group-head"
-                title={ch.goal}
+                title={needle ? "Clear the filter to fold this group" : ch.goal}
                 aria-expanded={!isClosed}
+                disabled={!!needle}
                 onClick={() => setClosed((c) => ({ ...c, [ch.id]: !isClosed }))}
               >
                 {isClosed ? <IconChevronRight size={12} /> : <IconChevronDown size={12} />}
