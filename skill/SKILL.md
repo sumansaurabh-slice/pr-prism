@@ -43,7 +43,7 @@ If it fails:
 
 ## Step 3: Open the review app
 
-Run `${CLAUDE_SKILL_DIR}/bin/prr serve <PR>`. It starts or reuses the local server, opens the browser, and prints the URL. Tell the user:
+Run `${CLAUDE_SKILL_DIR}/bin/prr serve <PR>`. It starts or reuses the local server, opens the browser, and prints the URL. Each PR keeps the same port and link every time, and the server keeps running until someone runs `/pr-prism stop <PR>`; if it crashes, it restarts itself on the same port. Tell the user:
 - the app is open at that URL;
 - the review path is already usable;
 - Claude's notes will fill in over the next few minutes.

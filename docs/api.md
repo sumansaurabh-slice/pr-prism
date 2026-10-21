@@ -1,6 +1,11 @@
 # Local server API
 
-`prr serve` starts FastAPI on `127.0.0.1:<random port>`. It serves the built SPA from `web/dist` and the JSON API below. Types are in `web/src/types.ts`.
+`prr serve` starts a supervisor (`prr/supervise.py`) that runs FastAPI on `127.0.0.1:<port>` and restarts it if it crashes. It serves the built SPA from `web/dist` and the JSON API below. Types are in `web/src/types.ts`.
+
+**Port and token:**
+- Each PR gets a fixed port, chosen from 47100–47899 based on the PR's name, and a random token.
+- Both are saved in the PR's `server.json` and reused on every start, so the link never changes.
+- The server stops only on `prr stop` (or `prr clean`). There is no idle timeout.
 
 ## Auth
 

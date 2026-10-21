@@ -9,14 +9,12 @@ import argparse
 import json
 import os
 import shutil
-import signal
 import subprocess
 import sys
-import time
-import urllib.request
 import webbrowser
 from pathlib import Path
 
+from . import supervise
 from .config import SKILL_DIR, WEB_DIST, Config, load_config, pr_dir
 from .gitgh import CommandError, PRRef, parse_pr_arg, repo_root
 from .util import read_json
@@ -26,30 +24,10 @@ def _err(msg: str) -> None:
     print(f"[prr] {msg}", file=sys.stderr, flush=True)
 
 
-def _pid_alive(pid: int) -> bool:
-    try:
-        os.kill(pid, 0)
-        return True
-    except OSError:
-        return False
-
-
 def _resolve(args: argparse.Namespace, cfg: Config) -> tuple[PRRef, Path, Path]:
     root = repo_root(args.repo or ".")
     ref = parse_pr_arg(args.pr, root)
     return ref, root, pr_dir(cfg, ref.owner, ref.repo, ref.number)
-
-
-def _healthy(info: dict | None) -> bool:
-    if not info or not _pid_alive(info.get("pid", -1)):
-        return False
-    req = urllib.request.Request(f"http://127.0.0.1:{info['port']}/api/health",
-                                 headers={"Cookie": f"prr_session={info['token']}"})
-    try:
-        with urllib.request.urlopen(req, timeout=2) as resp:
-            return resp.status == 200
-    except OSError:
-        return False
 
 
 # --------------------------------------------------------------------------------------
@@ -111,24 +89,10 @@ def cmd_fetch(args: argparse.Namespace, cfg: Config) -> int:
 
 
 def ensure_server(d: Path, open_browser: bool) -> str:
-    info = read_json(d / "server.json")
-    if not _healthy(info):
-        (d / "server.json").unlink(missing_ok=True)
-        log = open(d / "server.log", "a")
-        subprocess.Popen([sys.executable, "-P", "-m", "prr", "_serve", str(d)], stdin=subprocess.DEVNULL, stdout=log,
-                         stderr=log, start_new_session=True, cwd=d)
-        deadline = time.time() + 20
-        while time.time() < deadline:
-            time.sleep(0.3)
-            info = read_json(d / "server.json")
-            if _healthy(info):
-                break
-        else:
-            raise SystemExit(f"server did not start; see {d / 'server.log'}")
-    assert info
+    url = supervise.ensure_running(d)
     if open_browser:
-        webbrowser.open(info["url"])
-    return info["url"]
+        webbrowser.open(url)
+    return url
 
 
 def cmd_serve(args: argparse.Namespace, cfg: Config) -> int:
@@ -186,29 +150,20 @@ def cmd_status(args: argparse.Namespace, cfg: Config) -> int:
     for d in dirs:
         ctx = read_json(d / "context.json") or {}
         prog = read_json(d / "progress.json") or {}
-        info = read_json(d / "server.json")
+        info = read_json(d / "server.json") or {}
         pr = ctx.get("pr", {})
         rows.append({
             "pr": f"{pr.get('owner')}/{pr.get('repo')}#{pr.get('number')}", "title": pr.get("title"),
             "head": (pr.get("head_sha") or "")[:10], "analysis": prog.get("status", "not analyzed"),
-            "server": info["url"] if _healthy(info) else None, "dir": str(d),
+            "server": info.get("url") if supervise.healthy(d) else None, "dir": str(d),
         })
     print(json.dumps(rows, indent=1))
     return 0
 
 
-def _stop(d: Path) -> bool:
-    info = read_json(d / "server.json")
-    if info and _pid_alive(info["pid"]):
-        os.kill(info["pid"], signal.SIGTERM)
-        (d / "server.json").unlink(missing_ok=True)
-        return True
-    return False
-
-
 def cmd_stop(args: argparse.Namespace, cfg: Config) -> int:
     _, _, d = _resolve(args, cfg)
-    print("stopped" if _stop(d) else "not running")
+    print("stopped (the link stays the same next time)" if supervise.stop(d) else "not running")
     return 0
 
 
@@ -228,17 +183,26 @@ def cmd_clean(args: argparse.Namespace, cfg: Config) -> int:
     for d in targets:
         if not d.exists():
             continue
-        _stop(d)
+        supervise.stop(d)
         remove_worktree(root, d, int(d.name.split("-", 1)[1]))
         shutil.rmtree(d, ignore_errors=True)
         print(f"removed {d}")
     return 0
 
 
-def cmd_serve_foreground(args: argparse.Namespace, cfg: Config) -> int:
+def cmd_supervise(args: argparse.Namespace, cfg: Config) -> int:
+    supervise.supervise(Path(args.pr_dir))
+    return 0
+
+
+def cmd_serve_child(args: argparse.Namespace, cfg: Config) -> int:
     from .server import serve_forever
 
-    serve_forever(Path(args.pr_dir), cfg, port=args.port)
+    token = os.environ.get("PRR_TOKEN", "")  # passed in the environment, not argv, so `ps` doesn't show it
+    if not token:
+        _err("PRR_TOKEN is not set; start the server with `prr serve`")
+        return 2
+    serve_forever(Path(args.pr_dir), cfg, port=args.port, token=token)
     return 0
 
 
@@ -260,19 +224,22 @@ def main(argv: list[str] | None = None) -> None:
     s.add_argument("--concurrency", type=int, default=0)
     s = sub.add_parser("status", help="list fetched PRs, analysis state and running servers")
     s.add_argument("pr", nargs="?")
-    s = sub.add_parser("stop", help="stop a PR's web server")
+    s = sub.add_parser("stop", help="stop a PR's web server (it only ever stops when asked)")
     s.add_argument("pr")
     s = sub.add_parser("clean", help="stop the server, remove the worktree and cached data")
     s.add_argument("pr", nargs="?")
     s.add_argument("--all", action="store_true", help="every PR of the current repo")
-    s = sub.add_parser("_serve", help=argparse.SUPPRESS)
+    s = sub.add_parser("_serve", help=argparse.SUPPRESS)  # the supervisor
     s.add_argument("pr_dir")
-    s.add_argument("--port", type=int, default=0)
+    s = sub.add_parser("_serve-child", help=argparse.SUPPRESS)  # the server the supervisor runs
+    s.add_argument("pr_dir")
+    s.add_argument("--port", type=int, required=True)
 
     args = p.parse_args(argv)
     cfg = load_config()
     handlers = {"doctor": cmd_doctor, "fetch": cmd_fetch, "serve": cmd_serve, "analyze": cmd_analyze,
-                "status": cmd_status, "stop": cmd_stop, "clean": cmd_clean, "_serve": cmd_serve_foreground}
+                "status": cmd_status, "stop": cmd_stop, "clean": cmd_clean, "_serve": cmd_supervise,
+                "_serve-child": cmd_serve_child}
     try:
         code = handlers[args.cmd](args, cfg)
     except (CommandError, ValueError, FileNotFoundError) as e:

@@ -37,7 +37,6 @@ class Config:
     cache_dir: Path = Path("~/.cache/pr-prism").expanduser()
     models: Models = field(default_factory=Models)
     analysis: AnalysisSettings = field(default_factory=AnalysisSettings)
-    idle_shutdown_minutes: int = 120
 
 
 def load_config() -> Config:
@@ -54,7 +53,6 @@ def load_config() -> Config:
     for key, value in raw.get("analysis", {}).items():
         if hasattr(cfg.analysis, key):
             setattr(cfg.analysis, key, int(value))
-    cfg.idle_shutdown_minutes = int(raw.get("server", {}).get("idle_shutdown_minutes", cfg.idle_shutdown_minutes))
     return cfg
 
 

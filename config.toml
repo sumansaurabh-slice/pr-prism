@@ -16,6 +16,3 @@ cluster_max_files = 40
 retries = 2
 annotate_timeout_s = 900
 synthesize_timeout_s = 1200
-
-[server]
-idle_shutdown_minutes = 120
