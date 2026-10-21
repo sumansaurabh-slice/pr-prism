@@ -1781,6 +1781,7 @@ tr.line-flash > td,
   bottom: 16px;
   z-index: 5;
   display: flex;
+  flex-wrap: wrap;
   align-items: center;
   gap: 8px;
   width: fit-content;
@@ -1797,6 +1798,10 @@ tr.line-flash > td,
   font-size: 12px;
   color: var(--text-muted);
   white-space: nowrap;
+}
+.sel-hint {
+  font-size: 12px;
+  color: var(--text-muted);
 }
 .selection-bar kbd {
   font-size: 10px;

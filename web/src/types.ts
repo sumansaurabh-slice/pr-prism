@@ -68,6 +68,7 @@ export interface Analysis {
 
 export interface Draft {
   id: string; path: string; side: Side; line: number; start_line: number | null; body: string;
+  start_side: Side | null;   // set only when the range starts on the other side (a deleted line → RIGHT)
   source: "user" | "suggestion" | "chat"; suggestion_id: string | null;
   anchored: boolean;   // false → cannot be an inline comment; goes into the review body as a permalink
   outdated: boolean;   // the PR moved and this line no longer maps

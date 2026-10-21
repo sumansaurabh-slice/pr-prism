@@ -88,7 +88,8 @@ export function useGlobalKeys() {
 export const SHORTCUTS: [string, string][] = [
   ["j / k", "Next / previous file in the reading order"],
   ["n / p", "Next / previous Claude note in this file"],
-  ["click a line number", "Pick a line (shift-click to pick more lines)"],
+  ["click a line number", "Pick a line"],
+  ["drag, or shift-click", "Pick more lines (also from a red line to a green one)"],
   ["c", "Comment on the picked lines"],
   ["/", "Go to the chat box"],
   ["r", "Mark this file as viewed, or not viewed"],

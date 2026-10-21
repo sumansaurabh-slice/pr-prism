@@ -62,3 +62,15 @@ def test_drafts_anchor_validation(client):
     assert ok["anchored"] is True and out["anchored"] is False
     assert client.post("/api/drafts", json={"path": "nope", "side": "RIGHT", "line": 1, "body": "z"}, headers=h).status_code == 400
     assert len(client.get("/api/state").json()["drafts"]) == 2
+
+
+def test_multi_line_drafts(client):
+    client.cookies.set("prr_session", TOKEN)
+    h = {"origin": f"http://127.0.0.1:{PORT}"}
+    same = client.post("/api/drafts", json={"path": "src/core.py", "side": "RIGHT", "line": 8, "start_line": 6, "body": "range"}, headers=h).json()
+    assert (same["start_line"], same["line"], same["start_side"], same["anchored"]) == (6, 8, None, True)
+    mixed = client.post("/api/drafts", json={"path": "src/core.py", "side": "RIGHT", "line": 6, "start_line": 5,
+                                             "start_side": "LEFT", "body": "red to green"}, headers=h).json()
+    assert (mixed["start_line"], mixed["line"], mixed["start_side"], mixed["anchored"]) == (5, 6, "LEFT", True)
+    single = client.post("/api/drafts", json={"path": "src/core.py", "side": "RIGHT", "line": 8, "start_line": 8, "body": "one"}, headers=h).json()
+    assert single["start_line"] is None and single["start_side"] is None

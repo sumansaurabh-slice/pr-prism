@@ -51,7 +51,9 @@ Rerunning after the PR changes only re-annotates the files that changed, and dra
 |---|---|
 | `j` / `k` | Next / previous file |
 | `n` / `p` | Next / previous note |
-| `c` | Comment |
+| click a line number | Pick a line |
+| drag, or shift-click another number | Pick more lines for one comment, like on GitHub. A pick can start on a red (deleted) line and end on a green one, but it must stay inside one `@@` block. |
+| `c` | Comment on the picked lines |
 | `r` | Mark reviewed |
 | `/` | Chat |
 | `?` | Help |
@@ -86,7 +88,7 @@ cd ~/Documents/hackathon/github-pr-review
 On a new computer, or for a teammate, copy the tool first, then install it:
 
 ```bash
-git clone https://github.com/sumansaurabh-slice/pr-reviewer ~/pr-prism
+git clone https://github.com/sumansaurabh-slice/pr-prism ~/pr-prism
 cd ~/pr-prism && ./install.sh
 ```
 

@@ -35,7 +35,7 @@ async function request<T>(method: string, url: string, body?: unknown): Promise<
 const q = encodeURIComponent;
 
 export interface NewDraft {
-  path: string; side: Side; line: number; start_line?: number | null; body: string;
+  path: string; side: Side; line: number; start_line?: number | null; start_side?: Side | null; body: string;
   source: Draft["source"]; suggestion_id?: string | null;
 }
 

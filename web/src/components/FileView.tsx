@@ -60,19 +60,26 @@ interface LineIndex {
   leftHunk: Map<number, number>;
   content: Map<string, string>;
   keyOrder: Map<string, number>;
+  hunkKeys: string[][]; // change keys of each hunk, in diff order
+  hunkOfKey: Map<string, number>;
+  changeByKey: Map<string, ChangeData>;
 }
 
 function buildIndex(hunks: HunkData[]): LineIndex {
   const idx: LineIndex = {
     rightKey: new Map(), leftKey: new Map(), rightHunk: new Map(), leftHunk: new Map(),
-    content: new Map(), keyOrder: new Map(),
+    content: new Map(), keyOrder: new Map(), hunkKeys: [], hunkOfKey: new Map(), changeByKey: new Map(),
   };
   let n = 0;
   hunks.forEach((h, hi) => {
+    idx.hunkKeys.push([]);
     for (const c of h.changes) {
       const key = getChangeKey(c);
       idx.content.set(key, c.content);
       idx.keyOrder.set(key, n++);
+      idx.hunkKeys[hi].push(key);
+      idx.hunkOfKey.set(key, hi);
+      idx.changeByKey.set(key, c);
       if (isInsert(c)) {
         idx.rightKey.set(c.lineNumber, key);
         idx.rightHunk.set(c.lineNumber, hi);
@@ -90,25 +97,29 @@ function buildIndex(hunks: HunkData[]): LineIndex {
   return idx;
 }
 
-/** Context lines are commented on the RIGHT (new) side, deletions on the LEFT. */
-function lineOf(c: ChangeData): { side: Side; line: number } {
-  if (isInsert(c)) return { side: "RIGHT", line: c.lineNumber };
-  if (isDelete(c)) return { side: "LEFT", line: c.lineNumber };
-  return { side: "RIGHT", line: c.newLineNumber };
-}
-
 function keyFor(idx: LineIndex, side: Side, line: number): string | undefined {
   return (side === "RIGHT" ? idx.rightKey : idx.leftKey).get(line);
 }
 
-function selectionText(idx: LineIndex, sel: { side: Side; start: number; end: number }): string {
-  const lines: string[] = [];
-  for (let l = sel.start; l <= sel.end; l++) {
-    const k = keyFor(idx, sel.side, l);
-    if (k !== undefined) lines.push(idx.content.get(k) ?? "");
-  }
-  return lines.join("\n");
+function oldNo(c: ChangeData): number | null {
+  return isInsert(c) ? null : isDelete(c) ? c.lineNumber : c.oldLineNumber;
 }
+function newNo(c: ChangeData): number | null {
+  return isDelete(c) ? null : isInsert(c) ? c.lineNumber : c.newLineNumber;
+}
+
+type Anchor = { startSide: Side; start: number; side: Side; end: number };
+
+/** Where GitHub will put a comment on the lines first..last (in diff order), or why it can't be one comment. */
+function anchorFor(first: ChangeData, last: ChangeData): Anchor | string {
+  const [fo, fn, lo, ln] = [oldNo(first), newNo(first), oldNo(last), newNo(last)];
+  if (fn !== null && ln !== null) return { startSide: "RIGHT", start: fn, side: "RIGHT", end: ln };
+  if (fo !== null && lo !== null) return { startSide: "LEFT", start: fo, side: "LEFT", end: lo };
+  if (fo !== null && ln !== null) return { startSide: "LEFT", start: fo, side: "RIGHT", end: ln };
+  return "GitHub can't make one comment that starts on a new (green) line and ends on a deleted (red) line. Start your pick on the red line instead.";
+}
+
+const CROSS_HUNK = "A comment can only cover lines inside one block of changes (one @@ section). Pick lines in the same block.";
 
 function rangeLabel(start: number, end: number) {
   return start === end ? `L${start}` : `L${start}–${end}`;
@@ -141,7 +152,8 @@ export function SeverityLabel({ severity }: { severity: Suggestion["severity"] }
   return <span className={`Label Label--${SEVERITY_VARIANT[severity]}`}>{SEVERITY_TEXT[severity]}</span>;
 }
 
-function lineText(side: Side, start: number, end: number) {
+function lineText(side: Side, start: number, end: number, startSide: Side = side) {
+  if (startSide !== side) return `old L${start} to new L${end}`;
   return `${side === "LEFT" ? "old " : ""}${rangeLabel(start, end)}`;
 }
 
@@ -234,7 +246,7 @@ export function DraftCard({ d, compact }: { d: Draft; compact?: boolean }) {
           Pending
         </span>
         <span className="rc-meta">
-          {lineText(d.side, d.start_line ?? d.line, d.line)}
+          {lineText(d.side, d.start_line ?? d.line, d.line, d.start_side ?? d.side)}
           {SOURCE_TEXT[d.source] && ` · ${SOURCE_TEXT[d.source]}`}
         </span>
         {!d.anchored && (
@@ -248,7 +260,7 @@ export function DraftCard({ d, compact }: { d: Draft; compact?: boolean }) {
           </span>
         )}
         {compact && (
-          <a className="rc-jump" href={fileHref(d.path, d.start_line ?? d.line, d.side)}>
+          <a className="rc-jump" href={fileHref(d.path, d.start_side ? d.line : (d.start_line ?? d.line), d.side)}>
             Go to line
           </a>
         )}
@@ -322,7 +334,9 @@ function Composer() {
   const save = async () => {
     const d = await addDraft({
       path: composer.path, side: composer.side, line: composer.end,
-      start_line: composer.start < composer.end ? composer.start : null, body: composer.body, source: "user",
+      start_line: composer.startSide !== composer.side || composer.start < composer.end ? composer.start : null,
+      start_side: composer.startSide !== composer.side ? composer.startSide : null,
+      body: composer.body, source: "user",
     });
     if (d) {
       close();
@@ -334,7 +348,7 @@ function Composer() {
       <div className="rc-head">
         <Avatar name="You" kind="you" />
         <strong>Add a comment</strong>
-        <span className="rc-meta">on {lineText(composer.side, composer.start, composer.end)}</span>
+        <span className="rc-meta">on {lineText(composer.side, composer.start, composer.end, composer.startSide)}</span>
       </div>
       <div className="rc-body">
         <textarea
@@ -519,8 +533,9 @@ export function FileView({ path, line, side, full }: { path: string; line: numbe
       navigate(fileHref(path, line, side, true));
       return;
     }
-    const hunk = (side === "RIGHT" ? index.rightHunk : index.leftHunk).get(line) ?? 0;
-    setSelection({ path, side, start: line, end: line, hunk, text: index.content.get(k) ?? "" });
+    anchorKey.current = k;
+    const picked = rangeSelection(k, k);
+    if (typeof picked !== "string") setSelection(picked);
     const t = window.setTimeout(
       () => flash(containerRef.current?.querySelector(`[data-change-key="${k}"]`)?.closest("tr") ?? null),
       30,
@@ -528,24 +543,64 @@ export function FileView({ path, line, side, full }: { path: string; line: numbe
     return () => window.clearTimeout(t);
   }, [line, side, path, fileData, navTick, showFull]);
 
-  // ---- selection
-  const onGutterClick = useCallback(
-    ({ change }: { change: ChangeData | null }, e: MouseEvent<HTMLElement>) => {
-      if (!change) return;
-      const { side: s, line: l } = lineOf(change);
-      const hunk = (s === "RIGHT" ? index.rightHunk : index.leftHunk).get(l) ?? 0;
-      const cur = useStore.getState().selection;
-      let next = { path, side: s, start: l, end: l, hunk };
-      if (e.shiftKey && cur && cur.path === path && cur.side === s && cur.hunk === hunk) {
-        next = { ...next, start: Math.min(cur.start, l), end: Math.max(cur.end, l) };
-      } else if (cur && cur.path === path && cur.side === s && cur.start === l && cur.end === l) {
-        setSelection(null);
-        return;
-      }
-      setSelection({ ...next, text: selectionText(index, next) });
-    },
-    [index, path, setSelection],
-  );
+  // ---- selection: click a line number, then drag or shift-click to pick more lines (like GitHub)
+  const anchorKey = useRef<string | null>(null); // where the current pick started
+  // Set while the mouse button is held on a line number. `blocked` is why the line under the pointer can't end
+  // the pick; it is shown only if the button is released there, not for every line the pointer passes.
+  const drag = useRef<{ blocked: string | null } | null>(null);
+
+  function rangeSelection(fromKey: string, toKey: string): Selection | string {
+    const hunk = index.hunkOfKey.get(fromKey);
+    if (hunk === undefined) return "That line is not in the diff.";
+    if (index.hunkOfKey.get(toKey) !== hunk) return CROSS_HUNK;
+    const keys = index.hunkKeys[hunk];
+    let i = keys.indexOf(fromKey);
+    let j = keys.indexOf(toKey);
+    if (i > j) [i, j] = [j, i];
+    const range = keys.slice(i, j + 1);
+    const anchor = anchorFor(index.changeByKey.get(range[0])!, index.changeByKey.get(range[range.length - 1])!);
+    if (typeof anchor === "string") return anchor;
+    return { path, ...anchor, hunk, keys: range, text: range.map((k) => index.content.get(k) ?? "").join("\n") };
+  }
+
+  /** Select from the anchor to `toKey`. Returns null on success, or the reason that range isn't allowed. */
+  function extendTo(toKey: string): string | null {
+    if (!anchorKey.current) return "Click a line number first.";
+    const picked = rangeSelection(anchorKey.current, toKey);
+    if (typeof picked === "string") return picked;
+    setSelection(picked);
+    return null;
+  }
+
+  const onLineMouseDown = ({ change }: { change: ChangeData | null }, e: MouseEvent<HTMLElement>) => {
+    if (!change || e.button !== 0) return;
+    e.preventDefault(); // don't start a text selection while picking lines
+    const key = getChangeKey(change);
+    const cur = useStore.getState().selection;
+    if (e.shiftKey && cur && cur.path === path && cur.hunk !== -1 && anchorKey.current) {
+      const blocked = extendTo(key);
+      if (blocked) toast("info", blocked);
+      return;
+    }
+    anchorKey.current = key;
+    drag.current = { blocked: null };
+    extendTo(key);
+  };
+
+  const onLineMouseEnter = ({ change }: { change: ChangeData | null }) => {
+    if (!drag.current || !change) return;
+    drag.current.blocked = extendTo(getChangeKey(change));
+  };
+
+  useEffect(() => {
+    const stop = () => {
+      const blocked = drag.current?.blocked;
+      drag.current = null;
+      if (blocked) useStore.getState().toast("info", `${blocked} The pick stays at the last line that works.`);
+    };
+    window.addEventListener("mouseup", stop);
+    return () => window.removeEventListener("mouseup", stop);
+  }, []);
 
   const onFullSelect = useCallback(
     (l: number, shift: boolean, text: (s: number, e: number) => string) => {
@@ -557,40 +612,32 @@ export function FileView({ path, line, side, full }: { path: string; line: numbe
         start = Math.min(cur.start, l);
         end = Math.max(cur.end, l);
       }
-      setSelection({ path, side: s, start, end, hunk: -1, text: text(start, end) });
+      setSelection({ path, startSide: s, side: s, start, end, hunk: -1, keys: [], text: text(start, end) });
     },
     [path, fullAt, setSelection],
   );
 
   const sel = selection && selection.path === path ? selection : null;
-  const selectedChanges = useMemo(() => {
-    if (!sel || sel.hunk === -1) return [];
-    const keys: string[] = [];
-    for (let l = sel.start; l <= sel.end; l++) {
-      const k = keyFor(index, sel.side, l);
-      if (k) keys.push(k);
-    }
-    return keys;
-  }, [sel, index]);
+  const selectedChanges = useMemo(() => (sel && sel.hunk !== -1 ? sel.keys : []), [sel]);
 
   const commentOnSelection = useCallback(() => {
     const s = useStore.getState().selection;
     if (!s || s.path !== path) {
-      toast("info", "First click a line number. Shift-click to pick more lines. Then press c.");
+      toast("info", "First click a line number. Drag, or shift-click another number, to pick more lines. Then press c.");
       return;
     }
     if (!inPR) {
       toast("info", "This file is not part of the PR, so you can't comment on it.");
       return;
     }
-    openComposer({ path, side: s.side, start: s.start, end: s.end });
+    openComposer({ path, startSide: s.startSide, side: s.side, start: s.start, end: s.end });
   }, [path, inPR, openComposer, toast]);
 
   const askAboutSelection = () => {
     if (!sel) return;
     askClaude({
       path, side: sel.side, start: sel.start, end: sel.end, text: sel.text,
-      label: `${splitPath(path).base}:${sel.start === sel.end ? sel.start : `${sel.start}-${sel.end}`}`,
+      label: `${splitPath(path).base}:${sel.startSide !== sel.side ? `old ${sel.start} to ${sel.end}` : sel.start === sel.end ? sel.start : `${sel.start}-${sel.end}`}`,
     });
   };
 
@@ -742,7 +789,8 @@ export function FileView({ path, line, side, full }: { path: string; line: numbe
               tokens={tokens}
               widgets={widgets}
               selectedChanges={selectedChanges}
-              gutterEvents={{ onClick: onGutterClick }}
+              gutterEvents={{ onMouseDown: onLineMouseDown, onMouseEnter: onLineMouseEnter }}
+              codeEvents={{ onMouseEnter: onLineMouseEnter }}
               optimizeSelection
             >
               {(hs) =>
@@ -774,7 +822,10 @@ export function FileView({ path, line, side, full }: { path: string; line: numbe
 
       {sel && (
         <div className="selection-bar" role="toolbar">
-          <span className="sel-label">{lineText(sel.side, sel.start, sel.end)} selected</span>
+          <span className="sel-label">{lineText(sel.side, sel.start, sel.end, sel.startSide)} selected</span>
+          {sel.start === sel.end && sel.startSide === sel.side && sel.hunk !== -1 && (
+            <span className="sel-hint">Drag or shift-click line numbers to pick more lines</span>
+          )}
           {inPR && (
             <button className="btn btn-primary btn-sm" onClick={commentOnSelection}>
               Comment <kbd>c</kbd>
