@@ -20,3 +20,4 @@ synthesize_timeout_s = 1200
 [chat]
 can_post = true       # the chat may post comments (and comment-only reviews) to GitHub when you ask it to
 can_approve = false   # set true to also let the chat approve or request changes
+ask_before_actions = true   # the chat is full Claude Code; commands, edits and Jira/Slack actions ask you first

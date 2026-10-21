@@ -20,8 +20,8 @@ def names(c: Config) -> list[str]:
 
 
 def test_switches_decide_which_tools_exist():
-    assert names(cfg(can_post=False)) == ["add_pending_comment"]
-    assert names(cfg()) == ["add_pending_comment", "post_comment", "post_review"]
+    assert names(cfg(can_post=False)) == ["approve", "add_pending_comment"]
+    assert names(cfg()) == ["approve", "add_pending_comment", "post_comment", "post_review"]
     review = next(t for t in chat_tools.tool_list(cfg()) if t["name"] == "post_review")
     assert review["inputSchema"]["properties"]["event"]["enum"] == ["COMMENT"]
     review = next(t for t in chat_tools.tool_list(cfg(can_approve=True)) if t["name"] == "post_review")
@@ -76,3 +76,30 @@ def test_mcp_server_speaks_the_protocol(tmp_path, tricky_repo):
     assert replies[0]["result"]["capabilities"] == {"tools": {}}
     assert "post_comment" in [t["name"] for t in replies[1]["result"]["tools"]]
     assert replies[2]["result"]["isError"] is False and "pending comment" in replies[2]["result"]["content"][0]["text"]
+
+
+def test_approval_rules(tmp_path, tricky_repo, monkeypatch):
+    make_pr_dir(tmp_path, tricky_repo["diff"])
+    # read-only connector lookups run without asking; actions that change things are asked about
+    assert chat_tools.auto_allowed("mcp__claude_ai_Atlassian__getJiraIssue")
+    assert chat_tools.auto_allowed("mcp__claude_ai_Slack__slack_read_channel")
+    assert not chat_tools.auto_allowed("mcp__claude_ai_Atlassian__createJiraIssue")
+    assert not chat_tools.auto_allowed("mcp__claude_ai_Slack__slack_send_message")
+    assert not chat_tools.auto_allowed("Bash")
+    assert chat_tools.approval_key("Bash", {"command": "npm test -- --watch"}) == "Bash:npm test"
+
+    lookup = {"tool_name": "mcp__claude_ai_Atlassian__getJiraIssue", "input": {"issueIdOrKey": "ATI-1"}}
+    assert chat_tools.approve(tmp_path, lookup)["behavior"] == "allow"
+
+    # nobody to ask (no running app) → denied, with a reason Claude can relay
+    run = {"tool_name": "Bash", "input": {"command": "touch x"}}
+    denied = chat_tools.approve(tmp_path, run)
+    assert denied["behavior"] == "deny" and "not running" in denied["message"]
+
+    # "Always allow" remembered for this chat → allowed without asking
+    from prr.util import write_json
+    write_json(tmp_path / "state.json", {"threads": [{"id": "t1", "always_allow": ["Bash:touch x"]}]})
+    monkeypatch.setenv("PRR_THREAD_ID", "t1")
+    assert chat_tools.approve(tmp_path, run)["behavior"] == "allow"
+    # …but only for that command, not every shell command
+    assert chat_tools.approve(tmp_path, {"tool_name": "Bash", "input": {"command": "rm -rf build"}})["behavior"] == "deny"

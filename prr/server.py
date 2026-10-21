@@ -133,6 +133,16 @@ class MessageIn(BaseModel):
     context: list[ChipIn] = []
 
 
+class ApprovalIn(BaseModel):
+    thread_id: str
+    tool_name: str
+    input: dict = {}
+
+
+class DecisionIn(BaseModel):
+    decision: str  # allow | always | deny
+
+
 # --------------------------------------------------------------------------------------
 # App
 # --------------------------------------------------------------------------------------
@@ -184,19 +194,17 @@ def create_app(pr_dir: Path, cfg: Config) -> FastAPI:
             cache["viewer"] = viewer_login()
         return cache["viewer"]
 
-    def chat_mcp() -> tuple[str, list[str], bool]:
-        """MCP servers for the chat: our comment tools, plus codegraph when the repo is indexed."""
-        servers: dict[str, dict] = {chat_tools.SERVER_NAME: {
+    def chat_mcp(tid: str) -> tuple[str, bool]:
+        """The app's own MCP server for this chat turn (comment tools + the approval tool). The reviewer's other MCP
+        servers and claude.ai connectors (codegraph, Jira, Slack, …) load from their own Claude Code settings."""
+        env = {k: os.environ[k] for k in ("PRR_GITHUB_DRY_RUN",) if k in os.environ}
+        servers = {chat_tools.SERVER_NAME: {
             "type": "stdio", "command": sys.executable, "args": ["-P", "-m", "prr", "_mcp", str(pr_dir)],
-            "env": {k: os.environ[k] for k in ("PRR_GITHUB_DRY_RUN",) if k in os.environ},
+            "env": {**env, "PRR_THREAD_ID": tid},
         }}
-        tools = [f"mcp__{chat_tools.SERVER_NAME}__{t['name']}" for t in chat_tools.tool_list(cfg)]
         root = Path(ctx()["repo_root"])
         codegraph = (root / ".codegraph").is_dir() and shutil.which("codegraph") is not None
-        if codegraph:
-            servers["codegraph"] = {"type": "stdio", "command": "codegraph", "args": ["serve", "--mcp"]}
-            tools.append("mcp__codegraph")
-        return json.dumps({"mcpServers": servers}), tools, codegraph
+        return json.dumps({"mcpServers": servers}), codegraph
 
     def comment_tools_text() -> str:
         if not cfg.chat.can_post:
@@ -232,9 +240,15 @@ def create_app(pr_dir: Path, cfg: Config) -> FastAPI:
         values = {
             "HEAD_SHA": pr["head_sha"], "MERGE_BASE_SHA": pr["merge_base_sha"], "PR_DIR": str(pr_dir),
             "COMMENT_TOOLS": comment_tools_text(),
-            "EXTRA_TOOLS": (f", plus codegraph tools to find callers and what a change affects (pass "
-                            f"projectPath=\"{root}\"; its index matches the reviewer's own checkout, which is close to "
-                            "the base branch)") if codegraph else "",
+            "ACTIONS": ("Reading, searching and read-only git commands (`git blame`, `git log`, `git show`, `git diff`) "
+                        "run right away. Anything that changes something first asks the reviewer in the app. This "
+                        "includes other commands, file edits, and creating or updating Jira issues or Slack messages. "
+                        "If they say no, don't try the same thing again; ask them what they want instead.")
+                       if cfg.chat.ask_before_actions else
+                       "Your actions run without asking the reviewer first, so be careful and do only what they ask.",
+            "EXTRA_TOOLS": ("\n\nTo find callers and what a change affects, use the codegraph tools. Pass "
+                            f"projectPath=\"{root}\". Its index matches the reviewer's own checkout, which is close "
+                            "to the base branch.") if codegraph else "",
             "PR_TITLE": pr["title"], "PR_URL": pr["url"], "PR_AUTHOR": pr["author"], "BASE_REF": pr["base_ref"],
             "HEAD_REF": pr["head_ref"], "ADDITIONS": str(pr["additions"]), "DELETIONS": str(pr["deletions"]),
             "CHANGED_FILES": str(pr["changed_files"]),
@@ -436,6 +450,75 @@ def create_app(pr_dir: Path, cfg: Config) -> FastAPI:
             raise HTTPException(502, str(e)) from e
         return {"body": out["body"]}
 
+    # ---- approvals: Claude Code asks (through the chat's MCP server), the reviewer answers in the chat ----------
+
+    approvals: dict[str, dict] = {}            # approval id → {thread, tool, input, done: Event, answer}
+    live_streams: dict[str, asyncio.Queue] = {}  # thread id → the queue feeding that thread's open chat stream
+
+    def approval_card(aid: str, tool: str, inp: dict) -> dict:
+        from .claude import friendly_tool_name, tool_summary
+        titles = {"Bash": "Run a command", "Edit": "Edit a file", "MultiEdit": "Edit a file", "Write": "Write a file",
+                  "NotebookEdit": "Edit a notebook", "WebFetch": "Open a web page", "WebSearch": "Search the web"}
+        title = titles.get(tool) or f"Use {friendly_tool_name(tool)}"
+        detail = str(inp.get("command")) if tool == "Bash" else json.dumps(inp, indent=1, ensure_ascii=False)[:3000]
+        return {"type": "approval", "id": aid, "tool": tool, "title": title,
+                "summary": tool_summary(tool, inp, Path(ctx()["worktree"])), "detail": detail,
+                "always_label": chat_tools.approval_key(tool, inp).replace("Bash:", "")}
+
+    @app.post("/api/internal/approvals")
+    async def ask_approval(body: ApprovalIn) -> dict:
+        queue = live_streams.get(body.thread_id)
+        if queue is None:
+            return {"decision": "deny", "message": "The reviewer isn't watching this chat, so nobody can approve it."}
+        aid = uuid.uuid4().hex[:12]
+        item = {"thread": body.thread_id, "tool": body.tool_name, "input": body.input, "done": asyncio.Event(), "answer": None}
+        approvals[aid] = item
+        await queue.put(approval_card(aid, body.tool_name, body.input))
+        try:
+            await asyncio.wait_for(item["done"].wait(), chat_tools.APPROVAL_WAIT_S)
+        except asyncio.TimeoutError:
+            item["answer"] = {"decision": "deny", "message": "Nobody answered in time."}
+        finally:
+            approvals.pop(aid, None)
+        answer = item["answer"] or {"decision": "deny"}
+        if answer["decision"] == "always":
+            key = chat_tools.approval_key(body.tool_name, body.input)
+
+            def remember(s: dict) -> None:
+                t = next((t for t in s["threads"] if t["id"] == body.thread_id), None)
+                if t is not None and key not in t.setdefault("always_allow", []):
+                    t["always_allow"].append(key)
+
+            store.update(remember)
+        return answer
+
+    def settle(aid: str, answer: dict) -> None:
+        item = approvals.get(aid)
+        if item and not item["done"].is_set():
+            item["answer"] = answer
+            item["done"].set()
+            queue = live_streams.get(item["thread"])
+            if queue is not None:
+                queue.put_nowait({"type": "approval_done", "id": aid, "decision": answer["decision"]})
+
+    @app.post("/api/chat/approvals/{aid}")
+    def decide(aid: str, body: DecisionIn) -> dict:
+        if aid not in approvals:
+            raise HTTPException(404, "this request is no longer waiting (it may have timed out)")
+        if body.decision not in ("allow", "always", "deny"):
+            raise HTTPException(400, "decision must be allow, always or deny")
+        settle(aid, {"decision": body.decision} if body.decision != "deny" else
+               {"decision": "deny", "message": "The reviewer said no. Don't try this again; ask them what they want instead."})
+        return {"ok": True}
+
+    @app.delete("/api/chat/threads/{tid}/always-allow")
+    def forget_always_allow(tid: str) -> dict:
+        def apply(s: dict) -> None:
+            _thread(s, tid)["always_allow"] = []
+
+        store.update(apply)
+        return {"ok": True}
+
     # ---- chat ------------------------------------------------------------------------
 
     def _thread(s: dict, tid: str) -> dict:
@@ -487,7 +570,7 @@ def create_app(pr_dir: Path, cfg: Config) -> FastAPI:
         thread = store.update(add_user)
         running[tid] = None  # type: ignore[assignment]  # reserve the slot; the process attaches via on_start
         analysis_now = await asyncio.to_thread(merge.build_analysis, pr_dir)
-        mcp_config, mcp_tools, codegraph = chat_mcp()
+        mcp_config, codegraph = chat_mcp(tid)
         system_file = chat_system_file(analysis_now, codegraph)
         prompt = _compose_prompt(body.text, body.context)
         c = ctx()
@@ -495,12 +578,26 @@ def create_app(pr_dir: Path, cfg: Config) -> FastAPI:
         async def events():
             reply = {"role": "assistant", "text": "", "context": [], "tools": [], "cost_usd": None, "error": None, "ts": now_iso()}
             started = thread.get("started", False)
+            # One queue gets Claude's stream events and approval requests, so approval cards appear in the stream.
+            queue: asyncio.Queue = asyncio.Queue()
+            live_streams[tid] = queue
+
+            async def pump() -> None:
+                try:
+                    async for ev in stream_chat(
+                        prompt, cwd=Path(c["worktree"]), session_id=thread["session_id"], resume=started,
+                        model=cfg.models.chat, system_file=system_file, add_dirs=[pr_dir], mcp_config=mcp_config,
+                        ask_first=cfg.chat.ask_before_actions, on_start=lambda p: running.__setitem__(tid, p),
+                    ):
+                        await queue.put(ev)
+                except Exception as e:  # noqa: BLE001
+                    await queue.put({"type": "error", "message": str(e)})
+                finally:
+                    await queue.put(None)
+
+            producer = asyncio.create_task(pump())
             try:
-                async for ev in stream_chat(
-                    prompt, cwd=Path(c["worktree"]), session_id=thread["session_id"], resume=started,
-                    model=cfg.models.chat, system_file=system_file, add_dirs=[pr_dir],
-                    mcp_config=mcp_config, mcp_tools=mcp_tools, on_start=lambda p: running.__setitem__(tid, p),
-                ):
+                while (ev := await queue.get()) is not None:
                     if ev["type"] == "text":
                         reply["text"] += ev["text"]
                         started = True
@@ -512,9 +609,15 @@ def create_app(pr_dir: Path, cfg: Config) -> FastAPI:
                         started = True
                     elif ev["type"] == "error":
                         reply["error"] = ev["message"]
+                    elif ev["type"] == "approval":
+                        reply["tools"].append({"name": f"Asked you: {ev['title']}", "summary": ev["summary"]})
                     yield _sse(ev)
                 yield _sse({"type": "done"})
             finally:
+                live_streams.pop(tid, None)
+                for aid in [a for a, item in approvals.items() if item["thread"] == tid]:
+                    settle(aid, {"decision": "deny", "message": "The reviewer closed the chat."})
+                producer.cancel()
                 running.pop(tid, None)
                 cache.pop("threads_at", None)  # the chat may have posted comments; reload them from GitHub next time
 

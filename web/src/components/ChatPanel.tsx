@@ -4,14 +4,52 @@ import { Avatar, IconSparkle, IconX } from "../icons";
 import { Markdown } from "../markdown";
 import { goFile, useRoute } from "../router";
 import { chipLabel, fileByPath, splitPath, useStore } from "../store";
-import type { ChatMessage, ChatThread, ContextChip, ToolEvent } from "../types";
+import type { ApprovalDecision, ChatMessage, ChatThread, ContextChip, ToolEvent } from "../types";
+
+interface Approval {
+  id: string; title: string; summary: string; detail: string; tool: string; always_label: string;
+  decision: ApprovalDecision | null;
+}
 
 interface Live {
   threadId: string;
   text: string;
   tools: ToolEvent[];
+  approvals: Approval[];
   thinking: boolean;
   error: string | null;
+}
+
+const DECISION_TEXT: Record<ApprovalDecision, string> = { allow: "Allowed", always: "Allowed for this chat", deny: "Denied" };
+
+/** "Claude wants to run a command" with Allow / Always allow / Deny, shown in the stream while Claude waits. */
+function ApprovalCard({ a, onDecide }: { a: Approval; onDecide: (decision: ApprovalDecision) => void }) {
+  return (
+    <div className={`approval${a.decision ? " decided" : ""}`}>
+      <div className="approval-head">
+        <strong>Claude wants to: {a.title}</strong>
+        {a.decision && <span className={`Label Label--${a.decision === "deny" ? "danger" : "success"}`}>{DECISION_TEXT[a.decision]}</span>}
+      </div>
+      <pre className="approval-detail">{a.tool === "Bash" ? `$ ${a.detail}` : a.detail}</pre>
+      {!a.decision && (
+        <div className="approval-actions">
+          <button className="btn btn-sm" onClick={() => onDecide("deny")}>
+            Deny
+          </button>
+          <button
+            className="btn btn-sm"
+            onClick={() => onDecide("always")}
+            title={`Don't ask again in this chat for ${a.tool === "Bash" ? `commands starting with "${a.always_label}"` : "this tool"}`}
+          >
+            Always allow
+          </button>
+          <button className="btn btn-sm btn-primary" onClick={() => onDecide("allow")}>
+            Allow
+          </button>
+        </div>
+      )}
+    </div>
+  );
 }
 
 const QUICK_PROMPTS: { label: string; prompt: string }[] = [
@@ -200,7 +238,7 @@ export function ChatPanel() {
     setChatInput("");
     clearChips();
     stickToBottom.current = true;
-    const acc: Live = { threadId: base.id, text: "", tools: [], thinking: false, error: null };
+    const acc: Live = { threadId: base.id, text: "", tools: [], approvals: [], thinking: false, error: null };
     let cost: number | null = null;
     setLive({ ...acc });
     const ctrl = new AbortController();
@@ -228,6 +266,13 @@ export function ChatPanel() {
               break;
             case "error":
               acc.error = ev.message;
+              break;
+            case "approval":
+              acc.approvals = [...acc.approvals, { ...ev, decision: null }];
+              acc.thinking = false;
+              break;
+            case "approval_done":
+              acc.approvals = acc.approvals.map((a) => (a.id === ev.id ? { ...a, decision: ev.decision } : a));
               break;
             case "done":
               break;
@@ -368,9 +413,10 @@ export function ChatPanel() {
         {!messages.length && !live && (
           <div className="chat-empty">
             <p>
-              <strong>Ask Claude anything about this PR.</strong> Claude can open and search the PR's code. It
-              can't change the code. When you ask, it can add a comment to your pending comments, or post it to GitHub
-              for you.
+              <strong>Ask Claude anything about this PR.</strong> This is full Claude Code, running in a copy of the
+              PR's code. It can read code, run commands like <code>git blame</code>, use your connected tools such as
+              Jira and Slack, and add or post review comments. Before it runs a command or changes anything, it asks
+              you here first.
             </p>
             <p className="color-muted">
               The file you have open is added to your question for you. To ask about exact lines, click their line
@@ -393,13 +439,29 @@ export function ChatPanel() {
               <strong>Claude</strong>
             </div>
             <ToolList tools={live.tools} live />
+            {live.approvals.map((a) => (
+              <ApprovalCard
+                key={a.id}
+                a={a}
+                onDecide={(decision) => {
+                  setLive((cur) => cur && { ...cur, approvals: cur.approvals.map((x) => (x.id === a.id ? { ...x, decision } : x)) });
+                  api.decideApproval(a.id, decision).catch((e) => toast("error", (e as Error).message));
+                }}
+              />
+            ))}
             {live.text ? <Markdown text={live.text} /> : null}
             {(live.thinking || (!live.text && !live.error)) && (
               <div className="thinking">
                 <span className="dot" />
                 <span className="dot" />
                 <span className="dot" />
-                <span className="color-muted small">{live.tools.length ? "Looking at the code…" : "Thinking…"}</span>
+                <span className="color-muted small">
+                  {live.approvals.some((a) => !a.decision)
+                    ? "Waiting for you to allow or deny…"
+                    : live.tools.length
+                      ? "Working…"
+                      : "Thinking…"}
+                </span>
               </div>
             )}
             {live.error && <div className="msg-error">{live.error}</div>}

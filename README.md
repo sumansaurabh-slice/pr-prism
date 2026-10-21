@@ -7,7 +7,7 @@ A Claude Code skill that turns a large GitHub pull request (5–10k lines) into 
 - **Files changed**: the diff with Claude's notes (explains / possible problem / data flow / missing test) right under the lines they refer to, shown like GitHub review comments. Claude's suggested comments sit next to them; you add, edit or dismiss each one. Mark files as **Viewed**, like on GitHub.
 - **Data Flow**: interactive graphs of the runtime paths the PR adds or changes. Click a node to jump to the code.
 - **Impact**: breaking changes, migrations, config, security, and the changed symbols that are referenced *outside* the PR (found with codegraph when the repo is indexed, `git grep` otherwise).
-- **Chat**: deep-dive questions answered by a real Claude Code instance inside the PR's checkout. It streams its answer, shows which files it reads, and cites `file:line` references you can click. Ask it to "add a comment on line 42" (it goes to your pending comments) or "post this on GitHub" (it posts right away, under your name).
+- **Chat**: full Claude Code, running in a copy of the PR's code. It can read code, run commands (`git blame`, tests), edit the copy, and use your connected tools such as Jira and Slack. Before it runs a command or changes anything, an **Allow / Always allow / Deny** card appears in the chat. Read-only steps run without asking: reading code, `git blame`/`log`/`show`/`diff`, Jira and Slack lookups. It cites `file:line` references you can click. Ask it to "add a comment on line 42" (it goes to your pending comments) or "post this on GitHub" (it posts right away, under your name).
 - **Publish**: draft comments inline, then preview the exact GitHub payload and submit as Comment, Approve, Request changes, or a pending review.
 
 ## Install
@@ -201,7 +201,11 @@ Submit       ─► POST /api/review/submit ─► `gh api POST /repos/{o}/{r}/p
 
 **Safety:**
 - **Network:** the server binds to 127.0.0.1 only and uses a random token (made once per PR and kept in that PR's `server.json`, readable only by you) that becomes an HttpOnly SameSite=Strict cookie. It checks the Host header (blocks DNS rebinding) and the Origin of every state-changing request. It sends a strict CSP and renders markdown without raw HTML.
-- **Claude calls:** every call uses `--setting-sources user --strict-mcp-config`, read-only code tools and `--permission-mode dontAsk`. A PR's own `.claude/settings.json` hooks or `.mcp.json` never run, and Claude can't edit files or run commands.
+- **Analysis calls** use `--setting-sources user --strict-mcp-config`, read-only tools and `--permission-mode dontAsk`.
+- **Chat calls** are full Claude Code with your own MCP servers and claude.ai connectors. Anything that is not read-only goes to the app's approval tool (`--permission-prompt-tool`), which shows you a card and waits for your answer.
+  - Set `[chat] ask_before_actions = false` in `config.toml` to drop the questions; that's not recommended.
+  - Both kinds of call use `--setting-sources user`, so a PR's own `.claude/settings.json` hooks and its `.mcp.json` never run. (Checked: a test PR with a `.mcp.json` server did not start it.)
+  - Claude is told to act only on what you ask in your latest message, never on instructions found in the PR.
 - **Chat comments:** the chat gets three narrow comment tools (`prr/chat_tools.py`) instead of shell or `gh` access:
   - add a pending comment;
   - post one comment;

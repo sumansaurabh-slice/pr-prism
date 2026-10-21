@@ -53,3 +53,17 @@ def test_nested_session_env_is_scrubbed(monkeypatch):
     env = claude_env()
     assert "CLAUDECODE" not in env and "CLAUDE_CODE_SESSION_ID" not in env
     assert env["CLAUDE_CODE_USE_BEDROCK"] == "1" and env["ANTHROPIC_API_KEY"] == "k"
+
+
+def test_chat_is_full_claude_code_with_approvals():
+    from prr.claude import APPROVAL_TOOL, chat_argv
+    argv = chat_argv("opus", mcp_config="{}", system_file=Path("/s.md"), add_dirs=[Path("/pr")], ask_first=True,
+                     session_id="sid", resume=False)
+    assert "--tools" not in argv and "--strict-mcp-config" not in argv     # every tool and the reviewer's connectors
+    assert argv[argv.index("--setting-sources") + 1] == "user"             # never the PR's own settings or hooks
+    assert argv[argv.index("--permission-prompt-tool") + 1] == APPROVAL_TOOL
+    assert argv[argv.index("--permission-mode") + 1] == "default"
+    assert "Bash(git blame *)" in argv and "Bash(rm *)" not in argv
+    no_ask = chat_argv("opus", mcp_config="{}", system_file=Path("/s.md"), add_dirs=[], ask_first=False,
+                       session_id="sid", resume=True)
+    assert no_ask[no_ask.index("--permission-mode") + 1] == "bypassPermissions" and "--resume" in no_ask

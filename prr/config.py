@@ -36,6 +36,7 @@ class AnalysisSettings:
 class ChatSettings:
     can_post: bool = True      # the chat may post comments and comment-only reviews to GitHub when asked
     can_approve: bool = False  # the chat may also approve or request changes (off: those stay on the Submit button)
+    ask_before_actions: bool = True  # commands, edits and connector actions ask the reviewer first (off: no questions)
 
 
 @dataclass

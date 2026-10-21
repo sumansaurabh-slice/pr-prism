@@ -74,3 +74,11 @@ def test_multi_line_drafts(client):
     assert (mixed["start_line"], mixed["line"], mixed["start_side"], mixed["anchored"]) == (5, 6, "LEFT", True)
     single = client.post("/api/drafts", json={"path": "src/core.py", "side": "RIGHT", "line": 8, "start_line": 8, "body": "one"}, headers=h).json()
     assert single["start_line"] is None and single["start_side"] is None
+
+
+def test_approval_request_without_an_open_chat_is_denied(client):
+    client.cookies.set("prr_session", TOKEN)
+    h = {"origin": f"http://127.0.0.1:{PORT}"}
+    r = client.post("/api/internal/approvals", json={"thread_id": "nope", "tool_name": "Bash", "input": {"command": "ls"}}, headers=h)
+    assert r.status_code == 200 and r.json()["decision"] == "deny"
+    assert client.post("/api/chat/approvals/unknown", json={"decision": "allow"}, headers=h).status_code == 404
