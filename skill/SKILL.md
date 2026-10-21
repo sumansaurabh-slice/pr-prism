@@ -1,14 +1,14 @@
 ---
-name: pr-review
-description: Turn a GitHub pull request into an interactive local review app. It gives a guided review order, why/how/impact, data-flow graphs, inline Claude notes and suggested comments, a deep-dive chat backed by Claude Code, and publishing your review to GitHub. Run as /pr-review <number|url> [focus].
+name: pr-prism
+description: Turn a GitHub pull request into an interactive local review app. It gives a guided review order, why/how/impact, data-flow graphs, inline Claude notes and suggested comments, a deep-dive chat backed by Claude Code, and publishing your review to GitHub. Run as /pr-prism <number|url> [focus].
 argument-hint: <pr-number|url> [focus instructions]  |  status | stop <pr> | clean <pr>|--all
 disable-model-invocation: true
 allowed-tools: Bash(${CLAUDE_SKILL_DIR}/bin/prr *)
 ---
 
-# /pr-review
+# /pr-prism
 
-The user invoked: `/pr-review $ARGUMENTS`
+The user invoked: `/pr-prism $ARGUMENTS`
 
 You orchestrate the `prr` tool bundled with this skill. It is always invoked as `${CLAUDE_SKILL_DIR}/bin/prr`. Run every command from the current repository, i.e. the repo the PR belongs to.
 
@@ -70,7 +70,7 @@ When the background task completes, read its output. It ends with a "Review read
 - the number of suggested comments Claude drafted. Say clearly that nothing is posted to GitHub until they press **Submit review** in the app;
 - the app URL.
 
-If the analysis failed or some batches failed, say so plainly and suggest rerunning `/pr-review <PR>`. Cached batches are reused, so a rerun is cheap.
+If the analysis failed or some batches failed, say so plainly and suggest rerunning `/pr-prism <PR>`. Cached batches are reused, so a rerun is cheap.
 
 ## Follow-up questions in this terminal session
 
@@ -87,6 +87,6 @@ Read from these to answer. Treat the worktree as read-only: never edit, commit o
 ## Rules
 
 - Never post to GitHub yourself. Publishing happens only through the app's Submit button, after the user previews the exact payload.
-- Never modify the user's working tree. `prr` uses a separate worktree and `refs/pr-review/*` refs.
-- To refresh after the PR gets new commits, rerun `/pr-review <PR>`. Unchanged files keep their cached notes, and draft comments are remapped to the new lines.
-- To clean up later: `/pr-review clean <PR>` or `/pr-review clean --all`.
+- Never modify the user's working tree. `prr` uses a separate worktree and `refs/pr-prism/*` refs.
+- To refresh after the PR gets new commits, rerun `/pr-prism <PR>`. Unchanged files keep their cached notes, and draft comments are remapped to the new lines.
+- To clean up later: `/pr-prism clean <PR>` or `/pr-prism clean --all`.

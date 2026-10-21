@@ -1,21 +1,30 @@
 #!/usr/bin/env bash
-# Install the /pr-review Claude Code skill from this repo.
-#   ./install.sh              venv + deps, build the web UI, symlink skill/ into ~/.claude/skills/pr-review
+# Install the /pr-prism Claude Code skill from this repo.
+#   ./install.sh              venv + deps, build the web UI, symlink skill/ into ~/.claude/skills/pr-prism
 #   ./install.sh --uninstall  remove the symlink (leaves this repo and cached reviews alone)
 set -euo pipefail
 
 REPO="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 SKILLS_DIR="$HOME/.claude/skills"
-LINK="$SKILLS_DIR/pr-review"
+LINK="$SKILLS_DIR/pr-prism"
+OLD_LINK="$SKILLS_DIR/pr-review"   # the skill's name before it was renamed to pr-prism
+
+remove_old_link() {
+  if [ -L "$OLD_LINK" ] && [ "$(readlink "$OLD_LINK")" = "$REPO/skill" ]; then
+    rm "$OLD_LINK"
+    echo "Removed the old /pr-review shortcut ($OLD_LINK)"
+  fi
+}
 
 if [[ "${1:-}" == "--uninstall" ]]; then
+  remove_old_link
   if [ -L "$LINK" ]; then
     rm "$LINK"
     echo "Removed $LINK"
   else
     echo "Nothing to remove at $LINK"
   fi
-  echo "Cached reviews (worktrees, analyses) live in ~/.cache/pr-review; run 'prr clean --all' inside a repo to remove them."
+  echo "Cached reviews (worktrees, analyses) live in ~/.cache/pr-prism; run 'prr clean --all' inside a repo to remove them."
   exit 0
 fi
 
@@ -43,7 +52,7 @@ echo "→ Web UI (web/dist)"
   npm run build --silent
 )
 
-echo "→ Skill (~/.claude/skills/pr-review → $REPO/skill)"
+echo "→ Skill (~/.claude/skills/pr-prism → $REPO/skill)"
 chmod +x "$REPO/skill/bin/prr"
 mkdir -p "$SKILLS_DIR"
 if [ -e "$LINK" ] && [ ! -L "$LINK" ]; then
@@ -51,10 +60,11 @@ if [ -e "$LINK" ] && [ ! -L "$LINK" ]; then
   exit 1
 fi
 ln -sfn "$REPO/skill" "$LINK"
+remove_old_link
 
 echo
 "$REPO/skill/bin/prr" doctor || true
 echo
 echo "Installed. In Claude Code, inside any GitHub repo:"
-echo "  /pr-review 1234"
-echo "  /pr-review https://github.com/org/repo/pull/1234 focus on the retry logic"
+echo "  /pr-prism 1234"
+echo "  /pr-prism https://github.com/org/repo/pull/1234 focus on the retry logic"

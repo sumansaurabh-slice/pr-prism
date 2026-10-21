@@ -34,7 +34,7 @@ class AnalysisSettings:
 
 @dataclass
 class Config:
-    cache_dir: Path = Path("~/.cache/pr-review").expanduser()
+    cache_dir: Path = Path("~/.cache/pr-prism").expanduser()
     models: Models = field(default_factory=Models)
     analysis: AnalysisSettings = field(default_factory=AnalysisSettings)
     idle_shutdown_minutes: int = 120

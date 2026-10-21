@@ -1,6 +1,6 @@
 # My review guidelines
 
-Edit this file freely. The `/pr-review` skill injects it into every analysis prompt, so Claude weighs these when it rates risk, writes notes and drafts suggested comments.
+Edit this file freely. The `/pr-prism` skill injects it into every analysis prompt, so Claude weighs these when it rates risk, writes notes and drafts suggested comments.
 
 ## Always check
 

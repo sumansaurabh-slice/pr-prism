@@ -80,9 +80,9 @@ def cmd_doctor(args: argparse.Namespace, cfg: Config) -> int:
         authed = subprocess.run(["gh", "auth", "status"], capture_output=True).returncode == 0
         check("gh authenticated", authed, "run: gh auth login")
     check("web UI built", (WEB_DIST / "index.html").exists(), "run ./install.sh (needs Node)")
-    link = Path("~/.claude/skills/pr-review").expanduser()
+    link = Path("~/.claude/skills/pr-prism").expanduser()
     installed = link.exists() and link.resolve() == SKILL_DIR.resolve()
-    check("skill installed at ~/.claude/skills/pr-review", installed, "run ./install.sh", required=False)
+    check("skill installed at ~/.claude/skills/pr-prism", installed, "run ./install.sh", required=False)
     check("codegraph (optional, for blast radius)", shutil.which("codegraph") is not None, "optional", required=False)
     try:
         root = repo_root(args.repo or ".")
@@ -243,7 +243,7 @@ def cmd_serve_foreground(args: argparse.Namespace, cfg: Config) -> int:
 
 
 def main(argv: list[str] | None = None) -> None:
-    p = argparse.ArgumentParser(prog="prr", description="Interactive, Claude-guided GitHub PR review")
+    p = argparse.ArgumentParser(prog="prr", description="PR Prism: interactive, Claude-guided GitHub PR review")
     p.add_argument("--repo", help="path inside the git repo (default: cwd)")
     sub = p.add_subparsers(dest="cmd", required=True)
 

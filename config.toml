@@ -1,7 +1,7 @@
-# Personal settings for prr / the /pr-review skill. All keys are optional.
+# Personal settings for prr / the /pr-prism skill. All keys are optional.
 
 # Where fetched PRs, worktrees, analyses and review state live (outside your repos).
-cache_dir = "~/.cache/pr-review"
+cache_dir = "~/.cache/pr-prism"
 
 [models]
 annotate = "sonnet"   # per-cluster file annotations (runs in parallel)
