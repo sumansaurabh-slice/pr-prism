@@ -766,7 +766,7 @@ export function FileView({ path, line, side, full }: { path: string; line: numbe
 
       {file && (
         <div className="file-foot">
-          <button className="btn btn-primary" onClick={() => void markAndNext()} title="Mark as viewed and open the next file (j)">
+          <button className="btn btn-primary" onClick={() => void markAndNext()} title="Mark this file as viewed and open the next file">
             Mark as viewed and go to next file
           </button>
         </div>
@@ -852,7 +852,7 @@ function FileHeader({
               <input type="checkbox" checked={reviewed} onChange={(e) => void setReviewed(path, e.target.checked)} />
               Viewed
             </label>
-            <button className="btn btn-sm" onClick={onMarkNext} title="Mark as viewed and open the next file (j)">
+            <button className="btn btn-sm" onClick={onMarkNext} title="Mark this file as viewed and open the next file">
               Mark viewed & next →
             </button>
           </>
