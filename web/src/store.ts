@@ -4,13 +4,17 @@ import type {
   Analysis, ChatThread, ContextChip, Draft, ExistingComment, FileEntry, ReviewState, Side,
 } from "./types";
 
+/** Picked lines. `start` is on `startSide`, `end` is on `side`; they differ only for a range that starts on a
+ * deleted line and ends on an added or unchanged one (GitHub allows that). */
 export interface Selection {
   path: string;
-  side: Side;
+  startSide: Side;
   start: number;
+  side: Side;
   end: number;
   text: string;
   hunk: number; // hunk index (-1 in full-file view)
+  keys: string[]; // diff change keys in the range, in diff order (empty in full-file view)
 }
 
 export interface Toast { id: number; kind: "info" | "error" | "success"; text: string }
@@ -31,7 +35,7 @@ interface Store {
   draftsOpen: boolean;
   submitOpen: boolean;
   helpOpen: boolean;
-  composer: { path: string; side: Side; start: number; end: number; body: string } | null;
+  composer: { path: string; startSide: Side; side: Side; start: number; end: number; body: string } | null;
   toasts: Toast[];
 
   loadAnalysis: () => Promise<void>;
@@ -58,7 +62,7 @@ interface Store {
   setDraftsOpen: (open: boolean) => void;
   setSubmitOpen: (open: boolean) => void;
   setHelpOpen: (open: boolean) => void;
-  openComposer: (c: { path: string; side: Side; start: number; end: number; body?: string }) => void;
+  openComposer: (c: { path: string; startSide: Side; side: Side; start: number; end: number; body?: string }) => void;
   setComposerBody: (body: string) => void;
   closeComposer: () => void;
   toast: (kind: Toast["kind"], text: string) => void;

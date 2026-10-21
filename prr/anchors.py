@@ -2,7 +2,9 @@
 
 GitHub accepts an inline review comment only on a line inside one of the PR diff's hunks:
 RIGHT = new-file line numbers (added or context lines), LEFT = old-file line numbers.
-A multi-line comment (start_line..line) must sit in a single hunk on a single side.
+A multi-line comment (start_line..line) must sit in a single hunk. It may start on a deleted line
+(start_side LEFT) and end on an added or unchanged line (side RIGHT), as GitHub allows; otherwise
+both ends are on the same side and start_line < line.
 """
 
 from __future__ import annotations
@@ -25,7 +27,7 @@ def hunk_for(file_ctx: dict, side: str, line: int) -> dict | None:
     return next((h for h in file_ctx["hunks"] if _contains(h, side, line)), None)
 
 
-def check(file_ctx: dict | None, side: str, line: int, start_line: int | None) -> str | None:
+def check(file_ctx: dict | None, side: str, line: int, start_line: int | None, start_side: str | None = None) -> str | None:
     """None if GitHub will accept this anchor, else the reason it won't."""
     if file_ctx is None:
         return "file is not part of this PR"
@@ -37,9 +39,14 @@ def check(file_ctx: dict | None, side: str, line: int, start_line: int | None) -
     if h is None:
         return f"{side} line {line} is outside the diff"
     if start_line is not None:
-        if start_line >= line:
+        start_side = start_side or side
+        if start_side not in ("LEFT", "RIGHT"):
+            return f"invalid start_side {start_side!r}"
+        if start_side == side and start_line >= line:
             return "start_line must be before line"
-        if hunk_for(file_ctx, side, start_line) is not h:
+        if start_side == "RIGHT" and side == "LEFT":
+            return "a range can't start on a new line and end on an old (deleted) line"
+        if hunk_for(file_ctx, start_side, start_line) is not h:
             return "a multi-line range must stay within one hunk"
     return None
 
@@ -98,7 +105,8 @@ def remap_state(pr_dir: Path, root: Path, old_head: str, new_head: str, new_file
             line, start = d["line"], d.get("start_line")
             if d["side"] == "RIGHT":
                 line = map_line(hunks_between(d["path"]), line)
-                start = map_line(hunks_between(d["path"]), start) if start is not None else None
+            if start is not None and (d.get("start_side") or d["side"]) == "RIGHT":
+                start = map_line(hunks_between(d["path"]), start)
             fd = by_path.get(d["path"])
             file_ctx = None if fd is None else {"binary": fd.binary, "hunks": fd.hunk_infos()}
             if line is None or (d.get("start_line") is not None and start is None) or fd is None:
@@ -106,7 +114,7 @@ def remap_state(pr_dir: Path, root: Path, old_head: str, new_head: str, new_file
                 stats["outdated"] += 1
                 continue
             d["line"], d["start_line"], d["commit_id"] = line, start, new_head
-            d["anchored"] = check(file_ctx, d["side"], line, start) is None
+            d["anchored"] = check(file_ctx, d["side"], line, start, d.get("start_side")) is None
             stats["remapped"] += 1
         return stats
 

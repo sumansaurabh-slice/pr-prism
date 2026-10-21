@@ -27,14 +27,16 @@ def build_payload(ctx: dict, drafts: list[dict], body: str, event: str, commit_i
             continue
         c: dict[str, Any] = {"path": d["path"], "body": d["body"], "line": d["line"], "side": d["side"]}
         if d.get("start_line"):
-            c["start_line"], c["start_side"] = d["start_line"], d["side"]
+            c["start_line"], c["start_side"] = d["start_line"], d.get("start_side") or d["side"]
         comments.append(c)
     full_body = body.strip()
     if unanchored:
         lines = ["", "---", "**Comments on lines outside the diff:**", ""]
         for d in unanchored:
-            link = anchors.permalink(ctx["pr"], files.get(d["path"]), d["path"], d["side"], d["line"], d.get("start_line"))
-            loc = f"{d['path']}#L{d['start_line']}-L{d['line']}" if d.get("start_line") else f"{d['path']}#L{d['line']}"
+            # A range that starts on a deleted line has numbers from two files; link to its last line only.
+            start = d.get("start_line") if not d.get("start_side") else None
+            link = anchors.permalink(ctx["pr"], files.get(d["path"]), d["path"], d["side"], d["line"], start)
+            loc = f"{d['path']}#L{start}-L{d['line']}" if start else f"{d['path']}#L{d['line']}"
             quoted = d["body"].strip().replace("\n", "\n  ")
             lines.append(f"- [`{loc}`]({link}){' (outdated)' if d.get('outdated') else ''}:\n  {quoted}")
         full_body = (full_body + "\n" + "\n".join(lines)).strip()

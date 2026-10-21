@@ -58,3 +58,22 @@ def test_payload_moves_unanchored_drafts_to_body(tricky_repo):
     assert len(unanchored) == 1 and "blob/" + "h" * 40 + "/src/core.py#L15" in payload["body"]
     pending, _ = github.build_payload(ctx, drafts[:1], "", "PENDING", "h" * 40)
     assert "event" not in pending
+
+
+def test_range_from_deleted_line_to_added_line(tricky_repo):
+    ctx = ctx_for(tricky_repo["diff"])
+    core = next(f for f in ctx["files"] if f["path"] == "src/core.py")
+    # hunk 1: "-line 5" (old 5) then "+line 5 changed" (new 5)
+    assert anchors.check(core, "RIGHT", 5, 5, "LEFT") is None           # red line → green line, like GitHub
+    assert anchors.check(core, "RIGHT", 7, 4, "LEFT") is None
+    assert "new line" in anchors.check(core, "LEFT", 5, 5, "RIGHT")     # green → red is not one comment
+    assert "one hunk" in anchors.check(core, "RIGHT", 21, 5, "LEFT")    # ends in another hunk
+
+
+def test_payload_keeps_start_side(tricky_repo):
+    ctx = ctx_for(tricky_repo["diff"])
+    d = {"path": "src/core.py", "side": "RIGHT", "line": 6, "start_line": 5, "start_side": "LEFT", "body": "x",
+         "anchored": True, "outdated": False}
+    payload, _ = github.build_payload(ctx, [d], "", "COMMENT", "h" * 40)
+    assert payload["comments"][0] == {"path": "src/core.py", "body": "x", "line": 6, "side": "RIGHT",
+                                      "start_line": 5, "start_side": "LEFT"}

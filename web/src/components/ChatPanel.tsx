@@ -263,7 +263,7 @@ export function ChatPanel() {
     const anchor =
       msgChips.find((c) => c.start > 0) ??
       (selection && selection.start > 0
-        ? { path: selection.path, side: selection.side, start: selection.start, end: selection.end }
+        ? { path: selection.path, side: selection.side, start: selection.start, end: selection.end, startSide: selection.startSide }
         : null);
     if (!anchor) {
       toast("info", "First pick the lines in the diff (click a line number). Then try again.");
@@ -273,9 +273,12 @@ export function ChatPanel() {
       toast("info", "That file is not part of this PR, so you can't comment on it.");
       return;
     }
+    const startSide = "startSide" in anchor && anchor.startSide ? anchor.startSide : anchor.side;
+    const mixed = startSide !== anchor.side;
     const d = await addDraft({
       path: anchor.path, side: anchor.side, line: anchor.end,
-      start_line: anchor.start < anchor.end ? anchor.start : null, body: text, source: "chat",
+      start_line: mixed || anchor.start < anchor.end ? anchor.start : null,
+      start_side: mixed ? startSide : null, body: text, source: "chat",
     });
     if (d) goFile(d.path, d.start_line ?? d.line, d.side);
   };

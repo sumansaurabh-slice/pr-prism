@@ -98,6 +98,7 @@ class DraftIn(BaseModel):
     side: str
     line: int
     start_line: int | None = None
+    start_side: str | None = None  # only when the range starts on the other side (a deleted line)
     body: str
     source: str = "user"
     suggestion_id: str | None = None
@@ -285,15 +286,19 @@ def create_app(pr_dir: Path, cfg: Config) -> FastAPI:
         fc = file_ctx(body.path)
         if fc is None or body.side not in ("LEFT", "RIGHT") or not body.body.strip():
             raise HTTPException(400, "draft needs a PR file, a side (LEFT/RIGHT) and a body")
-        start = body.start_line if body.start_line and body.start_line != body.line else None
-        if start and start > body.line:
-            start, line = body.line, start
-        else:
-            line = body.line
+        start_side = body.start_side if body.start_side in ("LEFT", "RIGHT") and body.start_side != body.side else None
+        start, line = body.start_line, body.line
+        if start is not None and start_side is None:
+            if start == line:
+                start = None
+            elif start > line:
+                start, line = line, start
         draft = {
             "id": uuid.uuid4().hex[:12], "path": body.path, "side": body.side, "line": line, "start_line": start,
+            "start_side": start_side if start is not None else None,
             "body": body.body, "source": body.source if body.source in ("user", "suggestion", "chat") else "user",
-            "suggestion_id": body.suggestion_id, "anchored": anchors.check(fc, body.side, line, start) is None,
+            "suggestion_id": body.suggestion_id,
+            "anchored": anchors.check(fc, body.side, line, start, start_side if start is not None else None) is None,
             "outdated": False, "commit_id": ctx()["pr"]["head_sha"], "created_at": now_iso(),
         }
         store.update(lambda s: s["drafts"].append(draft))
