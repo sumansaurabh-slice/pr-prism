@@ -1,6 +1,6 @@
 import { useEffect } from "react";
 import { goFile, navigate, parseHash } from "./router";
-import { fileByPath, reviewOrder, useStore } from "./store";
+import { fileByPath, fileMap, hiddenByPrefs, reviewOrder, useStore } from "./store";
 
 /** The Walkthrough registers these while mounted so global keys can reach it. */
 export interface FileNav {
@@ -19,12 +19,17 @@ function isTyping(target: EventTarget | null): boolean {
   return tag === "INPUT" || tag === "TEXTAREA" || tag === "SELECT" || target.isContentEditable;
 }
 
+/** Next/previous file in the reading order, skipping files the "Hide …" checkboxes hide. */
 export function stepFile(delta: 1 | -1) {
-  const { analysis } = useStore.getState();
-  const order = reviewOrder(analysis);
-  if (!order.length) return;
+  const { analysis, prefs, state } = useStore.getState();
+  const files = fileMap(analysis);
   const route = parseHash(window.location.hash);
-  const idx = route.view === "file" ? order.indexOf(route.path) : -1;
+  const current = route.view === "file" ? route.path : null;
+  const order = reviewOrder(analysis).filter(
+    (p) => p === current || !files.has(p) || !hiddenByPrefs(files.get(p)!, prefs, state.reviewed),
+  );
+  if (!order.length) return;
+  const idx = current ? order.indexOf(current) : -1;
   const next = idx === -1 ? (delta === 1 ? 0 : order.length - 1) : idx + delta;
   if (next >= 0 && next < order.length) goFile(order[next]);
 }

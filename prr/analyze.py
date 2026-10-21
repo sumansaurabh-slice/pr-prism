@@ -110,6 +110,8 @@ def synthesis_prompt(ctx: dict, analysis: dict, impact_data: dict, edges: list[d
             meta.append(f"renamed from {f['old_path']}")
         if f["tests_for"]:
             meta.append(f"tests {f['tests_for']}")
+        if f["is_test"] or f["is_docs"]:
+            meta.append("test file" if f["is_test"] else "docs file")
         if ctx_files[p]["imports"]:
             meta.append("imports " + ", ".join(ctx_files[p]["imports"][:6]))
         out.append(f"- `{p}` [{' · '.join(meta)}]\n")

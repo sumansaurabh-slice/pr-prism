@@ -19,6 +19,12 @@ export interface Selection {
 
 export interface Toast { id: number; kind: "info" | "error" | "success"; text: string }
 
+/** The "Hide …" checkboxes in the file list. They also decide which files j/k and "Mark viewed & next" visit. */
+export interface ViewPrefs { hideViewed: boolean; hideTests: boolean; hideDocs: boolean }
+const PREF_KEYS: Record<keyof ViewPrefs, string> = {
+  hideViewed: "prr.hideReviewed", hideTests: "prr.hideTests", hideDocs: "prr.hideDocs",
+};
+
 interface Store {
   analysis: Analysis | null;
   analysisError: string | null;
@@ -37,6 +43,7 @@ interface Store {
   helpOpen: boolean;
   composer: { path: string; startSide: Side; side: Side; start: number; end: number; body: string } | null;
   toasts: Toast[];
+  prefs: ViewPrefs;
 
   loadAnalysis: () => Promise<void>;
   loadState: () => Promise<void>;
@@ -67,6 +74,7 @@ interface Store {
   closeComposer: () => void;
   toast: (kind: Toast["kind"], text: string) => void;
   dropToast: (id: number) => void;
+  setPref: (key: keyof ViewPrefs, value: boolean) => void;
 }
 
 const emptyState: ReviewState = { reviewed: {}, dismissed_suggestions: [], drafts: [], threads: [], submitted: [] };
@@ -108,6 +116,11 @@ export const useStore = create<Store>((set, get) => ({
   helpOpen: false,
   composer: null,
   toasts: [],
+  prefs: {
+    hideViewed: readLS(PREF_KEYS.hideViewed) === "1",
+    hideTests: readLS(PREF_KEYS.hideTests) === "1",
+    hideDocs: readLS(PREF_KEYS.hideDocs) === "1",
+  },
 
   loadAnalysis: async () => {
     try {
@@ -233,6 +246,10 @@ export const useStore = create<Store>((set, get) => ({
   openComposer: (c) => set({ composer: { ...c, body: c.body ?? "" } }),
   setComposerBody: (body) => set((s) => (s.composer ? { composer: { ...s.composer, body } } : s)),
   closeComposer: () => set({ composer: null }),
+  setPref: (key, value) => {
+    writeLS(PREF_KEYS[key], value ? "1" : "0");
+    set((s) => ({ prefs: { ...s.prefs, [key]: value } }));
+  },
   toast: (kind, text) => {
     const id = ++toastSeq;
     set((s) => ({ toasts: [...s.toasts.slice(-3), { id, kind, text }] }));
@@ -281,6 +298,13 @@ export function reviewOrder(analysis: Analysis | null): string[] {
     orderCache.set(analysis, order);
   }
   return order;
+}
+
+/** Hidden by the "Hide …" checkboxes? A file that changed after you viewed it is never hidden as "viewed". */
+export function hiddenByPrefs(f: FileEntry, prefs: ViewPrefs, reviewed: Record<string, string>): boolean {
+  if (prefs.hideTests && f.is_test) return true;
+  if (prefs.hideDocs && f.is_docs) return true;
+  return prefs.hideViewed && f.path in reviewed && !isStaleReview(reviewed, f);
 }
 
 export function isStaleReview(reviewed: Record<string, string>, f: FileEntry): boolean {

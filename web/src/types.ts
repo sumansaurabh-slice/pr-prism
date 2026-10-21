@@ -34,6 +34,7 @@ export interface FileEntry {
   category: Category; generated: boolean; sensitive: boolean; minutes: number;
   base_blob: string | null; head_blob: string | null;
   tests_for: string | null; tested_by: string[];
+  is_test: boolean; is_docs: boolean; kind_reason: string | null; // for the "Hide test/docs files" checkboxes
   hunks: HunkInfo[];
   annotated: boolean;
   risk: Level | null; summary: string | null; look_for: string[]; notes: Note[]; changed_symbols: string[];

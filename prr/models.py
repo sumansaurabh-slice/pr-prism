@@ -137,6 +137,8 @@ class SynthesisOut(BaseModel):
     flows: list[Flow]
     impact: list[ImpactItem]
     questions: list[Question]
+    test_files: list[str] = Field(description="Changed files whose main job is testing (tests, helpers, fixtures, mocks, evals)")
+    docs_files: list[str] = Field(description="Changed files that are documentation")
 
 
 # --------------------------------------------------------------------------------------
@@ -200,6 +202,9 @@ class FileEntry(BaseModel):
     head_blob: str | None
     tests_for: str | None
     tested_by: list[str]
+    is_test: bool
+    is_docs: bool
+    kind_reason: str | None  # why it counts as a test or docs file
     hunks: list[HunkInfo]
     annotated: bool
     risk: Level | None
