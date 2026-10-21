@@ -90,6 +90,13 @@ export function ReviewPath() {
     return out;
   }, [analysis]);
 
+  // Moving to a file (j/k, a link, the chat) opens its chapter if it was folded.
+  useEffect(() => {
+    if (!activePath || !analysis) return;
+    const ch = analysis.chapters.find((c) => c.files.some((f) => f.path === activePath));
+    if (ch) setClosed((c) => (c[ch.id] ? { ...c, [ch.id]: false } : c));
+  }, [activePath, analysis]);
+
   if (!analysis) return <nav className="pane review-path" />;
 
   const needle = filter.trim().toLowerCase();
@@ -128,15 +135,15 @@ export function ReviewPath() {
           const skim = entries.filter((e) => e.file.generated && visible(e.file));
           if (!main.length && !skim.length) return null;
           const done = entries.filter((e) => e.file.path in reviewedMap).length;
-          const hasActive = entries.some((e) => e.file.path === activePath);
-          const isClosed = !!closed[ch.id] && !hasActive && !needle;
+          const isClosed = !!closed[ch.id] && !needle;
           const skimOpen = openSkim[ch.id] || skim.some((e) => e.file.path === activePath) || !!needle;
           return (
             <section key={ch.id} className="tree-group">
               <button
                 className="tree-group-head"
-                title={ch.goal}
+                title={needle ? "Clear the filter to fold this group" : ch.goal}
                 aria-expanded={!isClosed}
+                disabled={!!needle}
                 onClick={() => setClosed((c) => ({ ...c, [ch.id]: !isClosed }))}
               >
                 {isClosed ? <IconChevronRight size={12} /> : <IconChevronDown size={12} />}

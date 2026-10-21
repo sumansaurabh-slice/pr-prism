@@ -933,6 +933,12 @@ textarea.input {
 .tree-group-head:hover {
   background: var(--bg-hover);
 }
+.tree-group-head:disabled {
+  cursor: default;
+}
+.tree-group-head:disabled:hover {
+  background: none;
+}
 .tree-group-head .octicon {
   color: var(--text-muted);
 }
