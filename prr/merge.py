@@ -20,28 +20,28 @@ from .util import read_json
 
 _LEVELS = {"low": 0, "medium": 1, "high": 2}
 _WHY_NOW = {
-    "schema": "Contracts first: later files build on these definitions.",
-    "types": "Data shapes used by the logic that follows.",
-    "core": "Core behavior change.",
-    "api": "Where the new behavior is exposed or invoked.",
-    "ui": "User-facing change.",
-    "config": "Settings and wiring.",
-    "infra": "Build, CI or deploy change.",
-    "test": "Shows which behavior the PR pins down.",
-    "docs": "Documentation of the change.",
-    "generated": "Generated, vendored or lock file: skim.",
+    "schema": "Read this first. Other files depend on these definitions.",
+    "types": "Shows the data shapes that the next files use.",
+    "core": "This is where the main behavior changes.",
+    "api": "This is where the new code is called or exposed.",
+    "ui": "Shows what users will see.",
+    "config": "Settings that turn the change on or control it.",
+    "infra": "Changes how the code is built, tested or shipped.",
+    "test": "Shows which behavior the tests check.",
+    "docs": "Explains the change in words.",
+    "generated": "Made by a tool, not by hand. Skim it.",
 }
 _GOALS = {
-    "schema": "Understand the contracts and data definitions everything else relies on.",
-    "types": "Know the data shapes before reading the logic.",
-    "core": "Understand the main behavior change and its edge cases.",
-    "api": "See how the change is exposed and who calls it.",
-    "ui": "Check the user-facing behavior.",
-    "config": "Check how the change is configured and switched on.",
-    "infra": "Check build, CI and deployment impact.",
-    "test": "Confirm the risky behavior is actually tested.",
-    "docs": "Make sure the docs match the behavior.",
-    "generated": "Skim only: confirm these were regenerated, not hand-edited.",
+    "schema": "Learn the data formats that the rest of the code uses.",
+    "types": "Know the data shapes before you read the logic.",
+    "core": "Understand the main change and the cases where it could fail.",
+    "api": "See how the change is used and who calls it.",
+    "ui": "Check what users will see and do.",
+    "config": "Check how the change is set up and turned on.",
+    "infra": "Check the effect on build, CI and deploys.",
+    "test": "Make sure the risky parts have tests.",
+    "docs": "Make sure the docs match the code.",
+    "generated": "Only skim. Check these were made by a tool and not edited by hand.",
 }
 
 
@@ -130,7 +130,7 @@ def _chapters(ctx: dict, synthesis: dict | None, resolve: PathResolver, log: lis
         for cf in ch.get("files", []):
             p = resolve(cf.get("path"))
             if p is None:
-                log.append(f"chapter '{ch.get('title')}': dropped unknown path {cf.get('path')!r}")
+                log.append(f"chapter '{ch.get('title')}': removed {cf.get('path')!r}, which is not in this PR")
                 continue
             if p in seen:
                 continue
@@ -141,8 +141,8 @@ def _chapters(ctx: dict, synthesis: dict | None, resolve: PathResolver, log: lis
                              "goal": ch.get("goal", ""), "files": entries})
     missing = [p for p in ctx["order"] if p not in seen and not files[p]["generated"]]
     if missing:
-        log.append(f"{len(missing)} files were not placed by the synthesis; added to 'Other changes'")
-        chapters.append({"id": "other", "title": "Other changes", "goal": "Files the guide did not place in a chapter.",
+        log.append(f"{len(missing)} files were not put in any chapter; added them to 'Other changes'")
+        chapters.append({"id": "other", "title": "Other changes", "goal": "Files that were not put in any group above.",
                          "files": [{"path": p, "why_now": _WHY_NOW[files[p]["category"]]} for p in missing]})
     skim = [p for p in ctx["order"] if p not in seen and files[p]["generated"]]
     if skim:
@@ -158,9 +158,10 @@ def _deterministic_impact(ctx: dict, impact_data: dict | None) -> list[dict]:
         hot = [f for f in sensitive if any(k in f["path"] for k in (".github/workflows", ".claude", "CLAUDE.md", ".mcp.json"))]
         items.append({
             "kind": "sensitive", "severity": "high" if hot else "medium",
-            "title": f"Touches {len(sensitive)} security-sensitive path{'s' if len(sensitive) != 1 else ''}",
-            "detail": "Files under CI, agent config, auth/crypto/secrets, packaging or container paths deserve a "
-                      "closer read:\n\n" + "\n".join(f"- `{f['path']}` ({f['status']})" for f in sensitive[:25]),
+            "title": f"Changes {len(sensitive)} file{'s' if len(sensitive) != 1 else ''} that need{'' if len(sensitive) != 1 else 's'} extra care",
+            "detail": "These files control CI, agent settings, login, passwords and secrets, packaging or containers. "
+                      "A mistake here can affect security. Read them closely:\n\n"
+                      + "\n".join(f"- `{f['path']}` ({f['status']})" for f in sensitive[:25]),
             "refs": [{"path": f["path"], "line": None, "at": "head"} for f in sensitive[:25]],
         })
     if impact_data:
@@ -170,9 +171,10 @@ def _deterministic_impact(ctx: dict, impact_data: dict | None) -> list[dict]:
             refs = [{"path": r["path"], "line": r["line"], "at": "head"} for s in used[:20] for r in s["outside_refs"][:1]]
             items.append({
                 "kind": "callers", "severity": "medium" if len(used) > 5 else "low",
-                "title": f"{len(used)} changed symbol{'s are' if len(used) != 1 else ' is'} referenced outside this PR",
-                "detail": f"Found with {impact_data.get('engine', 'git grep')}. These call sites are not in the diff; "
-                          "check they still hold.\n\n| Symbol | Defined in | Outside refs |\n|---|---|---|\n" + rows,
+                "title": f"{len(used)} changed name{'s are' if len(used) != 1 else ' is'} used in files outside this PR",
+                "detail": f"Found with {impact_data.get('engine', 'git grep')}. Other files use code that this PR changed, "
+                          "but those files are not in the PR. Check that they still work.\n\n"
+                          "| Name | Defined in | Uses outside the PR |\n|---|---|---|\n" + rows,
                 "refs": refs,
             })
     return items
@@ -223,10 +225,10 @@ def build_analysis(pr_dir: Path) -> dict[str, Any]:
                                             "line": fixed["line"], "start_line": fixed["start_line"],
                                             "severity": fixed["severity"], "body": fixed["body"]})
                     else:
-                        log.append(f"{f['path']}: dropped suggestion at {s.get('side')} {s.get('line')} (outside the diff)")
+                        log.append(f"{f['path']}: removed a suggested comment on a line outside the diff ({s.get('side')} {s.get('line')})")
             if orphans:
-                log.append(f"{f['path']}: {len(orphans)} note(s) outside the diff folded into the summary")
-                entry["summary"] = (entry["summary"] or "") + "\n\n**Also:**\n" + "\n".join(f"- {t}" for t in orphans)
+                log.append(f"{f['path']}: moved {len(orphans)} note(s) that pointed outside the diff into the file summary")
+                entry["summary"] = (entry["summary"] or "") + "\n\n**More notes:**\n" + "\n".join(f"- {t}" for t in orphans)
             entry["notes"].sort(key=lambda n: (n["side"] != "RIGHT", n["start"]))
         files_out.append(entry)
 

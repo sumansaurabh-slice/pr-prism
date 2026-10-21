@@ -1,5 +1,6 @@
 import { useEffect, useMemo, useRef, useState } from "react";
 import { api, streamChat } from "../api";
+import { Avatar, IconSparkle, IconX } from "../icons";
 import { Markdown } from "../markdown";
 import { goFile, useRoute } from "../router";
 import { chipLabel, fileByPath, splitPath, useStore } from "../store";
@@ -14,19 +15,19 @@ interface Live {
 }
 
 const QUICK_PROMPTS: { label: string; prompt: string }[] = [
-  { label: "Explain this", prompt: "Explain what this code does and why it changed in this PR." },
+  { label: "Explain this", prompt: "Explain what this code does and why it changed in this PR. Use simple words." },
   {
     label: "What could break?",
     prompt:
-      "What could break because of this change? Consider callers outside the diff, edge cases, error handling and backwards compatibility. Cite file:line.",
+      "What could break because of this change? Check code outside the PR too, odd inputs, error cases and old users of this code. Point to file:line.",
   },
   {
-    label: "Trace the data flow",
-    prompt: "Trace how data flows through this change end to end, citing `path:line` for each hop.",
+    label: "Show the data flow",
+    prompt: "Show step by step how data moves through this change. Point to `path:line` for each step.",
   },
   {
-    label: "Draft a review comment",
-    prompt: "Draft a concise, constructive review comment for the selected code. Reply with only the comment body.",
+    label: "Write a review comment",
+    prompt: "Write a short, kind review comment for the selected code. Reply with only the comment text.",
   },
 ];
 
@@ -40,7 +41,7 @@ function ChipView({ chip, auto, onRemove }: { chip: ContextChip; auto?: boolean;
       <button
         className="chip-label"
         onClick={() => goFile(chip.path, chip.start || null, chip.side)}
-        title="Open in walkthrough"
+        title="Open this code"
       >
         {auto && <span className="chip-auto-tag">file</span>}
         {chip.label || chipLabel(chip)}
@@ -61,8 +62,8 @@ function ToolList({ tools, live }: { tools: ToolEvent[]; live?: boolean }) {
   return (
     <div className="tool-list">
       {!live && (
-        <button className="link-btn small" onClick={() => setOpen((v) => !v)}>
-          {open ? "▾" : "▸"} Claude used {tools.length} tool{tools.length > 1 ? "s" : ""}
+        <button className="btn-link small" onClick={() => setOpen((v) => !v)}>
+          {open ? "▾" : "▸"} Claude looked at the code {tools.length} time{tools.length > 1 ? "s" : ""}
         </button>
       )}
       {shown.map((t, i) => (
@@ -94,17 +95,21 @@ function MessageView({
   }
   return (
     <div className="msg msg-assistant">
+      <div className="msg-author">
+        <Avatar name="Claude" kind="claude" size={20} />
+        <strong>Claude</strong>
+      </div>
       <ToolList tools={m.tools} />
       {m.text && <Markdown text={m.text} />}
       {m.error && <div className="msg-error">{m.error}</div>}
       <div className="msg-actions">
         {m.text && (
           <>
-            <button className="link-btn small" onClick={() => onComment(m.text, prevUser?.context ?? [])}>
-              Turn into comment
+            <button className="btn-link small" onClick={() => onComment(m.text, prevUser?.context ?? [])}>
+              Use as review comment
             </button>
             <button
-              className="link-btn small"
+              className="btn-link small"
               onClick={() => {
                 navigator.clipboard?.writeText(m.text).then(
                   () => {
@@ -184,7 +189,7 @@ export function ChatPanel() {
         upsertThread(t);
         setActiveThread(t.id);
       } catch (e) {
-        toast("error", `Could not start a chat: ${(e as Error).message}`);
+        toast("error", `Could not start the chat: ${(e as Error).message}`);
         return;
       }
     }
@@ -233,7 +238,7 @@ export function ChatPanel() {
       );
     } catch (e) {
       if ((e as Error).name !== "AbortError") acc.error = (e as Error).message;
-      else acc.error = acc.error ?? "Stopped.";
+      else acc.error = acc.error ?? "You stopped this answer.";
     }
     const assistant: ChatMessage = {
       role: "assistant", text: acc.text, context: [], tools: acc.tools, cost_usd: cost, error: acc.error, ts: now(),
@@ -261,11 +266,11 @@ export function ChatPanel() {
         ? { path: selection.path, side: selection.side, start: selection.start, end: selection.end }
         : null);
     if (!anchor) {
-      toast("info", "Select lines in the diff first (click a line number), then try again.");
+      toast("info", "First pick the lines in the diff (click a line number). Then try again.");
       return;
     }
     if (!fileByPath(analysis, anchor.path)) {
-      toast("info", "That file isn't part of this PR, so it can't take a review comment.");
+      toast("info", "That file is not part of this PR, so you can't comment on it.");
       return;
     }
     const d = await addDraft({
@@ -278,7 +283,7 @@ export function ChatPanel() {
   if (!chatOpen) {
     return (
       <aside className="chat-collapsed">
-        <button className="chat-expand" onClick={() => setChatOpen(true)} title="Open chat (/)">
+        <button className="chat-expand" onClick={() => setChatOpen(true)} title="Open the chat (/)">
           <span className="vertical">Ask Claude</span>
         </button>
       </aside>
@@ -291,13 +296,16 @@ export function ChatPanel() {
   return (
     <aside className="pane chat-panel" aria-label="Chat with Claude">
       <div className="chat-head">
+        <span className="chat-title">
+          <IconSparkle /> Ask Claude
+        </span>
         <select
           className="input chat-thread-select"
           value={thread?.id ?? ""}
           onChange={(e) => setActiveThread(e.target.value)}
           disabled={!threads.length || busy}
         >
-          {!threads.length && <option value="">New conversation</option>}
+          {!threads.length && <option value="">New chat</option>}
           {threads.map((t) => (
             <option key={t.id} value={t.id}>
               {t.title || "Untitled"}
@@ -307,7 +315,7 @@ export function ChatPanel() {
         <button
           className="btn btn-sm"
           disabled={busy}
-          title="Start a new conversation"
+          title="Start a new chat"
           onClick={async () => {
             try {
               const t = await api.createThread();
@@ -322,9 +330,9 @@ export function ChatPanel() {
         </button>
         {thread && (
           <button
-            className="btn btn-ghost btn-sm"
+            className="btn btn-invisible btn-sm"
             disabled={busy}
-            title="Delete this conversation"
+            title="Delete this chat"
             onClick={async () => {
               try {
                 await api.deleteThread(thread.id);
@@ -338,8 +346,8 @@ export function ChatPanel() {
             Delete
           </button>
         )}
-        <button className="btn btn-ghost btn-icon" title="Collapse chat" onClick={() => setChatOpen(false)}>
-          »
+        <button className="btn-octicon" title="Hide the chat" onClick={() => setChatOpen(false)}>
+          <IconX />
         </button>
       </div>
 
@@ -354,12 +362,12 @@ export function ChatPanel() {
         {!messages.length && !live && (
           <div className="chat-empty">
             <p>
-              <strong>Ask Claude about this PR.</strong> It runs Claude Code inside the PR’s checkout, with read-only
-              access, so it can open files, grep the codebase and follow call paths.
+              <strong>Ask Claude anything about this PR.</strong> Claude can open and search the PR's code. It can only
+              read; it cannot change anything.
             </p>
-            <p className="dim">
-              The file you’re viewing is attached automatically. Click line numbers in the diff and press{" "}
-              <em>Ask Claude</em> to attach the exact lines.
+            <p className="color-muted">
+              The file you have open is added to your question for you. To ask about exact lines, click their line
+              numbers in the diff and press <em>Ask Claude</em>.
             </p>
           </div>
         )}
@@ -373,6 +381,10 @@ export function ChatPanel() {
         ))}
         {live && live.threadId === thread?.id && (
           <div className="msg msg-assistant live">
+            <div className="msg-author">
+              <Avatar name="Claude" kind="claude" size={20} />
+              <strong>Claude</strong>
+            </div>
             <ToolList tools={live.tools} live />
             {live.text ? <Markdown text={live.text} /> : null}
             {(live.thinking || (!live.text && !live.error)) && (
@@ -380,7 +392,7 @@ export function ChatPanel() {
                 <span className="dot" />
                 <span className="dot" />
                 <span className="dot" />
-                <span className="dim small">{live.tools.length ? "Investigating…" : "Thinking…"}</span>
+                <span className="color-muted small">{live.tools.length ? "Looking at the code…" : "Thinking…"}</span>
               </div>
             )}
             {live.error && <div className="msg-error">{live.error}</div>}
@@ -409,7 +421,7 @@ export function ChatPanel() {
             ref={inputRef}
             className="input chat-input"
             rows={2}
-            placeholder={busy ? "Claude is answering…" : "Ask about this PR…  (Enter to send, Shift+Enter for newline)"}
+            placeholder={busy ? "Claude is answering…" : "Ask a question about this PR (Enter to send, Shift+Enter for a new line)"}
             value={input}
             onChange={(e) => setChatInput(e.target.value)}
             onKeyDown={(e) => {
@@ -420,7 +432,7 @@ export function ChatPanel() {
             }}
           />
           {busy ? (
-            <button className="btn btn-danger" onClick={stop}>
+            <button className="btn btn-danger-outline" onClick={stop}>
               Stop
             </button>
           ) : (

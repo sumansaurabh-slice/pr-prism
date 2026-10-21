@@ -1,66 +1,86 @@
+import { IconMerged, IconPullRequest } from "../icons";
 import { fmtMinutes, totalMinutes, useStore } from "../store";
+import type { PRInfo } from "../types";
 
+const RISK_VARIANT: Record<string, string> = { high: "danger", medium: "attention", low: "success" };
+
+/** Risk as a GitHub-style label, e.g. "High risk". */
 export function RiskBadge({ risk, label }: { risk: string | null | undefined; label?: boolean }) {
   if (!risk) return null;
-  return <span className={`risk-badge risk-${risk}`}>{label === false ? risk : `risk: ${risk}`}</span>;
+  const text = label === false ? risk : `${risk[0].toUpperCase()}${risk.slice(1)} risk`;
+  return <span className={`Label Label--${RISK_VARIANT[risk] ?? "secondary"}`}>{text}</span>;
+}
+
+function StateLabel({ pr }: { pr: PRInfo }) {
+  if (pr.is_draft && pr.state === "OPEN") {
+    return (
+      <span className="State State--draft">
+        <IconPullRequest /> Draft
+      </span>
+    );
+  }
+  if (pr.state === "MERGED") {
+    return (
+      <span className="State State--merged">
+        <IconMerged /> Merged
+      </span>
+    );
+  }
+  if (pr.state === "CLOSED") {
+    return (
+      <span className="State State--closed">
+        <IconPullRequest /> Closed
+      </span>
+    );
+  }
+  return (
+    <span className="State State--open">
+      <IconPullRequest /> Open
+    </span>
+  );
 }
 
 export function Header() {
   const analysis = useStore((s) => s.analysis);
-  const state = useStore((s) => s.state);
+  const drafts = useStore((s) => s.state.drafts.length);
   const setDraftsOpen = useStore((s) => s.setDraftsOpen);
   const setSubmitOpen = useStore((s) => s.setSubmitOpen);
   const setHelpOpen = useStore((s) => s.setHelpOpen);
-  if (!analysis) return <header className="app-header" />;
+  if (!analysis) return <header className="gh-header" />;
   const { pr } = analysis;
-  const total = analysis.files.length;
-  const reviewed = analysis.files.filter((f) => f.path in state.reviewed).length;
-  const pct = total ? Math.round((reviewed / total) * 100) : 0;
-  const drafts = state.drafts.length;
+  const commits = pr.commits.length;
+  const verb = pr.state === "MERGED" ? "merged" : "wants to merge";
   return (
-    <header className="app-header">
-      <div className="hdr-title">
-        <a className="hdr-num" href={pr.url} target="_blank" rel="noreferrer noopener" title="Open on GitHub">
-          #{pr.number}
-        </a>
-        <div className="hdr-text">
-          <a className="hdr-pr-title" href={pr.url} target="_blank" rel="noreferrer noopener" title={pr.title}>
+    <header className="gh-header">
+      <div className="gh-header-row">
+        <h1 className="gh-title">
+          <a href={pr.url} target="_blank" rel="noreferrer noopener" title="Open on GitHub">
             {pr.title}
-          </a>
-          <div className="hdr-meta">
-            <span>@{pr.author}</span>
-            <span className="mono">
-              {pr.base_ref} ← {pr.head_ref}
-            </span>
-            <span>
-              <span className="add">+{pr.additions}</span> <span className="del">−{pr.deletions}</span> · {total} files
-            </span>
-            {pr.is_draft && <span className="pill">draft</span>}
-          </div>
+          </a>{" "}
+          <span className="gh-num">#{pr.number}</span>
+        </h1>
+        <div className="gh-actions">
+          <button className="btn btn-sm" title="Keyboard shortcuts (?)" onClick={() => setHelpOpen(true)}>
+            Shortcuts
+          </button>
+          <button className="btn btn-sm" onClick={() => setDraftsOpen(true)} title="Comments you have written but not sent yet">
+            Pending comments <span className="Counter">{drafts}</span>
+          </button>
+          <button className="btn btn-sm btn-primary" onClick={() => setSubmitOpen(true)}>
+            Submit review
+          </button>
         </div>
       </div>
-      <div className="hdr-right">
-        <RiskBadge risk={analysis.summary?.risk} />
-        <span className="hdr-minutes" title="Estimated review time">
-          {fmtMinutes(totalMinutes(analysis))}
+      <div className="gh-meta">
+        <StateLabel pr={pr} />
+        <span className="gh-meta-text">
+          <strong>{pr.author}</strong> {verb} {commits} commit{commits === 1 ? "" : "s"} into{" "}
+          <span className="branch-name">{pr.base_ref}</span> from <span className="branch-name">{pr.head_ref}</span>
         </span>
-        <div className="hdr-progress" title={`${reviewed} of ${total} files reviewed`}>
-          <span className="hdr-progress-label">
-            Reviewed {reviewed}/{total}
-          </span>
-          <span className="progress-track">
-            <span className="progress-fill" style={{ width: `${pct}%` }} />
-          </span>
-        </div>
-        <button className="btn" onClick={() => setDraftsOpen(true)}>
-          Drafts <span className="count">{drafts}</span>
-        </button>
-        <button className="btn btn-primary" onClick={() => setSubmitOpen(true)}>
-          Submit review
-        </button>
-        <button className="btn btn-icon" title="Keyboard shortcuts (?)" onClick={() => setHelpOpen(true)}>
-          ?
-        </button>
+        <RiskBadge risk={analysis.summary?.risk} />
+        <span className="gh-meta-muted" title="Rough time to review every file">
+          {fmtMinutes(totalMinutes(analysis))} to review
+        </span>
       </div>
     </header>
   );

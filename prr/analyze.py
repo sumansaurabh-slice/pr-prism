@@ -21,7 +21,7 @@ from .config import GUIDELINES_FILE, PROMPTS_DIR, Config
 from .models import AnnotateOut, SynthesisOut, llm_schema
 from .util import now_iso, read_json, write_json
 
-PROMPT_VERSION = "1"
+PROMPT_VERSION = "2"  # bump when prompts change: cached file notes are keyed on it
 MAX_BODY_CHARS = 8000
 MAX_FILE_MAP_LINES = 300
 
@@ -38,9 +38,15 @@ def guidelines() -> str:
     return re.sub(r"<!--.*?-->", "", text, flags=re.S).strip() or "(none)"
 
 
+def style_rules() -> str:
+    """Plain-language writing rules shared by every prompt (prompts/style.md)."""
+    return (PROMPTS_DIR / "style.md").read_text().strip()
+
+
 def _template(name: str, focus: str | None) -> str:
     text = (PROMPTS_DIR / name).read_text()
-    return (text.replace("{{FOCUS}}", focus or "(none given; do a balanced review)")
+    return (text.replace("{{STYLE}}", style_rules())
+                .replace("{{FOCUS}}", focus or "(none given; do a balanced review)")
                 .replace("{{GUIDELINES}}", guidelines()))
 
 
@@ -117,20 +123,20 @@ def synthesis_prompt(ctx: dict, analysis: dict, impact_data: dict, edges: list[d
         shown = ", ".join(generated[:40]) + (f", … +{len(generated) - 40}" if len(generated) > 40 else "")
         out.append(f"\nGenerated / vendored / lock files ({len(generated)}): {shown}\n")
     if edges:
-        out.append("\n## Calls and data hand-offs seen while annotating\n")
+        out.append("\n## Calls and data hand-offs found in the file notes\n")
         out += [f"- {e['source']} → {e['target']}" + (f" ({e['label']})" if e.get("label") else "") + "\n" for e in edges[:100]]
     syms = [s for s in impact_data.get("symbols", []) if s["count"] or s["too_common"]]
     if syms:
-        out.append(f"\n## References outside this PR (via {impact_data['engine']})\n")
+        out.append(f"\n## Code outside this PR that uses the changed names (found with {impact_data['engine']})\n")
         for s in syms[:30]:
             if s["too_common"]:
-                out.append(f"- `{s['symbol']}` (defined in {s['defined_in']}): name too common to trace\n")
+                out.append(f"- `{s['symbol']}` (defined in {s['defined_in']}): name too common to search for\n")
                 continue
             refs = ", ".join(f"{r['path']}:{r['line']}" for r in s["outside_refs"][:4])
-            out.append(f"- `{s['symbol']}` (defined in {s['defined_in']}): {s['count']} refs, e.g. {refs}\n")
+            out.append(f"- `{s['symbol']}` (defined in {s['defined_in']}): used in {s['count']} places, e.g. {refs}\n")
     sensitive = [f["path"] for f in ctx["files"] if f["sensitive"]]
     if sensitive:
-        out.append("\n## Security-sensitive paths touched\n" + "\n".join(f"- {p}" for p in sensitive[:40]) + "\n")
+        out.append("\n## Files that need extra care (security, CI, secrets, packaging)\n" + "\n".join(f"- {p}" for p in sensitive[:40]) + "\n")
     return "".join(out)
 
 
@@ -198,8 +204,8 @@ def _analyze(pr_dir: Path, ctx: dict, cfg: Config, focus: str | None, force: boo
     progress = Progress(pr_dir, focus, echo)
     skipped = sum(1 for f in ctx["files"] if f["generated"] or f["binary"])
     progress.update(
-        f"Annotating {len(ctx['files'])} files in {len(clusters)} batches "
-        f"({len(clusters) - len(pending)} cached, {skipped} generated/binary skipped)",
+        f"Reading {len(ctx['files'])} files in {len(clusters)} groups "
+        f"({len(clusters) - len(pending)} already done, {skipped} generated or binary files skipped)",
         status="annotating", clusters_total=len(clusters), clusters_done=len(clusters) - len(pending),
     )
     if force:
@@ -219,7 +225,7 @@ def _analyze(pr_dir: Path, ctx: dict, cfg: Config, focus: str | None, force: boo
                 break
             except (ClaudeError, ValueError) as e:
                 last_err = e
-                progress.update(f"Batch {idx}: attempt {attempt + 1} failed: {str(e)[:200]}")
+                progress.update(f"Group {idx}: try {attempt + 1} failed: {str(e)[:200]}")
         else:
             raise ClaudeError(str(last_err))
         resolve = merge.PathResolver(c.paths)
@@ -231,7 +237,7 @@ def _analyze(pr_dir: Path, ctx: dict, cfg: Config, focus: str | None, force: boo
         for it in c.items:
             a = anns.get(it.path)
             if a is None:
-                progress.update(f"Batch {idx}: no annotation returned for {it.path}")
+                progress.update(f"Group {idx}: Claude returned no notes for {it.path}")
                 continue
             a["path"] = it.path
             edges = [e for e in out["flow_edges"] if e["source"].startswith(it.path) or e["target"].startswith(it.path)]
@@ -247,15 +253,15 @@ def _analyze(pr_dir: Path, ctx: dict, cfg: Config, focus: str | None, force: boo
             c = futures[fut]
             try:
                 cost = fut.result()
-                progress.update(f"Batch {clusters.index(c) + 1}/{len(clusters)} done ({len(c.items)} files)",
+                progress.update(f"Group {clusters.index(c) + 1} of {len(clusters)} done ({len(c.items)} files)",
                                 clusters_done=progress.data["clusters_done"] + 1,
                                 cost_usd=round(progress.data["cost_usd"] + cost, 4))
             except Exception as e:  # noqa: BLE001 — one failed batch must not sink the review
-                progress.update(f"Batch {clusters.index(c) + 1} failed; its files stay unannotated: {str(e)[:200]}",
+                progress.update(f"Group {clusters.index(c) + 1} failed, so its files have no notes: {str(e)[:200]}",
                                 clusters_failed=progress.data["clusters_failed"] + 1)
 
     partial_view = merge.build_analysis(pr_dir)
-    progress.update("Tracing references to changed symbols outside the PR")
+    progress.update("Looking for other code that uses the changed names")
     symbols = {f["path"]: f["changed_symbols"] for f in partial_view["files"] if f["changed_symbols"]}
     impact_data = impact.compute(Path(ctx["repo_root"]), ctx["pr"]["head_sha"], set(files_ctx), symbols)
     write_json(pr_dir / "impact.json", impact_data)
@@ -270,19 +276,19 @@ def _analyze(pr_dir: Path, ctx: dict, cfg: Config, focus: str | None, force: boo
                     seen_edges.add((e["source"], e["target"]))
                     edges.append(e)
 
-    progress.update("Writing the review guide: why/how, review path, data flows, impact", status="synthesizing")
+    progress.update("Writing the summary, reading order, data flows and impact", status="synthesizing")
     prompt = synthesis_prompt(ctx, partial_view, impact_data, edges, focus)
     for attempt in range(cfg.analysis.retries + 1):
         try:
             raw, stats = run_structured(prompt, llm_schema(SynthesisOut), cwd=worktree, model=cfg.models.synthesize,
                                         timeout=cfg.analysis.synthesize_timeout_s, max_turns=30)
             write_json(pr_dir / "synthesis.json", SynthesisOut.model_validate(raw).model_dump(mode="json"))
-            progress.update("Review guide written", cost_usd=round(progress.data["cost_usd"] + (stats.cost_usd or 0), 4))
+            progress.update("Summary written", cost_usd=round(progress.data["cost_usd"] + (stats.cost_usd or 0), 4))
             break
         except (ClaudeError, ValueError) as e:
-            progress.update(f"Synthesis attempt {attempt + 1} failed: {str(e)[:200]}")
+            progress.update(f"Summary try {attempt + 1} failed: {str(e)[:200]}")
     else:
-        progress.update("Synthesis failed; showing per-file annotations with the default review order")
+        progress.update("Could not write the summary. Showing the file notes in the default order")
 
     all_failed = clusters and progress.data["clusters_failed"] == len(clusters)
     progress.update(f"Analysis {'failed' if all_failed else 'complete'} (≈${progress.data['cost_usd']:.2f})",

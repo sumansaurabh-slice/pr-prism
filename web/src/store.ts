@@ -117,7 +117,7 @@ export const useStore = create<Store>((set, get) => ({
     try {
       set({ state: await api.state() });
     } catch (e) {
-      get().toast("error", `Could not load review state: ${(e as Error).message}`);
+      get().toast("error", `Could not load your review progress: ${(e as Error).message}`);
     }
   },
   loadGithubComments: async () => {
@@ -148,11 +148,11 @@ export const useStore = create<Store>((set, get) => ({
       set((s) => ({ state: { ...s.state, drafts: [...s.state.drafts, draft] } }));
       get().toast(
         "success",
-        draft.anchored ? "Draft comment saved" : "Saved — this line isn't in the diff, so it goes in the review body",
+        draft.anchored ? "Comment added to your review" : "Comment added. Its line is not in the diff, so it will go in your review summary.",
       );
       return draft;
     } catch (e) {
-      get().toast("error", `Could not save comment: ${(e as Error).message}`);
+      get().toast("error", `Could not save the comment: ${(e as Error).message}`);
       return null;
     }
   },

@@ -1,4 +1,5 @@
 import { useState } from "react";
+import { Avatar, DiffStat, IconCheck, IconChevronDown, IconChevronRight } from "../icons";
 import { InlineText, Markdown, RefLink } from "../markdown";
 import { goFile } from "../router";
 import { fileMap, fmtMinutes, splitPath, totalMinutes, useStore } from "../store";
@@ -21,168 +22,211 @@ export function RefList({ refs }: { refs: Ref[] }) {
   );
 }
 
+function SidebarItem({ title, children }: { title: string; children: React.ReactNode }) {
+  return (
+    <div className="sidebar-item">
+      <div className="sidebar-title">{title}</div>
+      <div className="sidebar-body">{children}</div>
+    </div>
+  );
+}
+
 export function Overview() {
   const analysis = useStore((s) => s.analysis);
   const reviewed = useStore((s) => s.state.reviewed);
   const [showBody, setShowBody] = useState(false);
-  if (!analysis) return <div className="empty">Loading…</div>;
+  if (!analysis) return <div className="blankslate">Loading…</div>;
   const { pr, summary } = analysis;
   const files = fileMap(analysis);
   const pending = analysis.status !== "complete" && analysis.status !== "failed";
+  const viewed = analysis.files.filter((f) => f.path in reviewed).length;
 
   return (
     <div className="overview">
-      {analysis.focus && (
-        <div className="focus-box">
-          <span className="section-label">Your focus</span> {analysis.focus}
-        </div>
-      )}
-
-      {summary ? (
-        <>
-          <section className="ov-tldr">
-            <div className="ov-tldr-head">
-              <h2>TL;DR</h2>
-              <RiskBadge risk={summary.risk} />
+      <div className="overview-main">
+        {summary ? (
+          <section className="timeline-comment">
+            <div className="tc-head">
+              <Avatar name="Claude" kind="claude" size={24} />
+              <strong>Claude</strong>
+              <span className="color-muted">summarized this pull request</span>
+              <span className="tc-head-right">
+                <RiskBadge risk={summary.risk} />
+              </span>
             </div>
-            <Markdown text={summary.tldr} />
-          </section>
-          <div className="ov-grid">
-            <section className="ov-card">
-              <h3>Why this change</h3>
+            <div className="tc-body markdown-body">
+              <Markdown text={summary.tldr} />
+              <h3>Why this change was made</h3>
               <Markdown text={summary.why} />
-            </section>
-            <section className="ov-card">
               <h3>How it works</h3>
               <Markdown text={summary.how} />
-            </section>
+              {summary.risk_reasons.length > 0 && (
+                <>
+                  <h3>What could go wrong</h3>
+                  <ul>
+                    {summary.risk_reasons.map((r, i) => (
+                      <li key={i}>
+                        <Markdown text={r} className="inline-md" />
+                      </li>
+                    ))}
+                  </ul>
+                </>
+              )}
+            </div>
+          </section>
+        ) : (
+          <section className="timeline-comment">
+            <div className="tc-head">
+              <Avatar name="Claude" kind="claude" size={24} />
+              <strong>Claude</strong>
+              <span className="color-muted">{pending ? "is reading this pull request" : "could not write a summary"}</span>
+            </div>
+            <div className="tc-body">
+              <p className="color-muted">
+                {pending
+                  ? "You can already open the files and use the chat. The summary, data flows and impact will show up here when Claude is done."
+                  : "You can still read the files and use the chat."}
+              </p>
+            </div>
+          </section>
+        )}
+
+        <section className="Box">
+          <div className="Box-header">
+            <h3 className="Box-title">Reading order</h3>
+            <span className="color-muted">Read the groups from top to bottom. Each one builds on the ones before it.</span>
           </div>
-          {summary.risk_reasons.length > 0 && (
-            <section className="ov-card ov-risk">
-              <h3>
-                Risk <RiskBadge risk={summary.risk} label={false} />
-              </h3>
-              <ul>
-                {summary.risk_reasons.map((r, i) => (
-                  <li key={i}>
-                    <Markdown text={r} className="inline-md" />
-                  </li>
-                ))}
-              </ul>
-            </section>
-          )}
-        </>
-      ) : (
-        <section className="ov-card ov-pending">
-          <h3>{pending ? "Analysis in progress" : "No summary"}</h3>
-          <p className="dim">
-            {pending
-              ? "Claude is still reading the PR. The review path and diffs work now. The summary, data flows and impact appear here when the analysis finishes."
-              : "The analysis didn’t produce a summary. The diffs and the chat still work."}
-          </p>
-        </section>
-      )}
-
-      <section className="ov-stats">
-        <div className="stat">
-          <span className="stat-num">{analysis.files.length}</span>
-          <span className="stat-label">files</span>
-        </div>
-        <div className="stat">
-          <span className="stat-num add">+{pr.additions}</span>
-          <span className="stat-label">added</span>
-        </div>
-        <div className="stat">
-          <span className="stat-num del">−{pr.deletions}</span>
-          <span className="stat-label">deleted</span>
-        </div>
-        <div className="stat">
-          <span className="stat-num">{fmtMinutes(totalMinutes(analysis))}</span>
-          <span className="stat-label">est. review</span>
-        </div>
-        <div className="stat">
-          <span className="stat-num">{pr.commits.length}</span>
-          <span className="stat-label">commits</span>
-        </div>
-      </section>
-
-      <section>
-        <h3 className="section-title">Review roadmap</h3>
-        <div className="roadmap">
-          {analysis.chapters.map((ch, i) => {
-            const paths = ch.files.map((f) => f.path).filter((p) => files.has(p));
-            const done = paths.filter((p) => p in reviewed).length;
-            const mins = paths.reduce((a, p) => a + (files.get(p)?.minutes ?? 0), 0);
-            const firstOpen = paths.find((p) => !(p in reviewed)) ?? paths[0];
-            return (
-              <button
-                key={ch.id}
-                className={`roadmap-card${done === paths.length && paths.length ? " done" : ""}`}
-                onClick={() => firstOpen && goFile(firstOpen)}
-                disabled={!paths.length}
-              >
-                <span className="rm-num">{i + 1}</span>
-                <span className="rm-body">
-                  <span className="rm-title">
-                    <InlineText text={ch.title} />
-                  </span>
-                  {ch.goal && (
-                    <span className="rm-goal">
-                      <InlineText text={ch.goal} />
+          <ol className="plan-list">
+            {analysis.chapters.map((ch, i) => {
+              const paths = ch.files.map((f) => f.path).filter((p) => files.has(p));
+              const done = paths.filter((p) => p in reviewed).length;
+              const mins = paths.reduce((a, p) => a + (files.get(p)?.minutes ?? 0), 0);
+              const firstOpen = paths.find((p) => !(p in reviewed)) ?? paths[0];
+              const complete = done === paths.length && paths.length > 0;
+              return (
+                <li key={ch.id} className={`plan-row${complete ? " done" : ""}`}>
+                  <button className="plan-button" onClick={() => firstOpen && goFile(firstOpen)} disabled={!paths.length}>
+                    <span className="plan-num">{complete ? <IconCheck size={14} /> : i + 1}</span>
+                    <span className="plan-text">
+                      <span className="plan-title">
+                        <InlineText text={ch.title} />
+                      </span>
+                      {ch.goal && (
+                        <span className="plan-goal">
+                          <InlineText text={ch.goal} />
+                        </span>
+                      )}
                     </span>
-                  )}
-                  <span className="rm-meta">
-                    {paths.length} file{paths.length === 1 ? "" : "s"} · {fmtMinutes(mins)} · {done}/{paths.length} reviewed
-                  </span>
-                </span>
-              </button>
-            );
-          })}
-        </div>
-      </section>
-
-      {analysis.questions.length > 0 && (
-        <section className="ov-card">
-          <h3>Questions for the author</h3>
-          <ol className="questions">
-            {analysis.questions.map((q, i) => (
-              <li key={i}>
-                <Markdown text={q.text} className="inline-md" />
-                <RefList refs={q.refs} />
-              </li>
-            ))}
+                    <span className="plan-meta">
+                      {done}/{paths.length} viewed · {fmtMinutes(mins)}
+                    </span>
+                  </button>
+                </li>
+              );
+            })}
           </ol>
         </section>
-      )}
 
-      <section className="ov-card">
-        <h3>Commits</h3>
-        <ul className="commits">
-          {pr.commits.map((c) => (
-            <li key={c.sha}>
-              <code className="dim">{c.sha.slice(0, 7)}</code> {c.headline} <span className="dim">— {c.author}</span>
-            </li>
-          ))}
-        </ul>
-      </section>
+        {analysis.questions.length > 0 && (
+          <section className="Box">
+            <div className="Box-header">
+              <h3 className="Box-title">Questions to ask the author</h3>
+            </div>
+            <ol className="Box-body questions">
+              {analysis.questions.map((q, i) => (
+                <li key={i}>
+                  <Markdown text={q.text} className="inline-md" />
+                  <RefList refs={q.refs} />
+                </li>
+              ))}
+            </ol>
+          </section>
+        )}
 
-      <section className="ov-card">
-        <button className="link-btn" onClick={() => setShowBody((v) => !v)}>
-          {showBody ? "▾" : "▸"} PR description
-        </button>
-        {showBody && (pr.body.trim() ? <Markdown text={pr.body} /> : <p className="dim">No description.</p>)}
-      </section>
+        <section className="timeline-comment">
+          <button className="tc-head tc-head-button" onClick={() => setShowBody((v) => !v)} aria-expanded={showBody}>
+            <Avatar name={pr.author} size={24} />
+            <strong>{pr.author}</strong>
+            <span className="color-muted">wrote the PR description</span>
+            <span className="tc-head-right color-muted">
+              {showBody ? <IconChevronDown /> : <IconChevronRight />} {showBody ? "Hide" : "Show"}
+            </span>
+          </button>
+          {showBody && (
+            <div className="tc-body markdown-body">
+              {pr.body.trim() ? <Markdown text={pr.body} /> : <p className="color-muted">No description.</p>}
+            </div>
+          )}
+        </section>
 
-      {analysis.repair_log.length > 0 && (
-        <details className="repair-log">
-          <summary>Analysis repair log ({analysis.repair_log.length})</summary>
-          <ul>
-            {analysis.repair_log.map((l, i) => (
-              <li key={i}>{l}</li>
+        <section className="Box">
+          <div className="Box-header">
+            <h3 className="Box-title">Commits</h3>
+            <span className="Counter">{pr.commits.length}</span>
+          </div>
+          <ul className="commit-list">
+            {pr.commits.map((c) => (
+              <li key={c.sha} className="Box-row commit-row">
+                <span className="commit-title">{c.headline}</span>
+                <span className="color-muted">{c.author}</span>
+                <code className="commit-sha">{c.sha.slice(0, 7)}</code>
+              </li>
             ))}
           </ul>
-        </details>
-      )}
+        </section>
+
+        {analysis.repair_log.length > 0 && (
+          <details className="repair-log">
+            <summary>Small fixes made to Claude's output ({analysis.repair_log.length})</summary>
+            <ul>
+              {analysis.repair_log.map((l, i) => (
+                <li key={i}>{l}</li>
+              ))}
+            </ul>
+          </details>
+        )}
+      </div>
+
+      <aside className="overview-sidebar">
+        {analysis.focus && (
+          <SidebarItem title="Your focus">
+            <span>{analysis.focus}</span>
+          </SidebarItem>
+        )}
+        <SidebarItem title="Risk">
+          {summary ? <RiskBadge risk={summary.risk} /> : <span className="color-muted">Not known yet</span>}
+        </SidebarItem>
+        <SidebarItem title="Time to review">
+          <span>{fmtMinutes(totalMinutes(analysis))}</span>
+        </SidebarItem>
+        <SidebarItem title="Size">
+          <span>
+            {analysis.files.length} files · {pr.commits.length} commits
+          </span>
+          <DiffStat additions={pr.additions} deletions={pr.deletions} />
+        </SidebarItem>
+        <SidebarItem title="Your progress">
+          <span>
+            {viewed} of {analysis.files.length} files viewed
+          </span>
+          <span className="progress-track sidebar-progress">
+            <span className="progress-fill" style={{ width: `${analysis.files.length ? (viewed / analysis.files.length) * 100 : 0}%` }} />
+          </span>
+        </SidebarItem>
+        <SidebarItem title="Labels">
+          {pr.labels.length ? (
+            <span className="label-list">
+              {pr.labels.map((l) => (
+                <span key={l} className="IssueLabel">
+                  {l}
+                </span>
+              ))}
+            </span>
+          ) : (
+            <span className="color-muted">None yet</span>
+          )}
+        </SidebarItem>
+      </aside>
     </div>
   );
 }

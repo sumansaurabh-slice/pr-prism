@@ -26,6 +26,7 @@ from fastapi.responses import Response, StreamingResponse
 from pydantic import BaseModel
 
 from . import anchors, github, merge
+from .analyze import style_rules
 from .claude import ChatProcess, ClaudeError, run_structured, stream_chat
 from .config import PROMPTS_DIR, WEB_DIST, Config
 from .gitgh import git, viewer_login
@@ -197,16 +198,17 @@ def create_app(pr_dir: Path, cfg: Config) -> FastAPI:
         root = ctx()["repo_root"]
         values = {
             "HEAD_SHA": pr["head_sha"], "MERGE_BASE_SHA": pr["merge_base_sha"], "PR_DIR": str(pr_dir),
-            "EXTRA_TOOLS": (f", plus codegraph MCP tools (pass projectPath=\"{root}\"; its index reflects the reviewer's "
-                            "checkout, close to the base branch) for call paths and blast radius") if codegraph else "",
+            "EXTRA_TOOLS": (f", plus codegraph tools to find callers and what a change affects (pass "
+                            f"projectPath=\"{root}\"; its index matches the reviewer's own checkout, which is close to "
+                            "the base branch)") if codegraph else "",
             "PR_TITLE": pr["title"], "PR_URL": pr["url"], "PR_AUTHOR": pr["author"], "BASE_REF": pr["base_ref"],
             "HEAD_REF": pr["head_ref"], "ADDITIONS": str(pr["additions"]), "DELETIONS": str(pr["deletions"]),
             "CHANGED_FILES": str(pr["changed_files"]),
-            "TLDR": (analysis["summary"] or {}).get("tldr") or "(analysis still running)",
+            "TLDR": (analysis["summary"] or {}).get("tldr") or "(the analysis is still running)",
             "CHAPTERS": "\n".join(chapters[:200]) or "(not available yet)",
             "FOCUS": analysis["focus"] or "(none)",
         }
-        text = (PROMPTS_DIR / "chat_system.md").read_text()
+        text = (PROMPTS_DIR / "chat_system.md").read_text().replace("{{STYLE}}", style_rules())
         for k, v in values.items():
             text = text.replace("{{" + k + "}}", v)
         path = pr_dir / "chat_system.md"
@@ -391,9 +393,13 @@ def create_app(pr_dir: Path, cfg: Config) -> FastAPI:
         drafts = store.load()["drafts"]
         lines = [f"- {d['path']}:{d['line']} — {d['body'][:400]}" for d in drafts] or ["(no inline comments)"]
         prompt = (
-            "Write the overall body of a GitHub pull-request review, in the reviewer's voice, addressed to the author. "
-            "3-8 sentences or short bullets: overall assessment, the most important issues (referencing the inline comments "
-            "below rather than repeating them), and any questions. Collegial and specific; no greeting or sign-off.\n\n"
+            "Write the main text of a GitHub pull request review. Write it as the reviewer, talking to the PR author.\n"
+            "Use 3 to 6 short sentences or bullets:\n"
+            "- what you think of the PR overall;\n"
+            "- the most important problems (point to the inline comments below; do not copy them);\n"
+            "- any questions you have.\n"
+            "Be friendly and direct. No greeting and no sign-off.\n\n"
+            f"{style_rules()}\n\n"
             f"PR: {a['pr']['title']}\nSummary: {(a['summary'] or {}).get('tldr', '')}\n"
             f"Risk: {(a['summary'] or {}).get('risk', 'unknown')}\n\nMy inline comments:\n" + "\n".join(lines)
         )
