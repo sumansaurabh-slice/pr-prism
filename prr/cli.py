@@ -159,19 +159,19 @@ def cmd_analyze(args: argparse.Namespace, cfg: Config) -> int:
 def _print_summary(a: dict, d: Path) -> None:
     s = a["summary"] or {}
     info = read_json(d / "server.json") or {}
-    print("\n=== Review guide ready ===")
+    print("\n=== Review ready ===")
     print(f"PR #{a['pr']['number']}: {a['pr']['title']}")
     if s:
         print(f"Risk: {s['risk'].upper()}: " + "; ".join(s["risk_reasons"][:3]))
-        print(f"TL;DR: {s['tldr']}")
-    print("Review path:")
+        print(f"Summary: {s['tldr']}")
+    print("Reading order:")
     for i, ch in enumerate(a["chapters"], 1):
         mins = sum(next((f["minutes"] for f in a["files"] if f["path"] == cf["path"]), 0) for cf in ch["files"])
         print(f"  {i}. {ch['title']} ({len(ch['files'])} files, ~{mins:.0f} min)")
     sugg = len(a["suggestions"])
-    print(f"Claude drafted {sugg} suggested comment{'s' if sugg != 1 else ''}; nothing is posted until you submit.")
+    print(f"Claude wrote {sugg} suggested comment{'s' if sugg != 1 else ''}. Nothing is posted until you submit.")
     if a["repair_log"]:
-        print(f"({len(a['repair_log'])} notes about repaired or skipped output: see repair_log in analysis.json)")
+        print(f"({len(a['repair_log'])} small fixes were made to Claude's output: see repair_log in analysis.json)")
     if info.get("url"):
         print(f"Open: {info['url']}")
 

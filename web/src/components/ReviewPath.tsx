@@ -1,55 +1,62 @@
 import { useEffect, useMemo, useRef, useState } from "react";
+import { IconCheck, IconChevronDown, IconChevronRight, IconSearch, StatusIcon } from "../icons";
 import { InlineText } from "../markdown";
 import { fileHref, useRoute } from "../router";
 import { fileMap, isStaleReview, readLS, splitPath, useStore, writeLS } from "../store";
-import type { ChapterFile, FileEntry, FileStatus } from "../types";
+import type { ChapterFile, FileEntry } from "../types";
 
-const STATUS_LETTER: Record<FileStatus, string> = { added: "A", modified: "M", deleted: "D", renamed: "R", copied: "C" };
+const RISK_TEXT = { high: "High risk", medium: "Medium risk", low: "Low risk" } as const;
 
 function FileRow({ file, why, active }: { file: FileEntry; why: string; active: boolean }) {
   const reviewedMap = useStore((s) => s.state.reviewed);
-  const setReviewed = useStore((s) => s.setReviewed);
   const drafts = useStore((s) => s.state.drafts.filter((d) => d.path === file.path).length);
-  const ref = useRef<HTMLDivElement>(null);
-  const reviewed = file.path in reviewedMap;
+  const ref = useRef<HTMLAnchorElement>(null);
+  const viewed = file.path in reviewedMap;
   const stale = isStaleReview(reviewedMap, file);
   const { dir, base } = splitPath(file.path);
   useEffect(() => {
     if (active) ref.current?.scrollIntoView({ block: "nearest" });
   }, [active]);
   return (
-    <div ref={ref} className={`rp-row${active ? " active" : ""}${reviewed && !stale ? " done" : ""}`}>
-      <input
-        type="checkbox"
-        className="rp-check"
-        checked={reviewed}
-        title={reviewed ? "Mark as not reviewed" : "Mark as reviewed (r)"}
-        onChange={(e) => void setReviewed(file.path, e.target.checked)}
-      />
-      <a className="rp-link" href={fileHref(file.path)} title={file.path}>
-        <span className="rp-line1">
-          <span className={`status-letter st-${file.status}`}>{STATUS_LETTER[file.status]}</span>
-          <span className="rp-name">
-            <span className="rp-dir">{dir}</span>
-            <span className="rp-base">{base}</span>
-          </span>
-          {file.risk && <span className={`risk-dot risk-${file.risk}`} title={`risk: ${file.risk}`} />}
-        </span>
-        <span className="rp-line2">
-          <span className="add">+{file.additions}</span>
-          <span className="del">−{file.deletions}</span>
-          {file.sensitive && <span className="tag tag-warn">sensitive</span>}
-          {stale && <span className="tag tag-warn" title="The file changed after you marked it reviewed">changed since review</span>}
-          {drafts > 0 && <span className="tag">{drafts} draft{drafts > 1 ? "s" : ""}</span>}
-          {!file.annotated && !file.generated && <span className="tag tag-dim">not annotated</span>}
-        </span>
-        {active && why && (
-          <span className="rp-why">
-            <InlineText text={why} />
+    <a
+      ref={ref}
+      href={fileHref(file.path)}
+      title={file.path}
+      className={`tree-item${active ? " active" : ""}${viewed && !stale ? " viewed" : ""}`}
+      aria-current={active ? "page" : undefined}
+    >
+      <span className="tree-line1">
+        <StatusIcon status={file.status} />
+        <span className="tree-name">{base}</span>
+        {file.risk && <span className={`risk-dot risk-${file.risk}`} title={RISK_TEXT[file.risk]} />}
+        {viewed && !stale && (
+          <span className="tree-viewed" title="Viewed">
+            <IconCheck size={14} />
           </span>
         )}
-      </a>
-    </div>
+      </span>
+      {(dir || drafts > 0 || stale || file.sensitive) && (
+        <span className="tree-line2">
+          {dir && <span className="tree-dir">{dir.replace(/\/$/, "")}</span>}
+          {file.sensitive && <span className="Label Label--attention Label--small">needs care</span>}
+          {stale && (
+            <span className="Label Label--attention Label--small" title="This file changed after you marked it viewed">
+              changed
+            </span>
+          )}
+          {drafts > 0 && (
+            <span className="Label Label--accent Label--small">
+              {drafts} pending
+            </span>
+          )}
+        </span>
+      )}
+      {active && why && (
+        <span className="tree-why">
+          <InlineText text={why} />
+        </span>
+      )}
+    </a>
   );
 }
 
@@ -58,7 +65,8 @@ export function ReviewPath() {
   const reviewedMap = useStore((s) => s.state.reviewed);
   const route = useRoute();
   const [filter, setFilter] = useState("");
-  const [hideReviewed, setHideReviewed] = useState(() => readLS("prr.hideReviewed") === "1");
+  const [hideViewed, setHideViewed] = useState(() => readLS("prr.hideReviewed") === "1");
+  const [closed, setClosed] = useState<Record<string, boolean>>({});
   const [openSkim, setOpenSkim] = useState<Record<string, boolean>>({});
   const activePath = route.view === "file" ? route.path : null;
 
@@ -87,68 +95,85 @@ export function ReviewPath() {
   const needle = filter.trim().toLowerCase();
   const visible = (f: FileEntry) =>
     (!needle || f.path.toLowerCase().includes(needle)) &&
-    (!hideReviewed || !(f.path in reviewedMap) || isStaleReview(reviewedMap, f) || f.path === activePath);
+    (!hideViewed || !(f.path in reviewedMap) || isStaleReview(reviewedMap, f) || f.path === activePath);
 
   return (
-    <nav className="pane review-path" aria-label="Review path">
-      <div className="rp-tools">
-        <input
-          className="input rp-filter"
-          placeholder="Filter files…"
-          value={filter}
-          onChange={(e) => setFilter(e.target.value)}
-        />
-        <label className="rp-toggle" title="Hide files you've marked reviewed">
+    <nav className="pane review-path" aria-label="Files in reading order">
+      <div className="tree-tools">
+        <div className="tree-heading">Reading order</div>
+        <label className="input-with-icon">
+          <IconSearch />
+          <input
+            className="input input-sm"
+            placeholder="Filter changed files"
+            value={filter}
+            onChange={(e) => setFilter(e.target.value)}
+          />
+        </label>
+        <label className="tree-toggle" title="Hide files you have marked as viewed">
           <input
             type="checkbox"
-            checked={hideReviewed}
+            checked={hideViewed}
             onChange={(e) => {
-              setHideReviewed(e.target.checked);
+              setHideViewed(e.target.checked);
               writeLS("prr.hideReviewed", e.target.checked ? "1" : "0");
             }}
           />
-          Hide reviewed
+          Hide viewed files
         </label>
       </div>
-      <div className="rp-scroll">
+      <div className="tree-scroll">
         {chapters.map(({ ch, entries }, i) => {
           const main = entries.filter((e) => !e.file.generated && visible(e.file));
           const skim = entries.filter((e) => e.file.generated && visible(e.file));
           if (!main.length && !skim.length) return null;
           const done = entries.filter((e) => e.file.path in reviewedMap).length;
+          const hasActive = entries.some((e) => e.file.path === activePath);
+          const isClosed = !!closed[ch.id] && !hasActive && !needle;
           const skimOpen = openSkim[ch.id] || skim.some((e) => e.file.path === activePath) || !!needle;
           return (
-            <section key={ch.id} className="rp-chapter">
-              <header className="rp-ch-head" title={ch.goal}>
-                <span className="rp-ch-num">{i + 1}</span>
-                <span className="rp-ch-title">
+            <section key={ch.id} className="tree-group">
+              <button
+                className="tree-group-head"
+                title={ch.goal}
+                aria-expanded={!isClosed}
+                onClick={() => setClosed((c) => ({ ...c, [ch.id]: !isClosed }))}
+              >
+                {isClosed ? <IconChevronRight size={12} /> : <IconChevronDown size={12} />}
+                <span className="tree-group-num">{i + 1}</span>
+                <span className="tree-group-title">
                   <InlineText text={ch.title} />
                 </span>
-                <span className="rp-ch-count">
+                <span className={`tree-group-count${done === entries.length ? " done" : ""}`}>
                   {done}/{entries.length}
                 </span>
-              </header>
-              {ch.goal && (
-                <p className="rp-ch-goal">
-                  <InlineText text={ch.goal} />
-                </p>
-              )}
-              {main.map(({ cf, file }) => (
-                <FileRow key={file.path} file={file} why={cf.why_now} active={file.path === activePath} />
-              ))}
-              {skim.length > 0 && (
-                <div className="rp-skim">
-                  <button
-                    className="rp-skim-toggle"
-                    onClick={() => setOpenSkim((s) => ({ ...s, [ch.id]: !skimOpen }))}
-                  >
-                    {skimOpen ? "▾" : "▸"} Skim: {skim.length} generated / vendored file{skim.length > 1 ? "s" : ""}
-                  </button>
-                  {skimOpen &&
-                    skim.map(({ cf, file }) => (
-                      <FileRow key={file.path} file={file} why={cf.why_now} active={file.path === activePath} />
-                    ))}
-                </div>
+              </button>
+              {!isClosed && (
+                <>
+                  {ch.goal && (
+                    <p className="tree-group-goal">
+                      <InlineText text={ch.goal} />
+                    </p>
+                  )}
+                  {main.map(({ cf, file }) => (
+                    <FileRow key={file.path} file={file} why={cf.why_now} active={file.path === activePath} />
+                  ))}
+                  {skim.length > 0 && (
+                    <div className="tree-skim">
+                      <button
+                        className="tree-skim-toggle"
+                        onClick={() => setOpenSkim((s) => ({ ...s, [ch.id]: !skimOpen }))}
+                      >
+                        {skimOpen ? <IconChevronDown size={12} /> : <IconChevronRight size={12} />}
+                        {skim.length} generated or lock file{skim.length > 1 ? "s" : ""} (skim)
+                      </button>
+                      {skimOpen &&
+                        skim.map(({ cf, file }) => (
+                          <FileRow key={file.path} file={file} why={cf.why_now} active={file.path === activePath} />
+                        ))}
+                    </div>
+                  )}
+                </>
               )}
             </section>
           );

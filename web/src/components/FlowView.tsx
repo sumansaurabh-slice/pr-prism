@@ -14,7 +14,7 @@ const NODE_W = 210;
 const NODE_H = 64;
 
 const KIND_LABEL: Record<FlowNodeKind, string> = {
-  entry: "entry point", logic: "logic", store: "data store", external: "external", test: "test",
+  entry: "where it starts", logic: "logic", store: "saved data", external: "other service", test: "test",
 };
 
 type Dir = "LR" | "TB";
@@ -139,24 +139,24 @@ export function FlowView({ id }: { id: string | null }) {
   const flow = flows.find((f) => f.id === id) ?? flows[0];
   const changed = useMemo(() => new Set(fileMap(analysis).keys()), [analysis]);
 
-  if (!analysis) return <div className="empty">Loading…</div>;
+  if (!analysis) return <div className="blankslate">Loading…</div>;
   if (!flow) {
     const pending = analysis.status !== "complete" && analysis.status !== "failed";
     return (
-      <div className="empty">
-        {pending ? "Data-flow diagrams appear when Claude finishes analyzing the PR." : "No data flows were identified for this PR."}
+      <div className="blankslate">
+        {pending ? "The data flow diagrams will show up when Claude has finished reading the PR." : "Claude did not find a data flow to draw for this PR."}
       </div>
     );
   }
   return (
     <div className="flow-view">
       {flows.length > 1 && (
-        <div className="flow-tabs" role="tablist">
+        <div className="flow-tabs segmented" role="tablist">
           {flows.map((f) => (
             <button
               key={f.id}
               role="tab"
-              className={`tab${f.id === flow.id ? " active" : ""}`}
+              className={f.id === flow.id ? "on" : ""}
               onClick={() => navigate(`#/flow/${encodeURIComponent(f.id)}`)}
             >
               {f.title}
@@ -179,7 +179,7 @@ export function FlowView({ id }: { id: string | null }) {
               </span>
             ))}
           </div>
-          <p className="dim small">Click a node to open its code. Thick borders mark code changed in this PR.</p>
+          <p className="color-muted small">Click a box to open its code. A thick border means this PR changed that code.</p>
         </aside>
       </div>
     </div>

@@ -1,13 +1,14 @@
 import { useEffect, useRef, useState } from "react";
 import { api } from "../api";
+import { IconX } from "../icons";
 import { useStore } from "../store";
 import type { ReviewEvent, ReviewPreview } from "../types";
 
 const EVENTS: { value: ReviewEvent; label: string; hint: string }[] = [
-  { value: "COMMENT", label: "Comment", hint: "General feedback without explicit approval." },
-  { value: "APPROVE", label: "Approve", hint: "Approve merging these changes." },
-  { value: "REQUEST_CHANGES", label: "Request changes", hint: "Feedback that must be addressed before merging." },
-  { value: "PENDING", label: "Save as pending on GitHub", hint: "Creates a pending review only you can see. Finish it on github.com." },
+  { value: "COMMENT", label: "Comment", hint: "Share feedback without approving." },
+  { value: "APPROVE", label: "Approve", hint: "Say the PR is good to merge." },
+  { value: "REQUEST_CHANGES", label: "Request changes", hint: "Ask for changes before it can be merged." },
+  { value: "PENDING", label: "Save on GitHub, don't send yet", hint: "Only you can see it. Finish it later on github.com." },
 ];
 
 export function SubmitModal() {
@@ -63,7 +64,7 @@ export function SubmitModal() {
       setDone({ html_url: res.html_url });
       setBody("");
       await loadState();
-      toast("success", event === "PENDING" ? "Pending review saved on GitHub" : "Review submitted");
+      toast("success", event === "PENDING" ? "Review saved on GitHub (not sent yet)" : "Review sent");
     } catch (e) {
       setSubmitError((e as Error).message);
     } finally {
@@ -73,18 +74,18 @@ export function SubmitModal() {
 
   return (
     <div className="overlay overlay-center" onClick={close}>
-      <div className="modal" role="dialog" aria-modal="true" aria-label="Submit review" onClick={(e) => e.stopPropagation()}>
+      <div className="modal" role="dialog" aria-modal="true" aria-label="Finish your review" onClick={(e) => e.stopPropagation()}>
         <header className="modal-head">
-          <h2>{done ? "Review published" : "Submit review"}</h2>
-          <button className="btn btn-ghost btn-icon" onClick={close} aria-label="Close">
-            ×
+          <h2>{done ? "Review sent" : "Finish your review"}</h2>
+          <button className="btn-octicon" onClick={close} aria-label="Close">
+            <IconX />
           </button>
         </header>
 
         {done ? (
           <div className="modal-body">
             <p>
-              {event === "PENDING" ? "Your pending review is on GitHub. Open it there to finish." : "Your review is on GitHub."}
+              {event === "PENDING" ? "Your review is saved on GitHub but not sent. Open it there to finish it." : "Your review is now on GitHub."}
             </p>
             <a className="btn btn-primary" href={done.html_url} target="_blank" rel="noreferrer noopener">
               Open on GitHub ↗
@@ -96,7 +97,7 @@ export function SubmitModal() {
               <div className="field">
                 <div className="field-row">
                   <label htmlFor="review-body" className="field-label">
-                    Review summary
+                    Summary
                   </label>
                   <button
                     className="btn btn-sm"
@@ -107,13 +108,13 @@ export function SubmitModal() {
                         const r = await api.draftSummary();
                         setBody(r.body);
                       } catch (e) {
-                        toast("error", `Claude couldn't draft it: ${(e as Error).message}`);
+                        toast("error", `Claude could not write it: ${(e as Error).message}`);
                       } finally {
                         setDrafting(false);
                       }
                     }}
                   >
-                    {drafting ? "Claude is drafting…" : "Ask Claude to draft"}
+                    {drafting ? "Claude is writing…" : "Ask Claude to write it"}
                   </button>
                 </div>
                 <textarea
@@ -121,7 +122,7 @@ export function SubmitModal() {
                   className="input"
                   rows={6}
                   value={body}
-                  placeholder="Overall feedback (Markdown). Optional when you have inline comments."
+                  placeholder="Leave a comment (optional if you have line comments)"
                   onChange={(e) => setBody(e.target.value)}
                 />
               </div>
@@ -142,7 +143,7 @@ export function SubmitModal() {
                       <span>
                         <span className="event-label">{ev.label}</span>
                         <span className="event-hint">
-                          {blocked ? "Not allowed on your own PR." : ev.hint}
+                          {blocked ? "You can't do this on your own PR." : ev.hint}
                         </span>
                       </span>
                     </label>
@@ -150,18 +151,18 @@ export function SubmitModal() {
                 })}
               </fieldset>
 
-              {previewError && <div className="banner banner-error">Preview failed: {previewError}</div>}
+              {previewError && <div className="flash flash-error">Could not check the review: {previewError}</div>}
               {preview && (
                 <div className="preview">
                   <p>
-                    <strong>{preview.inline_count}</strong> inline comment{preview.inline_count === 1 ? "" : "s"}
+                    <strong>{preview.inline_count}</strong> comment{preview.inline_count === 1 ? "" : "s"} on lines
                     {preview.unanchored.length > 0 && (
                       <>
-                        {" "}
-                        + <strong>{preview.unanchored.length}</strong> folded into the body as permalinks
+                        , and <strong>{preview.unanchored.length}</strong> more added to the summary as links (their lines
+                        are not in the diff)
                       </>
-                    )}{" "}
-                    · as <strong>@{preview.viewer}</strong>
+                    )}
+                    . Posting as <strong>@{preview.viewer}</strong>.
                   </p>
                   {preview.unanchored.length > 0 && (
                     <ul className="unanchored">
@@ -174,43 +175,43 @@ export function SubmitModal() {
                     </ul>
                   )}
                   {preview.head_changed && (
-                    <div className="banner banner-warn">
+                    <div className="flash flash-warn">
                       <p>
-                        The PR has new commits since the analysis (
+                        The PR got new commits after Claude read it (
                         <code>{preview.analyzed_head.slice(0, 7)}</code> → <code>{preview.current_head.slice(0, 7)}</code>).
-                        Comments on lines that changed may show as outdated. Re-run <code>/pr-review</code> to refresh and
-                        remap your drafts.
+                        Comments on lines that changed may show as outdated. Run <code>/pr-review</code> again to update
+                        the review and move your comments to the right lines.
                       </p>
                       <label>
-                        <input type="radio" checked={commit === "analyzed"} onChange={() => setCommit("analyzed")} /> Comment
-                        on the analyzed commit
+                        <input type="radio" checked={commit === "analyzed"} onChange={() => setCommit("analyzed")} /> Post
+                        on the commit Claude read
                       </label>
                       <label>
-                        <input type="radio" checked={commit === "current"} onChange={() => setCommit("current")} /> Comment
-                        on the latest commit
+                        <input type="radio" checked={commit === "current"} onChange={() => setCommit("current")} /> Post on
+                        the newest commit
                       </label>
                     </div>
                   )}
-                  <button className="link-btn small" onClick={() => setShowPayload((v) => !v)}>
-                    {showPayload ? "▾" : "▸"} Exact payload sent to GitHub
+                  <button className="btn-link small" onClick={() => setShowPayload((v) => !v)}>
+                    {showPayload ? "▾" : "▸"} Show exactly what will be sent to GitHub
                   </button>
                   {showPayload && <pre className="payload">{JSON.stringify(preview.payload, null, 2)}</pre>}
                 </div>
               )}
-              {submitError && <div className="banner banner-error">{submitError}</div>}
+              {submitError && <div className="flash flash-error">{submitError}</div>}
             </div>
             <footer className="modal-foot">
-              <span className="dim small">Nothing is posted until you confirm.</span>
+              <span className="color-muted small">Nothing is sent until you press the green button.</span>
               <button className="btn" onClick={close}>
                 Cancel
               </button>
               <button
                 className="btn btn-primary"
                 disabled={submitting || empty || !preview}
-                title={empty ? "Add a summary or at least one comment" : undefined}
+                title={empty ? "Write a summary or add at least one comment first" : undefined}
                 onClick={() => void submit()}
               >
-                {submitting ? "Publishing…" : event === "PENDING" ? "Save pending review" : "Publish review"}
+                {submitting ? "Sending…" : event === "PENDING" ? "Save on GitHub" : "Submit review"}
               </button>
             </footer>
           </>

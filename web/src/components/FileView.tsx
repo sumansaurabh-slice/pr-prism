@@ -18,6 +18,7 @@ import { Markdown } from "../markdown";
 import { goFile, navigate, fileHref, useNavTick } from "../router";
 import { fileByPath, fmtMinutes, isStaleReview, readLS, splitPath, useStore, writeLS, type Selection } from "../store";
 import type { Draft, ExistingComment, FileEntry, Note, Side, Suggestion } from "../types";
+import { Avatar, DiffStat, StatusIcon } from "../icons";
 import { RiskBadge } from "./Header";
 
 for (const lang of [jsx, tsx, toml, protobuf, graphql, hcl, docker]) refractor.register(lang);
@@ -116,28 +117,46 @@ function rangeLabel(start: number, end: number) {
 function flash(el: Element | null) {
   if (!el) return;
   el.scrollIntoView({ block: "center", behavior: "smooth" });
-  el.classList.remove("flash");
+  el.classList.remove("line-flash");
   void (el as HTMLElement).offsetWidth;
-  el.classList.add("flash");
+  el.classList.add("line-flash");
 }
 
 // ------------------------------------------------------------------ widget cards
 
 const NOTE_LABEL: Record<Note["kind"], string> = {
-  explain: "Explains", risk: "Risk", flow: "Data flow", "test-gap": "Test gap",
+  explain: "Explains", risk: "Possible problem", flow: "Data flow", "test-gap": "Missing test",
 };
+const NOTE_VARIANT: Record<Note["kind"], string> = {
+  explain: "accent", risk: "danger", flow: "done", "test-gap": "attention",
+};
+export const SEVERITY_TEXT: Record<Suggestion["severity"], string> = {
+  blocker: "Must fix", major: "Should fix", minor: "Could fix", nit: "Small thing",
+};
+const SEVERITY_VARIANT: Record<Suggestion["severity"], string> = {
+  blocker: "danger", major: "severe", minor: "attention", nit: "secondary",
+};
+
+export function SeverityLabel({ severity }: { severity: Suggestion["severity"] }) {
+  return <span className={`Label Label--${SEVERITY_VARIANT[severity]}`}>{SEVERITY_TEXT[severity]}</span>;
+}
+
+function lineText(side: Side, start: number, end: number) {
+  return `${side === "LEFT" ? "old " : ""}${rangeLabel(start, end)}`;
+}
 
 function NoteCard({ note, index }: { note: Note; index: number }) {
   return (
-    <div className={`card note note-${note.kind}`} id={`note-${index}`} data-note-index={index}>
-      <div className="card-head">
-        <span className="note-kind">{NOTE_LABEL[note.kind]}</span>
-        <span className="card-sub">
-          Claude · {note.side === "LEFT" ? "old " : ""}
-          {rangeLabel(note.start, note.end)}
-        </span>
+    <div className={`review-comment note note-${note.kind}`} id={`note-${index}`} data-note-index={index}>
+      <div className="rc-head">
+        <Avatar name="Claude" kind="claude" />
+        <strong>Claude</strong>
+        <span className={`Label Label--${NOTE_VARIANT[note.kind]}`}>{NOTE_LABEL[note.kind]}</span>
+        <span className="rc-meta">{lineText(note.side, note.start, note.end)}</span>
       </div>
-      <Markdown text={note.text} />
+      <div className="rc-body">
+        <Markdown text={note.text} />
+      </div>
     </div>
   );
 }
@@ -153,38 +172,41 @@ function SuggestionCard({ s }: { s: Suggestion }) {
       source: "suggestion", suggestion_id: s.id,
     });
   return (
-    <div className={`card suggestion sev-${s.severity}`}>
-      <div className="card-head">
-        <span className={`sev-badge sev-${s.severity}`}>{s.severity}</span>
-        <span className="card-sub">
-          Suggested comment · {s.start_line ? rangeLabel(s.start_line, s.line) : rangeLabel(s.line, s.line)}
-        </span>
+    <div className="review-comment suggestion">
+      <div className="rc-head">
+        <Avatar name="Claude" kind="claude" />
+        <strong>Claude</strong>
+        <span className="rc-meta">suggests a comment</span>
+        <SeverityLabel severity={s.severity} />
+        <span className="rc-meta">{lineText(s.side, s.start_line ?? s.line, s.line)}</span>
       </div>
-      {editing ? (
-        <textarea className="input comment-input" value={body} autoFocus onChange={(e) => setBody(e.target.value)} rows={5} />
-      ) : (
-        <Markdown text={s.body} />
-      )}
-      <div className="card-actions">
+      <div className="rc-body">
+        {editing ? (
+          <textarea className="input comment-input" value={body} autoFocus onChange={(e) => setBody(e.target.value)} rows={5} />
+        ) : (
+          <Markdown text={s.body} />
+        )}
+      </div>
+      <div className="rc-actions">
         {editing ? (
           <>
-            <button className="btn btn-primary btn-sm" disabled={!body.trim()} onClick={() => accept(body)}>
-              Save as draft
-            </button>
             <button className="btn btn-sm" onClick={() => setEditing(false)}>
               Cancel
+            </button>
+            <button className="btn btn-primary btn-sm" disabled={!body.trim()} onClick={() => accept(body)}>
+              Add to my review
             </button>
           </>
         ) : (
           <>
-            <button className="btn btn-primary btn-sm" onClick={() => accept(s.body)}>
-              Accept
+            <button className="btn btn-invisible btn-sm" onClick={() => void dismiss(s.id)} title="Hide this suggestion">
+              Dismiss
             </button>
             <button className="btn btn-sm" onClick={() => setEditing(true)}>
-              Edit & accept
+              Edit first
             </button>
-            <button className="btn btn-ghost btn-sm" onClick={() => void dismiss(s.id)}>
-              Dismiss
+            <button className="btn btn-primary btn-sm" onClick={() => accept(s.body)}>
+              Add to my review
             </button>
           </>
         )}
@@ -193,6 +215,10 @@ function SuggestionCard({ s }: { s: Suggestion }) {
   );
 }
 
+const SOURCE_TEXT: Record<Draft["source"], string> = {
+  user: "", suggestion: "from Claude's suggestion", chat: "from the chat",
+};
+
 export function DraftCard({ d, compact }: { d: Draft; compact?: boolean }) {
   const updateDraft = useStore((s) => s.updateDraft);
   const deleteDraft = useStore((s) => s.deleteDraft);
@@ -200,30 +226,46 @@ export function DraftCard({ d, compact }: { d: Draft; compact?: boolean }) {
   const [body, setBody] = useState(d.body);
   useEffect(() => setBody(d.body), [d.body]);
   return (
-    <div className={`card draft${d.outdated ? " outdated" : ""}`}>
-      <div className="card-head">
-        <span className="draft-label">Your draft</span>
-        <span className="card-sub">
-          {d.side === "LEFT" ? "old " : ""}
-          {d.start_line ? rangeLabel(d.start_line, d.line) : rangeLabel(d.line, d.line)}
-          {d.source !== "user" && ` · from ${d.source}`}
+    <div className={`review-comment draft${d.outdated ? " outdated" : ""}`}>
+      <div className="rc-head">
+        <Avatar name="You" kind="you" />
+        <strong>You</strong>
+        <span className="Label Label--attention" title="Not sent to GitHub yet">
+          Pending
         </span>
-        {!d.anchored && <span className="tag tag-warn" title="This line isn't part of the diff">goes in review body</span>}
-        {d.outdated && <span className="tag tag-warn">outdated</span>}
+        <span className="rc-meta">
+          {lineText(d.side, d.start_line ?? d.line, d.line)}
+          {SOURCE_TEXT[d.source] && ` · ${SOURCE_TEXT[d.source]}`}
+        </span>
+        {!d.anchored && (
+          <span className="Label Label--secondary" title="This line is not part of the diff, so the comment goes into your review summary as a link">
+            Goes in summary
+          </span>
+        )}
+        {d.outdated && (
+          <span className="Label Label--danger" title="The PR changed under this comment">
+            Outdated
+          </span>
+        )}
         {compact && (
-          <a className="card-jump" href={fileHref(d.path, d.start_line ?? d.line, d.side)}>
-            jump →
+          <a className="rc-jump" href={fileHref(d.path, d.start_line ?? d.line, d.side)}>
+            Go to line
           </a>
         )}
       </div>
-      {editing ? (
-        <textarea className="input comment-input" value={body} autoFocus rows={4} onChange={(e) => setBody(e.target.value)} />
-      ) : (
-        <Markdown text={d.body} />
-      )}
-      <div className="card-actions">
+      <div className="rc-body">
+        {editing ? (
+          <textarea className="input comment-input" value={body} autoFocus rows={4} onChange={(e) => setBody(e.target.value)} />
+        ) : (
+          <Markdown text={d.body} />
+        )}
+      </div>
+      <div className="rc-actions">
         {editing ? (
           <>
+            <button className="btn btn-sm" onClick={() => { setBody(d.body); setEditing(false); }}>
+              Cancel
+            </button>
             <button
               className="btn btn-primary btn-sm"
               disabled={!body.trim()}
@@ -231,17 +273,14 @@ export function DraftCard({ d, compact }: { d: Draft; compact?: boolean }) {
             >
               Save
             </button>
-            <button className="btn btn-sm" onClick={() => { setBody(d.body); setEditing(false); }}>
-              Cancel
-            </button>
           </>
         ) : (
           <>
+            <button className="btn btn-invisible btn-sm btn-danger" onClick={() => void deleteDraft(d.id)}>
+              Delete
+            </button>
             <button className="btn btn-sm" onClick={() => setEditing(true)}>
               Edit
-            </button>
-            <button className="btn btn-ghost btn-sm btn-danger" onClick={() => void deleteDraft(d.id)}>
-              Delete
             </button>
           </>
         )}
@@ -252,17 +291,20 @@ export function DraftCard({ d, compact }: { d: Draft; compact?: boolean }) {
 
 function GithubThread({ comments }: { comments: ExistingComment[] }) {
   return (
-    <div className="card gh-thread">
+    <div className="review-comment gh-thread">
       {comments.map((c) => (
         <div key={c.id} className="gh-comment">
-          <div className="card-head">
-            <span className="gh-user">@{c.user}</span>
-            <span className="card-sub">on GitHub · {new Date(c.created_at).toLocaleDateString()}</span>
-            <a className="card-jump" href={c.html_url} target="_blank" rel="noreferrer noopener">
-              open ↗
+          <div className="rc-head">
+            <Avatar name={c.user} />
+            <strong>{c.user}</strong>
+            <span className="rc-meta">commented on GitHub · {new Date(c.created_at).toLocaleDateString()}</span>
+            <a className="rc-jump" href={c.html_url} target="_blank" rel="noreferrer noopener">
+              View on GitHub
             </a>
           </div>
-          <Markdown text={c.body} />
+          <div className="rc-body">
+            <Markdown text={c.body} />
+          </div>
         </div>
       ))}
     </div>
@@ -288,45 +330,46 @@ function Composer() {
     }
   };
   return (
-    <div className="card composer">
-      <div className="card-head">
-        <span className="draft-label">New comment</span>
-        <span className="card-sub">
-          {composer.side === "LEFT" ? "old " : ""}
-          {rangeLabel(composer.start, composer.end)}
-        </span>
+    <div className="review-comment composer">
+      <div className="rc-head">
+        <Avatar name="You" kind="you" />
+        <strong>Add a comment</strong>
+        <span className="rc-meta">on {lineText(composer.side, composer.start, composer.end)}</span>
       </div>
-      <textarea
-        className="input comment-input"
-        autoFocus
-        rows={4}
-        placeholder="Leave a review comment (Markdown, ```suggestion blocks work). ⌘/Ctrl+Enter to save."
-        value={composer.body}
-        onChange={(e) => setBody(e.target.value)}
-        onKeyDown={(e) => {
-          if (e.key === "Enter" && (e.metaKey || e.ctrlKey) && composer.body.trim()) void save();
-        }}
-      />
-      <div className="card-actions">
-        <button className="btn btn-primary btn-sm" disabled={!composer.body.trim()} onClick={() => void save()}>
-          Save draft
-        </button>
-        <button className="btn btn-sm" onClick={close}>
-          Cancel
-        </button>
+      <div className="rc-body">
+        <textarea
+          className="input comment-input"
+          autoFocus
+          rows={4}
+          placeholder="Leave a comment"
+          value={composer.body}
+          onChange={(e) => setBody(e.target.value)}
+          onKeyDown={(e) => {
+            if (e.key === "Enter" && (e.metaKey || e.ctrlKey) && composer.body.trim()) void save();
+          }}
+        />
+      </div>
+      <div className="rc-actions">
+        <span className="rc-hint">Markdown works. Press ⌘/Ctrl + Enter to add.</span>
         <button
-          className="btn btn-ghost btn-sm"
-          title="Ask Claude to word this comment"
+          className="btn btn-invisible btn-sm"
+          title="Ask Claude to help you word this comment"
           onClick={() =>
             askClaude(
               undefined,
               composer.body.trim()
-                ? `Help me phrase this review comment for the selected code, concise and constructive:\n\n${composer.body}`
-                : "Draft a review comment for the selected code. Reply with only the comment body.",
+                ? `Help me word this review comment for the selected code. Keep it short, clear and kind:\n\n${composer.body}`
+                : "Write a short review comment for the selected code. Reply with only the comment text.",
             )
           }
         >
-          Ask Claude to word it
+          Ask Claude to help
+        </button>
+        <button className="btn btn-sm" onClick={close}>
+          Cancel
+        </button>
+        <button className="btn btn-primary btn-sm" disabled={!composer.body.trim()} onClick={() => void save()}>
+          Add review comment
         </button>
       </div>
     </div>
@@ -367,14 +410,14 @@ function FullFile({
     const t = window.setTimeout(() => flash(ref.current?.querySelector(`[data-line="${focusLine}"]`) ?? null), 30);
     return () => window.clearTimeout(t);
   }, [focusLine, lines.length, navTick]);
-  if (error) return <div className="empty">Could not load {path}: {error}</div>;
-  if (content === null) return <div className="empty">Loading file…</div>;
+  if (error) return <div className="blankslate">Could not load {path}: {error}</div>;
+  if (content === null) return <div className="blankslate">Loading the file…</div>;
   const side: Side = at === "base" ? "LEFT" : "RIGHT";
   const selected = (l: number) => selection && selection.path === path && selection.side === side && selection.hunk === -1 && l >= selection.start && l <= selection.end;
   const text = (s: number, e: number) => lines.slice(s - 1, e).join("\n");
   return (
     <div className="full-file" ref={ref}>
-      {!inPR && <div className="banner banner-muted">This file isn’t changed in this PR — showing it at the PR head for context.</div>}
+      {!inPR && <div className="flash flash-muted">This file is not changed in this PR. It is shown here so you can see the code around it.</div>}
       <table className="ff-table">
         <tbody>
           {lines.map((l, i) => (
@@ -533,11 +576,11 @@ export function FileView({ path, line, side, full }: { path: string; line: numbe
   const commentOnSelection = useCallback(() => {
     const s = useStore.getState().selection;
     if (!s || s.path !== path) {
-      toast("info", "Click a line number first (shift-click to extend), then press c.");
+      toast("info", "First click a line number. Shift-click to pick more lines. Then press c.");
       return;
     }
     if (!inPR) {
-      toast("info", "This file isn't part of the PR, so it can't take review comments.");
+      toast("info", "This file is not part of the PR, so you can't comment on it.");
       return;
     }
     openComposer({ path, side: s.side, start: s.start, end: s.end });
@@ -612,7 +655,7 @@ export function FileView({ path, line, side, full }: { path: string; line: numbe
     const go = (delta: 1 | -1) => {
       const total = sortedNotes.length;
       if (!total) {
-        toast("info", "No Claude notes in this file.");
+        toast("info", "Claude has no notes on this file.");
         return;
       }
       noteCursor.current = (noteCursor.current + delta + total) % total;
@@ -633,93 +676,105 @@ export function FileView({ path, line, side, full }: { path: string; line: numbe
 
   return (
     <div className="file-view" ref={containerRef}>
-      <FileHeader
-        path={path}
-        file={file}
-        reviewed={reviewed}
-        stale={stale}
-        showFull={showFull}
-        canToggleFull={inPR && !file?.binary}
-        viewType={viewType}
-        onViewType={(v) => {
-          setViewType(v);
-          writeLS("prr.viewType", v);
-        }}
-        onMarkNext={() => void markAndNext()}
-      />
+      {file && <FileSummary file={file} stale={stale} />}
 
-      {dismissedSuggestions.length > 0 && (
-        <div className="dismissed-bar">
-          <button className="link-btn" onClick={() => setShowDismissed((v) => !v)}>
-            {showDismissed ? "Hide" : "Show"} {dismissedSuggestions.length} dismissed suggestion
-            {dismissedSuggestions.length > 1 ? "s" : ""}
+      <div className="file-box">
+        <FileHeader
+          path={path}
+          file={file}
+          reviewed={reviewed}
+          showFull={showFull}
+          canToggleFull={inPR && !file?.binary}
+          viewType={viewType}
+          onViewType={(v) => {
+            setViewType(v);
+            writeLS("prr.viewType", v);
+          }}
+          onMarkNext={() => void markAndNext()}
+        />
+
+        {dismissedSuggestions.length > 0 && (
+          <div className="dismissed-bar">
+            <button className="btn-link" onClick={() => setShowDismissed((v) => !v)}>
+              {showDismissed ? "Hide" : "Show"} {dismissedSuggestions.length} dismissed suggestion
+              {dismissedSuggestions.length > 1 ? "s" : ""}
+            </button>
+            {showDismissed &&
+              dismissedSuggestions.map((s) => (
+                <div key={s.id} className="dismissed-item">
+                  <SeverityLabel severity={s.severity} />
+                  <span className="dismissed-text">{s.body.slice(0, 140)}</span>
+                  <button className="btn btn-sm" onClick={() => void restoreSuggestion(s.id)}>
+                    Show again
+                  </button>
+                </div>
+              ))}
+          </div>
+        )}
+
+        {!showFull && floating.length > 0 && (
+          <div className="floating-notes">
+            <div className="floating-title">Comments on lines that are not shown in this diff</div>
+            {floating}
+          </div>
+        )}
+
+        {showFull ? (
+          <FullFile path={path} at={fullAt} focusLine={line} inPR={inPR} selection={selection} onSelect={onFullSelect} />
+        ) : diffError ? (
+          <div className="blankslate">Could not load the changes: {diffError}</div>
+        ) : patch === null ? (
+          <div className="blankslate">Loading the changes…</div>
+        ) : !hunks.length ? (
+          <div className="blankslate">
+            {file?.binary
+              ? "This is a binary file, so there is no text to show."
+              : file?.status === "renamed"
+                ? "This file was renamed. Its content did not change."
+                : "No text changed (only file permissions, or the file is empty)."}
+          </div>
+        ) : (
+          <div className="diff-wrap">
+            <Diff
+              viewType={viewType}
+              diffType={fileData!.type}
+              hunks={hunks}
+              tokens={tokens}
+              widgets={widgets}
+              selectedChanges={selectedChanges}
+              gutterEvents={{ onClick: onGutterClick }}
+              optimizeSelection
+            >
+              {(hs) =>
+                hs.flatMap((h) => [
+                  <Decoration key={`deco-${h.content}`}>
+                    <span className="hunk-header">{h.content}</span>
+                  </Decoration>,
+                  <Hunk key={`hunk-${h.content}`} hunk={h} />,
+                ])
+              }
+            </Diff>
+          </div>
+        )}
+
+        {showFull && composer && composer.path === path && (
+          <div className="full-composer">
+            <Composer />
+          </div>
+        )}
+      </div>
+
+      {file && (
+        <div className="file-foot">
+          <button className="btn btn-primary" onClick={() => void markAndNext()} title="Mark as viewed and open the next file (j)">
+            Mark as viewed and go to next file
           </button>
-          {showDismissed &&
-            dismissedSuggestions.map((s) => (
-              <div key={s.id} className="dismissed-item">
-                <span className={`sev-badge sev-${s.severity}`}>{s.severity}</span>
-                <span className="dismissed-text">{s.body.slice(0, 140)}</span>
-                <button className="btn btn-sm" onClick={() => void restoreSuggestion(s.id)}>
-                  Restore
-                </button>
-              </div>
-            ))}
-        </div>
-      )}
-
-      {!showFull && floating.length > 0 && (
-        <div className="floating-notes">
-          <div className="section-label">Notes outside the visible hunks</div>
-          {floating}
-        </div>
-      )}
-
-      {showFull ? (
-        <FullFile path={path} at={fullAt} focusLine={line} inPR={inPR} selection={selection} onSelect={onFullSelect} />
-      ) : diffError ? (
-        <div className="empty">Could not load the diff: {diffError}</div>
-      ) : patch === null ? (
-        <div className="empty">Loading diff…</div>
-      ) : !hunks.length ? (
-        <div className="empty">
-          {file?.binary ? "Binary file — no text diff." : file?.status === "renamed" ? "Renamed without content changes." : "No text changes (mode change or empty file)."}
-        </div>
-      ) : (
-        <div className="diff-wrap">
-          <Diff
-            viewType={viewType}
-            diffType={fileData!.type}
-            hunks={hunks}
-            tokens={tokens}
-            widgets={widgets}
-            selectedChanges={selectedChanges}
-            gutterEvents={{ onClick: onGutterClick }}
-            optimizeSelection
-          >
-            {(hs) =>
-              hs.flatMap((h) => [
-                <Decoration key={`deco-${h.content}`}>
-                  <span className="hunk-header">{h.content}</span>
-                </Decoration>,
-                <Hunk key={`hunk-${h.content}`} hunk={h} />,
-              ])
-            }
-          </Diff>
-        </div>
-      )}
-
-      {showFull && composer && composer.path === path && (
-        <div className="full-composer">
-          <Composer />
         </div>
       )}
 
       {sel && (
         <div className="selection-bar" role="toolbar">
-          <span className="sel-label">
-            {sel.side === "LEFT" ? "old " : ""}
-            {rangeLabel(sel.start, sel.end)} selected
-          </span>
+          <span className="sel-label">{lineText(sel.side, sel.start, sel.end)} selected</span>
           {inPR && (
             <button className="btn btn-primary btn-sm" onClick={commentOnSelection}>
               Comment <kbd>c</kbd>
@@ -728,7 +783,7 @@ export function FileView({ path, line, side, full }: { path: string; line: numbe
           <button className="btn btn-sm" onClick={askAboutSelection}>
             Ask Claude
           </button>
-          <button className="btn btn-ghost btn-sm" onClick={() => setSelection(null)}>
+          <button className="btn btn-invisible btn-sm" onClick={() => setSelection(null)}>
             Clear
           </button>
         </div>
@@ -737,113 +792,135 @@ export function FileView({ path, line, side, full }: { path: string; line: numbe
   );
 }
 
+const CATEGORY_TEXT: Record<FileEntry["category"], string> = {
+  schema: "Data format", types: "Types", core: "Main logic", api: "Entry point", ui: "User interface",
+  config: "Settings", infra: "Build and CI", test: "Test", docs: "Docs", generated: "Generated",
+};
+
 function FileHeader({
-  path, file, reviewed, stale, showFull, canToggleFull, viewType, onViewType, onMarkNext,
+  path, file, reviewed, showFull, canToggleFull, viewType, onViewType, onMarkNext,
 }: {
-  path: string; file: FileEntry | undefined; reviewed: boolean; stale: boolean; showFull: boolean;
+  path: string; file: FileEntry | undefined; reviewed: boolean; showFull: boolean;
   canToggleFull: boolean; viewType: "unified" | "split"; onViewType: (v: "unified" | "split") => void;
   onMarkNext: () => void;
 }) {
   const askClaude = useStore((s) => s.askClaude);
   const dismissedAuto = useStore((s) => s.dismissedAutoChip);
   const setReviewed = useStore((s) => s.setReviewed);
-  const [checked, setChecked] = useState<Record<number, boolean>>({});
-  useEffect(() => setChecked({}), [path]);
   const { dir, base } = splitPath(path);
   const askFile = () => {
     if (dismissedAuto[path]) useStore.setState((s) => ({ dismissedAutoChip: { ...s.dismissedAutoChip, [path]: false } }));
-    askClaude(undefined, "Walk me through this file: what changed, why, how it connects to the rest of the PR, and what I should verify.");
+    askClaude(undefined, "Explain this file to me: what changed, why, how it connects to the rest of the PR, and what I should check.");
   };
   return (
-    <div className="fv-header">
-      <div className="fv-title-row">
-        <h2 className="fv-path" title={path}>
-          <span className="rp-dir">{dir}</span>
-          {base}
-        </h2>
-        <div className="fv-actions">
-          {canToggleFull && (
-            <button className="btn btn-sm" onClick={() => navigate(fileHref(path, null, "RIGHT", !showFull))}>
-              {showFull ? "Show diff" : "Full file"}
-            </button>
-          )}
-          {!showFull && (
-            <div className="seg">
-              <button className={viewType === "unified" ? "on" : ""} onClick={() => onViewType("unified")}>
-                Unified
-              </button>
-              <button className={viewType === "split" ? "on" : ""} onClick={() => onViewType("split")}>
-                Split
-              </button>
-            </div>
-          )}
-          <button className="btn btn-sm" onClick={askFile}>
-            Ask Claude about this file
-          </button>
-          {file && (
+    <div className="file-header">
+      <div className="file-info">
+        {file && <StatusIcon status={file.status} />}
+        <h2 className="file-path" title={path}>
+          {file?.old_path && (
             <>
-              <label className="fv-reviewed">
-                <input type="checkbox" checked={reviewed} onChange={(e) => void setReviewed(path, e.target.checked)} />
-                Reviewed
-              </label>
-              <button className="btn btn-primary btn-sm" onClick={onMarkNext} title="Mark reviewed and open the next file (j)">
-                Mark reviewed & next →
-              </button>
+              <span className="file-dir">{file.old_path}</span> →{" "}
             </>
           )}
-        </div>
+          <span className="file-dir">{dir}</span>
+          {base}
+        </h2>
+        {file && <DiffStat additions={file.additions} deletions={file.deletions} />}
       </div>
-      {file && (
-        <div className="fv-meta">
-          <span className={`status-letter st-${file.status}`}>{file.status}</span>
-          {file.old_path && <span className="mono dim">from {file.old_path}</span>}
-          <span className="pill">{file.category}</span>
-          <RiskBadge risk={file.risk} />
-          <span className="add">+{file.additions}</span>
-          <span className="del">−{file.deletions}</span>
-          <span className="dim">{fmtMinutes(file.minutes)}</span>
-          {file.sensitive && <span className="tag tag-warn">sensitive path</span>}
-          {file.generated && <span className="tag tag-dim">generated — skim</span>}
-          {stale && <span className="tag tag-warn">changed since you reviewed</span>}
-        </div>
-      )}
-      {file?.summary && <Markdown className="fv-summary" text={file.summary} />}
-      {file && !file.annotated && !file.generated && (
-        <p className="dim fv-pending">Claude hasn’t annotated this file yet.</p>
-      )}
-      {file && file.look_for.length > 0 && (
-        <div className="look-for">
-          <div className="section-label">Look for</div>
-          {file.look_for.map((item, i) => (
-            <label key={i} className={`look-item${checked[i] ? " checked" : ""}`}>
-              <input type="checkbox" checked={!!checked[i]} onChange={(e) => setChecked((c) => ({ ...c, [i]: e.target.checked }))} />
-              <Markdown text={item} className="inline-md" />
+      <div className="file-actions">
+        {!showFull && (
+          <div className="segmented" role="group" aria-label="Diff layout">
+            <button className={viewType === "unified" ? "on" : ""} onClick={() => onViewType("unified")}>
+              Unified
+            </button>
+            <button className={viewType === "split" ? "on" : ""} onClick={() => onViewType("split")}>
+              Split
+            </button>
+          </div>
+        )}
+        {canToggleFull && (
+          <button className="btn btn-sm" onClick={() => navigate(fileHref(path, null, "RIGHT", !showFull))}>
+            {showFull ? "Show changes" : "Show whole file"}
+          </button>
+        )}
+        <button className="btn btn-sm" onClick={askFile}>
+          Ask Claude
+        </button>
+        {file && (
+          <>
+            <label className={`viewed-toggle${reviewed ? " checked" : ""}`} title="Mark this file as viewed (r)">
+              <input type="checkbox" checked={reviewed} onChange={(e) => void setReviewed(path, e.target.checked)} />
+              Viewed
             </label>
-          ))}
-        </div>
-      )}
-      {file && (file.tests_for || file.tested_by.length > 0) && (
-        <div className="fv-links">
-          {file.tests_for && (
-            <span>
-              Tests for <a href={fileHref(file.tests_for)} className="mono">{file.tests_for}</a>
-            </span>
-          )}
-          {file.tested_by.length > 0 && (
-            <span>
-              Tested by{" "}
-              {file.tested_by.map((t, i) => (
-                <span key={t}>
-                  {i > 0 && ", "}
-                  <a href={fileHref(t)} className="mono" onClick={(e) => { e.preventDefault(); goFile(t); }}>
-                    {splitPath(t).base}
-                  </a>
-                </span>
-              ))}
-            </span>
-          )}
-        </div>
-      )}
+            <button className="btn btn-sm" onClick={onMarkNext} title="Mark as viewed and open the next file (j)">
+              Next file →
+            </button>
+          </>
+        )}
+      </div>
     </div>
+  );
+}
+
+function FileSummary({ file, stale }: { file: FileEntry; stale: boolean }) {
+  const [checked, setChecked] = useState<Record<number, boolean>>({});
+  useEffect(() => setChecked({}), [file.path]);
+  const hasNotes = file.summary || file.look_for.length > 0;
+  return (
+    <section className="Box claude-box">
+      <div className="Box-header claude-box-head">
+        <Avatar name="Claude" kind="claude" />
+        <strong>Claude's notes on this file</strong>
+        <RiskBadge risk={file.risk} />
+        <span className="Label Label--secondary">{CATEGORY_TEXT[file.category]}</span>
+        {file.sensitive && (
+          <span className="Label Label--attention" title="Security, CI, secrets or packaging file">
+            Needs extra care
+          </span>
+        )}
+        {stale && <span className="Label Label--attention">Changed since you viewed it</span>}
+        <span className="claude-box-time">{fmtMinutes(file.minutes)} to review</span>
+      </div>
+      <div className="Box-body">
+        {file.summary && <Markdown className="claude-summary" text={file.summary} />}
+        {!hasNotes && !file.generated && (
+          <p className="color-muted">{file.annotated ? "Claude has nothing to add here." : "Claude has not read this file yet."}</p>
+        )}
+        {file.generated && <p className="color-muted">A tool made this file. You only need to skim it.</p>}
+        {file.look_for.length > 0 && (
+          <div className="check-list">
+            <div className="check-list-title">Things to check</div>
+            {file.look_for.map((item, i) => (
+              <label key={i} className={`check-item${checked[i] ? " checked" : ""}`}>
+                <input type="checkbox" checked={!!checked[i]} onChange={(e) => setChecked((c) => ({ ...c, [i]: e.target.checked }))} />
+                <Markdown text={item} className="inline-md" />
+              </label>
+            ))}
+          </div>
+        )}
+        {(file.tests_for || file.tested_by.length > 0) && (
+          <div className="file-links">
+            {file.tests_for && (
+              <span>
+                Tests the code in <a href={fileHref(file.tests_for)} className="mono">{file.tests_for}</a>
+              </span>
+            )}
+            {file.tested_by.length > 0 && (
+              <span>
+                Tested by{" "}
+                {file.tested_by.map((t, i) => (
+                  <span key={t}>
+                    {i > 0 && ", "}
+                    <a href={fileHref(t)} className="mono" onClick={(e) => { e.preventDefault(); goFile(t); }}>
+                      {splitPath(t).base}
+                    </a>
+                  </span>
+                ))}
+              </span>
+            )}
+          </div>
+        )}
+      </div>
+    </section>
   );
 }

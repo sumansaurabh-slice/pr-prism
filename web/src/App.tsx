@@ -1,4 +1,4 @@
-import { useEffect } from "react";
+import { useEffect, type CSSProperties, type ReactNode } from "react";
 import { ChatPanel } from "./components/ChatPanel";
 import { DraftsDrawer } from "./components/Drafts";
 import { FileView } from "./components/FileView";
@@ -9,6 +9,7 @@ import { Overview } from "./components/Overview";
 import { ProgressBanner } from "./components/ProgressBanner";
 import { ReviewPath } from "./components/ReviewPath";
 import { SubmitModal } from "./components/SubmitModal";
+import { DiffStat, IconComment, IconFileDiff, IconPulse, IconWorkflow, IconX } from "./icons";
 import { SHORTCUTS, useGlobalKeys } from "./keyboard";
 import { fileHref, navigate, useRoute, type Route } from "./router";
 import { reviewOrder, useStore } from "./store";
@@ -17,24 +18,46 @@ const POLL_MS = 3000;
 
 function Tabs({ route }: { route: Route }) {
   const analysis = useStore((s) => s.analysis);
+  const reviewedMap = useStore((s) => s.state.reviewed);
   const lastFile = route.view === "file" ? route.path : reviewOrder(analysis)[0];
-  const flowCount = analysis?.flows.length ?? 0;
-  const impactCount = analysis?.impact.length ?? 0;
-  const tabs: { key: Route["view"]; label: string; href: string; badge?: number }[] = [
-    { key: "overview", label: "Overview", href: "#/overview" },
-    { key: "file", label: "Walkthrough", href: lastFile ? fileHref(lastFile) : "#/overview" },
-    { key: "flow", label: "Data Flow", href: "#/flow", badge: flowCount },
-    { key: "impact", label: "Impact", href: "#/impact", badge: impactCount },
+  const files = analysis?.files ?? [];
+  const viewed = files.filter((f) => f.path in reviewedMap).length;
+  const tabs: { key: Route["view"]; label: string; href: string; icon: ReactNode; count?: number }[] = [
+    { key: "overview", label: "Overview", href: "#/overview", icon: <IconComment /> },
+    {
+      key: "file", label: "Files changed", href: lastFile ? fileHref(lastFile) : "#/overview", icon: <IconFileDiff />,
+      count: files.length,
+    },
+    { key: "flow", label: "Data flow", href: "#/flow", icon: <IconWorkflow />, count: analysis?.flows.length ?? 0 },
+    { key: "impact", label: "Impact", href: "#/impact", icon: <IconPulse />, count: analysis?.impact.length ?? 0 },
   ];
   return (
-    <div className="tabs" role="tablist">
-      {tabs.map((t) => (
-        <a key={t.key} role="tab" href={t.href} className={`tab${route.view === t.key ? " active" : ""}`}>
-          {t.label}
-          {!!t.badge && <span className="count">{t.badge}</span>}
-        </a>
-      ))}
-    </div>
+    <nav className="tabs" aria-label="Pull request views">
+      <div className="tabs-list" role="tablist">
+        {tabs.map((t) => (
+          <a
+            key={t.key}
+            role="tab"
+            aria-selected={route.view === t.key}
+            href={t.href}
+            className={`tab${route.view === t.key ? " active" : ""}`}
+          >
+            {t.icon}
+            {t.label}
+            {t.count !== undefined && <span className="Counter">{t.count}</span>}
+          </a>
+        ))}
+      </div>
+      {analysis && (
+        <div className="tabs-right">
+          <span className="viewed-count" title="Files you have marked as viewed">
+            <span className="viewed-ring" style={{ "--pct": `${files.length ? (viewed / files.length) * 100 : 0}%` } as CSSProperties} />
+            {viewed} / {files.length} files viewed
+          </span>
+          <DiffStat additions={analysis.pr.additions} deletions={analysis.pr.deletions} />
+        </div>
+      )}
+    </nav>
   );
 }
 
@@ -47,8 +70,8 @@ function HelpOverlay() {
       <div className="modal modal-sm" role="dialog" aria-label="Keyboard shortcuts" onClick={(e) => e.stopPropagation()}>
         <header className="modal-head">
           <h2>Keyboard shortcuts</h2>
-          <button className="btn btn-ghost btn-icon" onClick={() => setOpen(false)} aria-label="Close">
-            ×
+          <button className="btn-octicon" onClick={() => setOpen(false)} aria-label="Close">
+            <IconX />
           </button>
         </header>
         <div className="modal-body">
@@ -107,7 +130,7 @@ export default function App() {
   }, [status, hasAnalysis]);
 
   useEffect(() => {
-    if (analysis) document.title = `#${analysis.pr.number} ${analysis.pr.title} · PR Review`;
+    if (analysis) document.title = `${analysis.pr.title} · #${analysis.pr.number} · PR review`;
   }, [analysis?.pr.number, analysis?.pr.title]);
 
   // Default landing: Overview.
@@ -133,12 +156,12 @@ export default function App() {
   return (
     <div className={`app${chatOpen ? "" : " chat-closed"}`}>
       <Header />
+      <Tabs route={route} />
       <ProgressBanner />
       <div className="layout">
         <ReviewPath />
         <main className="pane center">
-          <Tabs route={route} />
-          <div className="center-body">{analysis ? main : <div className="empty">Loading the PR…</div>}</div>
+          <div className="center-body">{analysis ? main : <div className="blankslate">Loading the pull request…</div>}</div>
         </main>
         <ChatPanel />
       </div>

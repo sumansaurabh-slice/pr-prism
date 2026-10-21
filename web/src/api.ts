@@ -26,7 +26,7 @@ async function request<T>(method: string, url: string, body?: unknown): Promise<
     } catch {
       /* non-JSON error body */
     }
-    if (res.status === 401) message = "Session expired. Re-open the link printed by /pr-review.";
+    if (res.status === 401) message = "Your session ended. Open the link that /pr-review printed again.";
     throw new ApiError(res.status, message);
   }
   return (await res.json()) as T;

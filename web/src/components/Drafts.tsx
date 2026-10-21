@@ -1,6 +1,7 @@
 import { useMemo } from "react";
 import { reviewOrder, useStore } from "../store";
 import type { Draft } from "../types";
+import { IconX } from "../icons";
 import { DraftCard } from "./FileView";
 
 export function DraftsDrawer() {
@@ -25,24 +26,35 @@ export function DraftsDrawer() {
   const outdated = drafts.filter((d) => d.outdated).length;
   return (
     <div className="overlay" onClick={() => setOpen(false)}>
-      <aside className="drawer" onClick={(e) => e.stopPropagation()} aria-label="Draft comments">
+      <aside className="drawer" onClick={(e) => e.stopPropagation()} aria-label="Pending comments">
         <header className="drawer-head">
-          <h2>Draft comments ({drafts.length})</h2>
-          <button className="btn btn-ghost btn-icon" onClick={() => setOpen(false)} aria-label="Close">
-            ×
+          <h2>Pending comments ({drafts.length})</h2>
+          <button className="btn-octicon" onClick={() => setOpen(false)} aria-label="Close">
+            <IconX />
           </button>
         </header>
         {(unanchored > 0 || outdated > 0) && (
           <div className="drawer-note">
-            {unanchored > 0 && <p>{unanchored} comment(s) aren’t on diff lines, so they go into the review body as links.</p>}
-            {outdated > 0 && <p>{outdated} comment(s) are outdated: the PR changed under them. Edit or delete them.</p>}
+            {unanchored > 0 && (
+              <p>
+                {unanchored} comment{unanchored > 1 ? "s are" : " is"} on lines that are not in the diff. GitHub can't pin
+                {unanchored > 1 ? " them" : " it"} to a line, so {unanchored > 1 ? "they go" : "it goes"} into your review
+                summary as a link.
+              </p>
+            )}
+            {outdated > 0 && (
+              <p>
+                {outdated} comment{outdated > 1 ? "s are" : " is"} out of date because the PR changed. Edit or delete{" "}
+                {outdated > 1 ? "them" : "it"}.
+              </p>
+            )}
           </div>
         )}
         <div className="drawer-body">
           {!drafts.length && (
-            <p className="dim">
-              No drafts yet. Click a line number in the diff and press <kbd>c</kbd>, or accept one of Claude’s suggested
-              comments.
+            <p className="color-muted">
+              No comments yet. Click a line number in the diff and press <kbd>c</kbd>. Or add one of Claude's suggested
+              comments to your review.
             </p>
           )}
           {grouped.map(([path, ds]) => (
@@ -62,7 +74,7 @@ export function DraftsDrawer() {
               setSubmitOpen(true);
             }}
           >
-            Review & submit…
+            Submit review…
           </button>
         </footer>
       </aside>

@@ -1,10 +1,10 @@
 # /pr-review: interactive, Claude-guided PR reviews
 
-A Claude Code skill that turns a large GitHub pull request (5–10k lines) into a local review app:
+A Claude Code skill that turns a large GitHub pull request (5–10k lines) into a local review app. The app looks and feels like GitHub's own PR pages, and everything Claude writes uses plain, simple English (about 10th-class level: short sentences, everyday words, no jargon or buzzwords).
 
-- **Review path**: files grouped into chapters and ordered so each one only depends on what you've already read. Each file says why to read it now.
-- **Overview**: TL;DR, why the change was made, how it works, the risk and the reasons for it, and questions to ask the author.
-- **Walkthrough**: the diff with Claude's inline notes (explain / risk / flow / test-gap) right under the lines they refer to. Claude's suggested comments sit next to them; you accept, edit or dismiss each one.
+- **Reading order**: files grouped into chapters and ordered so each one only depends on what you've already read. Each file says why to read it now.
+- **Overview**: a short summary, why the change was made, how it works, what could go wrong, and questions to ask the author.
+- **Files changed**: the diff with Claude's notes (explains / possible problem / data flow / missing test) right under the lines they refer to, shown like GitHub review comments. Claude's suggested comments sit next to them; you add, edit or dismiss each one. Mark files as **Viewed**, like on GitHub.
 - **Data Flow**: interactive graphs of the runtime paths the PR adds or changes. Click a node to jump to the code.
 - **Impact**: breaking changes, migrations, config, security, and the changed symbols that are referenced *outside* the PR (found with codegraph when the repo is indexed, `git grep` otherwise).
 - **Chat**: deep-dive questions answered by a real Claude Code instance running read-only inside the PR's checkout. It streams its answer, shows which files it reads, and cites `file:line` references you can click.
@@ -57,6 +57,7 @@ Rerunning after the PR changes only re-annotates the files that changed, and dra
 ## Make it yours
 
 - `skill/review-guidelines.md` is your personal review checklist. It is injected into every analysis prompt.
+- `prr/prompts/style.md` holds the plain-language writing rules (short sentences, everyday words, banned buzzwords). Every prompt includes it, so all of Claude's text follows it.
 - `prr/prompts/*.md` holds the detailed instructions for annotation, synthesis and chat.
 - `config.toml` sets the models (annotate / synthesize / chat), concurrency, batch size and cache location.
 

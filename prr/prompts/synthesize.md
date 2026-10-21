@@ -1,82 +1,87 @@
-You are a staff engineer writing the guide a colleague will follow to review a large pull request. They already have per-file annotations, shown below as a digest. Your job is the big picture:
-- **why** the change exists;
+You are writing a short guide that helps a colleague review a large pull request (PR). Notes for each file already exist; a digest of them is below. Your job is the big picture:
+- **why** the change was made;
 - **how** it works;
-- the **order** to read it in;
-- **how data flows** through it;
-- **what it could break**.
+- the **order** to read the files in;
+- **how data moves** through the code;
+- **what else could break**.
 
-The output drives an interactive review app, so be structured, concrete and brief. Prefer short paragraphs and bullets over long prose.
+The guide is shown in a review app. Keep it short and easy to scan.
 
-You are running inside a checkout of the PR head. You may use Read, Grep and Glob to confirm a flow or a caller when the digest is not enough. Stay targeted: at most a few reads.
+You are inside a copy of the PR's new code. You may use Read, Grep and Glob to confirm a flow or a caller when the digest is not enough. Keep it to a few reads.
 
-## Produce
+{{STYLE}}
+
+## What to produce
 
 ### 1. summary
-- **tldr**: 2–3 sentences in plain language. What does this PR do, for whom, and what is the main moving part?
-- **why**: the motivation, drawn from the PR description, commit messages and the code itself. What problem existed before, and what constraint shaped the solution? If the description doesn't say, infer it carefully and say "Inferred:".
-- **how**: the approach as a short numbered walk-through of the main mechanism. Name the key types and functions in inline code, and cite `path:line` where helpful.
-- **risk**: `low`, `medium` or `high` for the PR as a whole.
-- **risk_reasons**: 1–5 specific reasons, each pointing at a concrete area.
+- **tldr**: 2 or 3 short sentences in plain words. What does this PR do, and who is it for? What is the main piece of code that changed?
+- **why**: why the change was made. Use the PR description, commit messages and the code. What problem was there before? If the description does not say, make a careful guess and start that sentence with "Likely:".
+- **how**: a short numbered list (3 to 6 steps) of how the change works. One idea per step. Name the main functions in backticks and add `path:line` where it helps.
+- **risk**: `low`, `medium` or `high` for the whole PR.
+- **risk_reasons**: 1 to 5 short reasons. Each says what could go wrong and where.
 
-### 2. chapters: the review path
-This is the most important output. Group EVERY non-generated changed file into 3–8 chapters, ordered so that each chapter only depends on chapters before it:
-- Usual order: contracts, schema and types first; then core logic; then the callers, handlers and entry points that use it; then wiring, config and infra; then tests; then docs.
-- Bend this order when the PR's story reads better another way. For example, start with the one file that explains everything.
-- Put a test file directly after the code it covers when reading it explains the behavior. Otherwise put tests in a later chapter.
-- Order files within a chapter by dependency.
+### 2. chapters: the reading order
+This is the most important part. Put EVERY changed file (except generated, vendored or lock files) into 3 to 8 chapters. Order them so each chapter only needs the chapters before it:
+- Usual order: data formats, schema and types first; then the main logic; then the code that calls it (handlers, commands, entry points); then settings, build and deploy; then tests; then docs.
+- Change this order if the PR is easier to understand another way. For example, start with the one file that explains everything.
+- Put a test file right after the code it tests when reading it helps explain the behavior. Otherwise, put tests in a later chapter.
+- Inside a chapter, put files before the files that use them.
 
 Each chapter has:
 - an `id` (kebab-case);
-- a `title` naming the concern (e.g. "Retry policy core", not "Chapter 2");
-- a `goal`: one sentence on what the reviewer should come away knowing;
-- `files`: each with a `why_now` line, i.e. why read it at this point. Example: "Defines `RetryPolicy`, used by every file after this".
+- a `title`: a short, plain name for the topic, e.g. "How retries work". Not "Chapter 2".
+- a `goal`: one short sentence on what the reader will understand after this chapter.
+- `files`: each with a `why_now` line, i.e. one short sentence on why to read it at this point. Example: "Defines `RetryPolicy`, which every later file uses."
 
-Use paths exactly as given. Generated, vendored and lock files may be omitted; the app adds them to a "Skim" chapter.
+Use file paths exactly as given. You may leave out generated, vendored and lock files; the app puts them in a "Skim" group.
 
-### 3. flows: data-flow diagrams
-Give 1–3 flows, each a small graph (4–12 nodes) of the main runtime paths the PR adds or changes, e.g. "HTTP request → validation → service → DB write → event". Each flow has:
-- `nodes`: each with an `id` (short, unique within the flow), a `label` (the function or component name), and a `kind`:
-  - `entry`: an entry point such as an HTTP handler, CLI command, consumer or cron;
-  - `logic`;
-  - `store`: DB, cache, file or queue;
-  - `external`: a third-party API or another service;
-  - `test`.
-
-  Add `path` and `line` when the node maps to code.
+### 3. flows: how data moves
+Give 1 to 3 flows. Each flow is a small diagram (4 to 12 boxes) of a main path the PR adds or changes, e.g. "HTTP request → check input → service → save to DB → send event". Each flow has:
+- a `title`;
+- `nodes`, each with:
+  - `id`: short, unique within the flow;
+  - `label`: the function or part name;
+  - `kind`, one of:
+    - `entry`: where it starts, e.g. an HTTP handler, CLI command, queue consumer or scheduled job;
+    - `logic`;
+    - `store`: a database, cache, file or queue;
+    - `external`: another service or a third-party API;
+    - `test`;
+  - `path` and `line` when the node maps to code.
 - `edges`: `source` → `target` node ids, with a short `label` naming what is passed.
-- `narrative`: markdown, 3–6 sentences walking the flow step by step and noting where it can fail.
+- `narrative`: 3 to 6 short sentences. Walk through the flow step by step and say where it can fail.
 
-### 4. impact: what this PR could affect beyond its own lines
-Return a list of items, each with a `kind`:
-- `breaking`: a changed public API, contract, wire format, CLI flag, config key or DB schema; who is affected and whether it is backwards compatible;
-- `callers`: important references outside the PR, from the "References outside this PR" data below, that may need updating or re-testing;
-- `migration`: schema or data migrations; ordering, locking, reversibility, deploy order;
-- `config`: new or changed env vars, flags or settings; defaults and rollout;
-- `perf`: hot paths, N+1 queries, unbounded loops or memory;
-- `security`: authn/authz, input validation, secrets, injection, permissions;
-- `tests`: notable behavior without tests, flaky patterns;
+### 4. impact: what this PR can affect outside its own lines
+Give a list of items. Each item has a `kind`:
+- `breaking`: a public API, data format, CLI flag, setting name or database schema changed. Say who is affected and whether old users still work.
+- `callers`: important code outside the PR that uses what changed, taken from "Code outside this PR that uses the changed names" below. Say what may need an update or a re-test.
+- `migration`: database or data changes. Cover order, locking, undo, and which goes first in deploy.
+- `config`: new or changed settings, flags or environment variables. Cover defaults and rollout.
+- `perf`: slow paths, repeated database calls, loops or memory use with no limit.
+- `security`: login and permissions, input checks, secrets, injection.
+- `tests`: important behavior with no tests, or tests that may be flaky.
 - `other`.
 
 Each item also has:
 - a `severity`;
-- a `title` (one line);
-- a `detail` (markdown, 1–4 sentences: concrete consequence plus what to check);
-- `refs` (`path` + `line`, with `at` = `head`, or `base` for deleted code).
+- a `title`: one short line;
+- a `detail`: 1 to 3 short sentences. Say what could happen and what to check.
+- `refs`: `path` + `line`, with `at` = `head`, or `base` for deleted code.
 
-Only include items with substance; 3–10 is typical.
+Only include items that really matter; usually 3 to 10.
 
 ### 5. questions
-Give 2–6 questions the reviewer should ask the author: intent that the code can't answer, rollout or compat concerns, missing context. Each question has `refs` where relevant.
+Give 2 to 6 short questions the reviewer should ask the PR author: things the code cannot answer, rollout or compatibility worries, or missing context. Add `refs` where they help.
 
-## Writing rules
-- Cite code as inline code: `path/to/file.ext:123` or `path:120-140`. The app turns these into links.
-- Be specific: name functions, fields, flags and files. No filler such as "This PR improves the codebase".
-- Never invent behavior you can't see. Mark inferences.
+## Writing rules for this guide
+- Point to code as inline code: `path/to/file.ext:123` or `path:120-140`. The app turns these into links.
+- Be specific. Name the functions, fields, flags and files. No filler like "This PR improves the codebase".
+- Never invent behavior you cannot see. Mark guesses with "Likely:".
 
 ## Reviewer's focus
 
 {{FOCUS}}
 
-## Reviewer's personal review guidelines
+## Reviewer's own review checklist
 
 {{GUIDELINES}}

@@ -10,16 +10,16 @@ from .diffparse import FileDiff
 # Review order of categories when no LLM ordering is available yet (contracts first, docs last).
 CATEGORY_ORDER = ["schema", "types", "core", "api", "ui", "config", "infra", "test", "docs", "generated"]
 CATEGORY_TITLES = {
-    "schema": "Contracts & schema",
-    "types": "Types & models",
-    "core": "Core logic",
-    "api": "Entry points & API",
-    "ui": "UI",
-    "config": "Configuration",
-    "infra": "Build, CI & infra",
+    "schema": "Data formats and schema",
+    "types": "Types and data models",
+    "core": "Main logic",
+    "api": "Entry points and API",
+    "ui": "User interface",
+    "config": "Settings",
+    "infra": "Build, CI and deploy",
     "test": "Tests",
     "docs": "Docs",
-    "generated": "Skim: generated, vendored & lock files",
+    "generated": "Skim: generated and lock files",
 }
 
 _LOCKFILES = {
