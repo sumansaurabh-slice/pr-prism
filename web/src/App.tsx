@@ -130,7 +130,7 @@ export default function App() {
   }, [status, hasAnalysis]);
 
   useEffect(() => {
-    if (analysis) document.title = `${analysis.pr.title} · #${analysis.pr.number} · PR review`;
+    if (analysis) document.title = `${analysis.pr.title} · #${analysis.pr.number} · PR Prism`;
   }, [analysis?.pr.number, analysis?.pr.title]);
 
   // Default landing: Overview.

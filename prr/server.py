@@ -70,7 +70,7 @@ class Guard:
                 cookie_hdr = f"{COOKIE}={self.token}; HttpOnly; SameSite=Strict; Path=/"
                 return await self._reply(send, 303, "", [(b"location", b"/"), (b"set-cookie", cookie_hdr.encode())])
         if not hmac.compare_digest(cookie, self.token):
-            return await self._reply(send, 401, "Unauthorized: open the link printed by /pr-review (prr serve).")
+            return await self._reply(send, 401, "Unauthorized: open the link printed by /pr-prism (prr serve).")
         self.on_activity()
 
         async def send_with_headers(message: Any) -> None:
@@ -511,7 +511,7 @@ def create_app(pr_dir: Path, cfg: Config) -> FastAPI:
             raise HTTPException(404, "unknown API route")
         index = WEB_DIST / "index.html"
         if not index.exists():
-            return Response("The web UI is not built. Run ./install.sh in the pr-review repo.", status_code=503)
+            return Response("The web UI is not built. Run ./install.sh in the PR Prism folder.", status_code=503)
         target = (WEB_DIST / rest).resolve()
         if rest and target.is_file() and WEB_DIST.resolve() in target.parents:
             mime = mimetypes.guess_type(target.name)[0] or "application/octet-stream"

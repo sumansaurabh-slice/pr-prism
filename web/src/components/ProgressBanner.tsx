@@ -12,7 +12,7 @@ export function ProgressBanner() {
     return (
       <div className="flash flash-error">
         <strong>Claude could not finish reading this PR.</strong> {p.message || last} You can still read the diffs and use
-        the chat. Run <code>/pr-review</code> again to retry.
+        the chat. Run <code>/pr-prism</code> again to retry.
       </div>
     );
   }

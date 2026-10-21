@@ -1,5 +1,5 @@
 #!/usr/bin/env bash
-# Launcher for the prr backend. Works through the ~/.claude/skills/pr-review symlink.
+# Launcher for the prr backend. Works through the ~/.claude/skills/pr-prism symlink.
 set -euo pipefail
 
 BIN_DIR="$(cd -P "$(dirname "${BASH_SOURCE[0]}")" && pwd)"

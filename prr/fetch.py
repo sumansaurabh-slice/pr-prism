@@ -60,8 +60,8 @@ def fetch(ref: PRRef, root: Path, cfg: Config) -> Path:
     _log(f"Reading PR {ref.slug}#{ref.number} from GitHub")
     meta = gh_json("pr", "view", str(ref.number), "--repo", ref.slug, "--json", _PR_FIELDS)
     remote = find_remote(root, ref)
-    head_ref = f"refs/pr-review/{ref.number}/head"
-    base_ref = f"refs/pr-review/{ref.number}/base"
+    head_ref = f"refs/pr-prism/{ref.number}/head"
+    base_ref = f"refs/pr-prism/{ref.number}/base"
     _log(f"Fetching PR head and base ({meta['baseRefName']}) from {remote}")
     git("fetch", "--no-tags", "--quiet", "--force", remote,
         f"+refs/pull/{ref.number}/head:{head_ref}", f"+refs/heads/{meta['baseRefName']}:{base_ref}", cwd=root)
@@ -154,4 +154,4 @@ def remove_worktree(root: Path, d: Path, number: int) -> None:
         git("worktree", "remove", "--force", str(wt), cwd=root, check=False)
     git("worktree", "prune", cwd=root, check=False)
     for name in ("head", "base"):
-        git("update-ref", "-d", f"refs/pr-review/{number}/{name}", cwd=root, check=False)
+        git("update-ref", "-d", f"refs/pr-prism/{number}/{name}", cwd=root, check=False)
