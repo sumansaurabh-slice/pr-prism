@@ -246,11 +246,14 @@ export function ChatPanel() {
     upsertThread({ ...base, messages: [...base.messages, userMsg, assistant] });
     setLive(null);
     abortRef.current = null;
-    // The server persists the turn — reconcile with its copy.
+    // The server persists the turn — reconcile with its copy. Claude may also have added pending comments or
+    // posted to GitHub, so reload those too.
     api.threads().then(
       (ts) => setThreads(ts),
       () => undefined,
     );
+    void useStore.getState().loadState();
+    void useStore.getState().loadGithubComments();
   };
 
   const stop = () => {
@@ -365,8 +368,9 @@ export function ChatPanel() {
         {!messages.length && !live && (
           <div className="chat-empty">
             <p>
-              <strong>Ask Claude anything about this PR.</strong> Claude can open and search the PR's code. It can only
-              read; it cannot change anything.
+              <strong>Ask Claude anything about this PR.</strong> Claude can open and search the PR's code. It
+              can't change the code. When you ask, it can add a comment to your pending comments, or post it to GitHub
+              for you.
             </p>
             <p className="color-muted">
               The file you have open is added to your question for you. To ask about exact lines, click their line

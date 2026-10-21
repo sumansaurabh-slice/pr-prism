@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import json
+import os
 from typing import Any
 
 from . import anchors
@@ -48,10 +49,16 @@ def build_payload(ctx: dict, drafts: list[dict], body: str, event: str, commit_i
     return payload, unanchored
 
 
-def submit(owner: str, repo: str, number: int, payload: dict) -> dict:
+def _dry_run() -> bool:
+    """PRR_GITHUB_DRY_RUN=1 (tests) makes every post a no-op that returns a fake link."""
+    return os.environ.get("PRR_GITHUB_DRY_RUN") == "1"
+
+
+def _post(endpoint: str, payload: dict, what: str) -> dict:
+    if _dry_run():
+        return {"id": 0, "html_url": f"https://github.com/dry-run/{endpoint}"}
     try:
-        out = gh("api", "-X", "POST", f"repos/{owner}/{repo}/pulls/{number}/reviews", "--input", "-",
-                 input=json.dumps(payload))
+        out = gh("api", "-X", "POST", endpoint, "--input", "-", input=json.dumps(payload))
     except CommandError as e:
         detail = e.stdout.strip() or e.stderr.strip()
         try:
@@ -60,8 +67,17 @@ def submit(owner: str, repo: str, number: int, payload: dict) -> dict:
             detail = "; ".join(m for m in msgs if m)
         except (json.JSONDecodeError, AttributeError):
             pass
-        raise ReviewError(f"GitHub rejected the review: {detail or e}") from e
+        raise ReviewError(f"GitHub rejected the {what}: {detail or e}") from e
     return json.loads(out)
+
+
+def submit(owner: str, repo: str, number: int, payload: dict) -> dict:
+    return _post(f"repos/{owner}/{repo}/pulls/{number}/reviews", payload, "review")
+
+
+def post_comment(owner: str, repo: str, number: int, comment: dict) -> dict:
+    """One inline review comment, posted right away (needs commit_id, path, line, side, body)."""
+    return _post(f"repos/{owner}/{repo}/pulls/{number}/comments", comment, "comment")
 
 
 def existing_comments(owner: str, repo: str, number: int) -> list[dict]:

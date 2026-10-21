@@ -86,7 +86,10 @@ export interface ChatMessage {
 
 export interface ChatThread { id: string; title: string; session_id: string; messages: ChatMessage[]; created_at: string }
 
-export interface SubmittedReview { review_id: number; html_url: string; event: ReviewEvent; comments: number; at: string }
+export interface SubmittedReview {
+  review_id: number | null; html_url: string; event: ReviewEvent; comments: number; at: string;
+  source?: "chat"; // posted by the chat instead of the Submit review button
+}
 
 export interface ReviewState {
   reviewed: Record<string, string>;      // path → head_blob at the time it was marked reviewed
