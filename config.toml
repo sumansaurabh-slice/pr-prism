@@ -1,0 +1,21 @@
+# Personal settings for prr / the /pr-review skill. All keys are optional.
+
+# Where fetched PRs, worktrees, analyses and review state live (outside your repos).
+cache_dir = "~/.cache/pr-review"
+
+[models]
+annotate = "sonnet"   # per-cluster file annotations (runs in parallel)
+docs = "haiku"        # clusters that contain only docs
+synthesize = "opus"   # one call: why/how, review path, flows, impact
+chat = "opus"         # deep-dive chat in the web app
+
+[analysis]
+concurrency = 5            # parallel `claude -p` annotation calls
+cluster_tokens = 25000     # max diff tokens per annotation call
+cluster_max_files = 40
+retries = 2
+annotate_timeout_s = 900
+synthesize_timeout_s = 1200
+
+[server]
+idle_shutdown_minutes = 120

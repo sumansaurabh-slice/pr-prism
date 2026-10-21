@@ -1,0 +1,70 @@
+{
+ "reviewed": {
+  "app/models/webhook.py": "2222222",
+  "app/delivery/retry.py": "old0000"
+ },
+ "dismissed_suggestions": [],
+ "drafts": [
+  {
+   "id": "d1",
+   "path": "app/delivery/sender.py",
+   "side": "RIGHT",
+   "line": 20,
+   "start_line": 19,
+   "body": "If this fails, should we log the last exception? Right now the failure reason is lost.",
+   "source": "user",
+   "suggestion_id": null,
+   "anchored": true,
+   "outdated": false,
+   "commit_id": "dddddddddddddddddddddddddddddddddddddddd",
+   "created_at": "2026-10-21T12:10:00Z"
+  }
+ ],
+ "threads": [
+  {
+   "id": "t1",
+   "title": "Is retry_on too broad?",
+   "session_id": "00000000-0000-4000-8000-000000000001",
+   "created_at": "2026-10-21T12:05:00Z",
+   "messages": [
+    {
+     "role": "user",
+     "text": "Is retry_on too broad here?",
+     "context": [
+      {
+       "path": "app/delivery/retry.py",
+       "side": "RIGHT",
+       "start": 14,
+       "end": 14,
+       "text": "def with_retry(fn: Callable[[], T], max_attempts: int = 5, retry_on=(Exception,)) -> T:",
+       "label": "retry.py:14"
+      }
+     ],
+     "tools": [],
+     "cost_usd": null,
+     "error": null,
+     "ts": "2026-10-21T12:05:00Z"
+    },
+    {
+     "role": "assistant",
+     "text": "Yes. The default `retry_on=(Exception,)` means any bug inside `fn` is retried 4 more times with sleeps. The only caller, `app/delivery/sender.py:17`, passes an explicit tuple, so the default only matters for future callers. Consider making `retry_on` a required argument.",
+     "context": [],
+     "tools": [
+      {
+       "name": "Grep",
+       "summary": "with_retry"
+      },
+      {
+       "name": "Read",
+       "summary": "app/delivery/sender.py"
+      }
+     ],
+     "cost_usd": 0.0123,
+     "error": null,
+     "ts": "2026-10-21T12:05:20Z"
+    }
+   ]
+  }
+ ],
+ "submitted": []
+}

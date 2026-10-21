@@ -1,0 +1,599 @@
+{
+ "schema_version": 1,
+ "status": "complete",
+ "focus": "retry semantics and API compatibility",
+ "pr": {
+  "owner": "acme",
+  "repo": "hooks",
+  "number": 482,
+  "title": "Retry webhook deliveries with exponential backoff",
+  "url": "https://github.com/acme/hooks/pull/482",
+  "author": "dana",
+  "state": "OPEN",
+  "is_draft": false,
+  "body": "Webhook deliveries fail permanently on any transient error today. This adds retries with full-jitter backoff and tracks delivery status.\n\n- [x] retry helper\n- [x] status enum\n- [ ] migration (follow-up)",
+  "base_ref": "main",
+  "head_ref": "dana/webhook-retries",
+  "base_sha": "bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb",
+  "merge_base_sha": "cccccccccccccccccccccccccccccccccccccccc",
+  "head_sha": "dddddddddddddddddddddddddddddddddddddddd",
+  "additions": 65,
+  "deletions": 7,
+  "changed_files": 6,
+  "labels": [
+   "webhooks"
+  ],
+  "commits": [
+   {
+    "sha": "e1e1e1e1e1e1e1e1e1e1e1e1e1e1e1e1e1e1e1e1",
+    "headline": "Add with_retry helper",
+    "author": "dana"
+   },
+   {
+    "sha": "f2f2f2f2f2f2f2f2f2f2f2f2f2f2f2f2f2f2f2f2",
+    "headline": "Track delivery status and attempts",
+    "author": "dana"
+   }
+  ]
+ },
+ "summary": {
+  "tldr": "Webhook sends now **retry up to 5 times** with jittered exponential backoff, and deliveries record a `status` and `attempts` count instead of a `delivered` boolean.",
+  "why": "Deliveries currently fail permanently on the first transient error (timeouts, 5xx). Customers miss events and support has to redeliver by hand.",
+  "how": "1. `DeliveryStatus` enum replaces the boolean in `app/models/webhook.py`.\n2. A generic `with_retry()` helper in `app/delivery/retry.py`.\n3. `send()` wraps the POST in `with_retry()` and records the outcome.\n4. The redeliver API returns the new fields.",
+  "risk": "high",
+  "risk_reasons": [
+   "The public redeliver response drops `delivered`, which breaks clients",
+   "4xx responses are retried",
+   "No migration for persisted `delivered` values"
+  ]
+ },
+ "files": [
+  {
+   "path": "app/models/webhook.py",
+   "old_path": null,
+   "status": "modified",
+   "additions": 10,
+   "deletions": 1,
+   "binary": false,
+   "category": "types",
+   "generated": false,
+   "sensitive": false,
+   "minutes": 3,
+   "base_blob": "1111111",
+   "head_blob": "2222222",
+   "tests_for": null,
+   "tested_by": [],
+   "hunks": [
+    {
+     "id": "H1",
+     "old_start": 1,
+     "old_lines": 11,
+     "new_start": 1,
+     "new_lines": 20,
+     "header": ""
+    }
+   ],
+   "annotated": true,
+   "risk": "medium",
+   "summary": "Replaces the boolean `delivered` flag with a `DeliveryStatus` enum and adds an `attempts` counter. This is the vocabulary the rest of the PR uses.",
+   "look_for": [
+    "Every reader of `delivered` is updated (see Impact)",
+    "`RETRYING` is actually set somewhere",
+    "Default values for existing persisted rows"
+   ],
+   "notes": [
+    {
+     "side": "RIGHT",
+     "start": 6,
+     "end": 10,
+     "kind": "explain",
+     "text": "New `DeliveryStatus` enum. It subclasses `str`, so it serializes as `\"delivered\"` etc. in JSON responses."
+    },
+    {
+     "side": "LEFT",
+     "start": 10,
+     "end": 10,
+     "kind": "risk",
+     "text": "Removing `delivered` breaks every reader of `delivery.delivered`, including `app/api/webhooks.py:13` and code outside this PR."
+    }
+   ],
+   "changed_symbols": [
+    "DeliveryStatus",
+    "WebhookDelivery"
+   ]
+  },
+  {
+   "path": "app/delivery/retry.py",
+   "old_path": null,
+   "status": "added",
+   "additions": 23,
+   "deletions": 0,
+   "binary": false,
+   "category": "core",
+   "generated": false,
+   "sensitive": false,
+   "minutes": 4,
+   "base_blob": null,
+   "head_blob": "3333333",
+   "tests_for": null,
+   "tested_by": [
+    "tests/delivery/test_retry.py"
+   ],
+   "hunks": [
+    {
+     "id": "H1",
+     "old_start": 0,
+     "old_lines": 0,
+     "new_start": 1,
+     "new_lines": 23,
+     "header": ""
+    }
+   ],
+   "annotated": true,
+   "risk": "medium",
+   "summary": "New generic retry helper: `with_retry()` calls a function until it succeeds, sleeping with full-jitter exponential backoff between attempts.",
+   "look_for": [
+    "Backoff math: 0.5s \u2192 1s \u2192 2s \u2026 capped at 30s",
+    "Which exceptions are retried by default",
+    "Re-raise preserves the original traceback"
+   ],
+   "notes": [
+    {
+     "side": "RIGHT",
+     "start": 8,
+     "end": 11,
+     "kind": "explain",
+     "text": "Full-jitter backoff: each delay is uniform in `[0, min(cap, base\u00b72^n)]`, which spreads retries from many workers."
+    },
+    {
+     "side": "RIGHT",
+     "start": 19,
+     "end": 23,
+     "kind": "risk",
+     "text": "`retry_on` defaults to `Exception`, so programming errors (e.g. `KeyError`) are retried and slept on too."
+    }
+   ],
+   "changed_symbols": [
+    "backoff_delays",
+    "with_retry"
+   ]
+  },
+  {
+   "path": "app/delivery/sender.py",
+   "old_path": null,
+   "status": "modified",
+   "additions": 13,
+   "deletions": 4,
+   "binary": false,
+   "category": "core",
+   "generated": false,
+   "sensitive": false,
+   "minutes": 5,
+   "base_blob": "4444444",
+   "head_blob": "5555555",
+   "tests_for": null,
+   "tested_by": [],
+   "hunks": [
+    {
+     "id": "H1",
+     "old_start": 1,
+     "old_lines": 16,
+     "new_start": 1,
+     "new_lines": 25,
+     "header": ""
+    }
+   ],
+   "annotated": true,
+   "risk": "high",
+   "summary": "`send()` now wraps the POST in `with_retry()` and records the outcome in `status`/`attempts` instead of raising.",
+   "look_for": [
+    "Which HTTP errors are retried (4xx vs 5xx)",
+    "Failures no longer raise \u2014 callers must check `status`",
+    "Total worst-case latency in the request path"
+   ],
+   "notes": [
+    {
+     "side": "RIGHT",
+     "start": 10,
+     "end": 14,
+     "kind": "flow",
+     "text": "Each attempt increments `delivery.attempts` before the POST, so a delivery that fails 5 times reports `attempts == 5`."
+    },
+    {
+     "side": "RIGHT",
+     "start": 17,
+     "end": 17,
+     "kind": "risk",
+     "text": "`HTTPStatusError` covers 4xx too. A 404 or 400 is retried 5 times even though it can never succeed."
+    }
+   ],
+   "changed_symbols": [
+    "send"
+   ]
+  },
+  {
+   "path": "app/api/webhooks.py",
+   "old_path": null,
+   "status": "modified",
+   "additions": 1,
+   "deletions": 1,
+   "binary": false,
+   "category": "api",
+   "generated": false,
+   "sensitive": false,
+   "minutes": 2,
+   "base_blob": "6666666",
+   "head_blob": "7777777",
+   "tests_for": null,
+   "tested_by": [],
+   "hunks": [
+    {
+     "id": "H1",
+     "old_start": 8,
+     "old_lines": 6,
+     "new_start": 8,
+     "new_lines": 6,
+     "header": "router = APIRouter()"
+    }
+   ],
+   "annotated": true,
+   "risk": "high",
+   "summary": "The redeliver endpoint returns `status` and `attempts` instead of `delivered`, which is a **breaking change** to the public response.",
+   "look_for": [
+    "API clients that read `delivered`",
+    "Whether the response needs versioning"
+   ],
+   "notes": [
+    {
+     "side": "RIGHT",
+     "start": 13,
+     "end": 13,
+     "kind": "risk",
+     "text": "Response shape changes: `delivered` is removed. External consumers relying on it will break."
+    }
+   ],
+   "changed_symbols": [
+    "redeliver"
+   ]
+  },
+  {
+   "path": "tests/delivery/test_retry.py",
+   "old_path": null,
+   "status": "added",
+   "additions": 17,
+   "deletions": 0,
+   "binary": false,
+   "category": "test",
+   "generated": false,
+   "sensitive": false,
+   "minutes": 2,
+   "base_blob": null,
+   "head_blob": "aaaaaaa",
+   "tests_for": "app/delivery/retry.py",
+   "tested_by": [],
+   "hunks": [
+    {
+     "id": "H1",
+     "old_start": 0,
+     "old_lines": 0,
+     "new_start": 1,
+     "new_lines": 17,
+     "header": ""
+    }
+   ],
+   "annotated": true,
+   "risk": "low",
+   "summary": "Covers the happy path of `with_retry()` with `time.sleep` stubbed out.",
+   "look_for": [
+    "Missing: retries exhausted \u2192 exception re-raised",
+    "Missing: `send()` sets `FAILED`"
+   ],
+   "notes": [
+    {
+     "side": "RIGHT",
+     "start": 16,
+     "end": 17,
+     "kind": "test-gap",
+     "text": "Only the success path is tested. Nothing covers exhausting retries, or `send()` marking a delivery `FAILED`."
+    }
+   ],
+   "changed_symbols": []
+  },
+  {
+   "path": "poetry.lock",
+   "old_path": null,
+   "status": "modified",
+   "additions": 1,
+   "deletions": 1,
+   "binary": false,
+   "category": "generated",
+   "generated": true,
+   "sensitive": false,
+   "minutes": 0.5,
+   "base_blob": "8888888",
+   "head_blob": "9999999",
+   "tests_for": null,
+   "tested_by": [],
+   "hunks": [
+    {
+     "id": "H1",
+     "old_start": 120,
+     "old_lines": 7,
+     "new_start": 120,
+     "new_lines": 7,
+     "header": "files = ["
+    }
+   ],
+   "annotated": false,
+   "risk": null,
+   "summary": null,
+   "look_for": [],
+   "notes": [],
+   "changed_symbols": []
+  }
+ ],
+ "chapters": [
+  {
+   "id": "c1",
+   "title": "Contracts: the new delivery state",
+   "goal": "Start with the data model and the generic helper. Everything else builds on these.",
+   "files": [
+    {
+     "path": "app/models/webhook.py",
+     "why_now": "Defines `DeliveryStatus`, the vocabulary the rest of the PR uses."
+    },
+    {
+     "path": "app/delivery/retry.py",
+     "why_now": "The retry helper has no webhook knowledge, so read it before its caller."
+    }
+   ]
+  },
+  {
+   "id": "c2",
+   "title": "Behavior & API surface",
+   "goal": "How sending uses the helper, how the API response changes, and what is tested.",
+   "files": [
+    {
+     "path": "app/delivery/sender.py",
+     "why_now": "Where retries actually happen; most of the risk is here."
+    },
+    {
+     "path": "app/api/webhooks.py",
+     "why_now": "The externally visible change."
+    },
+    {
+     "path": "tests/delivery/test_retry.py",
+     "why_now": "Check what the tests cover against the risks you just saw."
+    },
+    {
+     "path": "poetry.lock",
+     "why_now": "httpx bump. Skim it."
+    }
+   ]
+  }
+ ],
+ "flows": [
+  {
+   "id": "redeliver",
+   "title": "Redeliver request",
+   "narrative": "A redeliver request loads the delivery and calls `send()` (`app/delivery/sender.py:9`). `send()` hands an `attempt()` closure to `with_retry()` (`app/delivery/retry.py:14`), which POSTs to the customer endpoint and sleeps between failures using `backoff_delays()`. The final status is saved by the API handler.",
+   "nodes": [
+    {
+     "id": "api",
+     "label": "POST /webhooks/{id}/redeliver",
+     "kind": "entry",
+     "path": "app/api/webhooks.py",
+     "line": 9
+    },
+    {
+     "id": "send",
+     "label": "send()",
+     "kind": "logic",
+     "path": "app/delivery/sender.py",
+     "line": 9
+    },
+    {
+     "id": "retry",
+     "label": "with_retry()",
+     "kind": "logic",
+     "path": "app/delivery/retry.py",
+     "line": 14
+    },
+    {
+     "id": "backoff",
+     "label": "backoff_delays()",
+     "kind": "logic",
+     "path": "app/delivery/retry.py",
+     "line": 8
+    },
+    {
+     "id": "customer",
+     "label": "Customer endpoint (httpx POST)",
+     "kind": "external",
+     "path": "app/delivery/sender.py",
+     "line": 12
+    },
+    {
+     "id": "store",
+     "label": "store.save(result)",
+     "kind": "store",
+     "path": "app/api/webhooks.py",
+     "line": 12
+    }
+   ],
+   "edges": [
+    {
+     "source": "api",
+     "target": "send",
+     "label": "delivery"
+    },
+    {
+     "source": "send",
+     "target": "retry",
+     "label": "attempt()"
+    },
+    {
+     "source": "retry",
+     "target": "backoff",
+     "label": "next delay"
+    },
+    {
+     "source": "retry",
+     "target": "customer",
+     "label": "payload"
+    },
+    {
+     "source": "api",
+     "target": "store",
+     "label": "status, attempts"
+    }
+   ]
+  }
+ ],
+ "impact": [
+  {
+   "kind": "breaking",
+   "severity": "high",
+   "title": "Redeliver API response drops `delivered`",
+   "detail": "Clients reading `response.delivered` get `undefined`/`KeyError`. Consider keeping it for one release.",
+   "refs": [
+    {
+     "path": "app/api/webhooks.py",
+     "line": 13,
+     "at": "head"
+    }
+   ]
+  },
+  {
+   "kind": "callers",
+   "severity": "medium",
+   "title": "`WebhookDelivery.delivered` is read in 2 places outside this PR",
+   "detail": "These still read the removed attribute and will raise `AttributeError` at runtime.",
+   "refs": [
+    {
+     "path": "app/workers/reconcile.py",
+     "line": 42,
+     "at": "head"
+    },
+    {
+     "path": "app/admin/views.py",
+     "line": 88,
+     "at": "head"
+    }
+   ]
+  },
+  {
+   "kind": "migration",
+   "severity": "medium",
+   "title": "No data migration from `delivered` to `status`",
+   "detail": "Existing rows have `delivered = true` but will load as `status = PENDING`.",
+   "refs": [
+    {
+     "path": "app/models/webhook.py",
+     "line": 18,
+     "at": "head"
+    }
+   ]
+  },
+  {
+   "kind": "perf",
+   "severity": "low",
+   "title": "Up to ~65s spent in the request thread",
+   "detail": "5 attempts \u00d7 10s timeout plus backoff, all synchronous inside the redeliver handler.",
+   "refs": [
+    {
+     "path": "app/delivery/sender.py",
+     "line": 12,
+     "at": "head"
+    }
+   ]
+  },
+  {
+   "kind": "tests",
+   "severity": "low",
+   "title": "Retry exhaustion is untested",
+   "detail": "Add a test where every attempt fails.",
+   "refs": [
+    {
+     "path": "tests/delivery/test_retry.py",
+     "line": 16,
+     "at": "head"
+    }
+   ]
+  }
+ ],
+ "questions": [
+  {
+   "text": "Should 4xx responses really be retried? A 404 can never succeed.",
+   "refs": [
+    {
+     "path": "app/delivery/sender.py",
+     "line": 17,
+     "at": "head"
+    }
+   ]
+  },
+  {
+   "text": "What is the migration plan for rows that already have `delivered = true`?",
+   "refs": [
+    {
+     "path": "app/models/webhook.py",
+     "line": 18,
+     "at": "head"
+    }
+   ]
+  }
+ ],
+ "suggestions": [
+  {
+   "id": "s1",
+   "path": "app/delivery/sender.py",
+   "side": "RIGHT",
+   "line": 17,
+   "start_line": null,
+   "severity": "major",
+   "body": "Retrying on `HTTPStatusError` also retries 4xx responses, which will never succeed. Retry only on 5xx and 429?"
+  },
+  {
+   "id": "s2",
+   "path": "app/delivery/retry.py",
+   "side": "RIGHT",
+   "line": 14,
+   "start_line": null,
+   "severity": "minor",
+   "body": "`retry_on=(Exception,)` is very broad. Could callers opt in to specific exceptions instead?"
+  },
+  {
+   "id": "s3",
+   "path": "app/api/webhooks.py",
+   "side": "RIGHT",
+   "line": 13,
+   "start_line": null,
+   "severity": "blocker",
+   "body": "This removes `delivered` from a public response. Can we keep it for one release?\n\n```suggestion\n    return {\"id\": result.id, \"delivered\": result.status == DeliveryStatus.DELIVERED, \"status\": result.status, \"attempts\": result.attempts}\n```"
+  },
+  {
+   "id": "s4",
+   "path": "app/models/webhook.py",
+   "side": "RIGHT",
+   "line": 8,
+   "start_line": null,
+   "severity": "nit",
+   "body": "`RETRYING` is never set. Drop it, or set it in `send()` between attempts."
+  }
+ ],
+ "progress": {
+  "status": "complete",
+  "clusters_total": 1,
+  "clusters_done": 1,
+  "clusters_failed": 0,
+  "message": "",
+  "started_at": "2026-10-21T12:00:00Z",
+  "finished_at": "2026-10-21T12:03:10Z",
+  "log": [
+   "annotated 1/1 batches",
+   "synthesis done"
+  ]
+ },
+ "repair_log": []
+}

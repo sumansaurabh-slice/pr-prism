@@ -1,0 +1,137 @@
+diff --git a/app/models/webhook.py b/app/models/webhook.py
+index 1111111..2222222 100644
+--- a/app/models/webhook.py
++++ b/app/models/webhook.py
+@@ -1,11 +1,20 @@
+ from dataclasses import dataclass, field
+ from datetime import datetime
++from enum import Enum
+ 
+ 
++class DeliveryStatus(str, Enum):
++    PENDING = "pending"
++    RETRYING = "retrying"
++    DELIVERED = "delivered"
++    FAILED = "failed"
++
++
+ @dataclass
+ class WebhookDelivery:
+     id: str
+     url: str
+     payload: dict
+-    delivered: bool = False
++    status: DeliveryStatus = DeliveryStatus.PENDING
++    attempts: int = 0
+     created_at: datetime = field(default_factory=datetime.utcnow)
+diff --git a/app/delivery/retry.py b/app/delivery/retry.py
+new file mode 100644
+index 0000000..3333333
+--- /dev/null
++++ b/app/delivery/retry.py
+@@ -0,0 +1,23 @@
++import random
++import time
++from typing import Callable, TypeVar
++
++T = TypeVar("T")
++
++
++def backoff_delays(max_attempts: int, base: float = 0.5, cap: float = 30.0):
++    """Full-jitter exponential backoff: 0.5s, 1s, 2s, ... capped at `cap`."""
++    for attempt in range(max_attempts - 1):
++        yield random.uniform(0, min(cap, base * 2 ** attempt))
++
++
++def with_retry(fn: Callable[[], T], max_attempts: int = 5, retry_on=(Exception,)) -> T:
++    delays = backoff_delays(max_attempts)
++    while True:
++        try:
++            return fn()
++        except retry_on:
++            delay = next(delays, None)
++            if delay is None:
++                raise
++            time.sleep(delay)
+diff --git a/app/delivery/sender.py b/app/delivery/sender.py
+index 4444444..5555555 100644
+--- a/app/delivery/sender.py
++++ b/app/delivery/sender.py
+@@ -1,16 +1,25 @@
+ import httpx
+ 
+-from app.models.webhook import WebhookDelivery
++from app.delivery.retry import with_retry
++from app.models.webhook import DeliveryStatus, WebhookDelivery
+ 
+ TIMEOUT = 10
+ 
+ 
+ def send(delivery: WebhookDelivery, client: httpx.Client) -> WebhookDelivery:
+-    resp = client.post(delivery.url, json=delivery.payload, timeout=TIMEOUT)
+-    resp.raise_for_status()
+-    delivery.delivered = True
++    def attempt() -> httpx.Response:
++        delivery.attempts += 1
++        resp = client.post(delivery.url, json=delivery.payload, timeout=TIMEOUT)
++        resp.raise_for_status()
++        return resp
++
++    try:
++        with_retry(attempt, retry_on=(httpx.TransportError, httpx.HTTPStatusError))
++        delivery.status = DeliveryStatus.DELIVERED
++    except httpx.HTTPError:
++        delivery.status = DeliveryStatus.FAILED
+     return delivery
+ 
+ 
+ def send_all(deliveries, client):
+     return [send(d, client) for d in deliveries]
+diff --git a/app/api/webhooks.py b/app/api/webhooks.py
+index 6666666..7777777 100644
+--- a/app/api/webhooks.py
++++ b/app/api/webhooks.py
+@@ -8,6 +8,6 @@ router = APIRouter()
+ @router.post("/webhooks/{delivery_id}/redeliver")
+ def redeliver(delivery_id: str, store=Depends(get_store), client=Depends(get_client)):
+     delivery = store.get(delivery_id)
+     result = send(delivery, client)
+     store.save(result)
+-    return {"id": result.id, "delivered": result.delivered}
++    return {"id": result.id, "status": result.status, "attempts": result.attempts}
+diff --git a/tests/delivery/test_retry.py b/tests/delivery/test_retry.py
+new file mode 100644
+index 0000000..aaaaaaa
+--- /dev/null
++++ b/tests/delivery/test_retry.py
+@@ -0,0 +1,17 @@
++import pytest
++
++from app.delivery import retry
++
++
++def test_retries_until_success(monkeypatch):
++    monkeypatch.setattr(retry.time, "sleep", lambda _: None)
++    calls = []
++
++    def flaky():
++        calls.append(1)
++        if len(calls) < 3:
++            raise ConnectionError("boom")
++        return "ok"
++
++    assert retry.with_retry(flaky, max_attempts=5) == "ok"
++    assert len(calls) == 3
+diff --git a/poetry.lock b/poetry.lock
+index 8888888..9999999 100644
+--- a/poetry.lock
++++ b/poetry.lock
+@@ -120,7 +120,7 @@ files = [
+ 
+ [[package]]
+ name = "httpx"
+-version = "0.27.0"
++version = "0.28.1"
+ description = "The next generation HTTP client."
+ optional = false
+ python-versions = ">=3.8"
