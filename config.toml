@@ -16,3 +16,7 @@ cluster_max_files = 40
 retries = 2
 annotate_timeout_s = 900
 synthesize_timeout_s = 1200
+
+[chat]
+can_post = true       # the chat may post comments (and comment-only reviews) to GitHub when you ask it to
+can_approve = false   # set true to also let the chat approve or request changes

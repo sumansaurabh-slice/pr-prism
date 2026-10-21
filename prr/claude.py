@@ -83,6 +83,14 @@ def run_structured(prompt: str, schema: dict[str, Any], *, cwd: Path, model: str
 # --------------------------------------------------------------------------------------
 
 
+# How the chat's own tools are shown to the reviewer while Claude works.
+FRIENDLY_TOOL_NAMES = {
+    "mcp__prprism__add_pending_comment": "Added pending comment",
+    "mcp__prprism__post_comment": "Posted comment to GitHub",
+    "mcp__prprism__post_review": "Posted review to GitHub",
+}
+
+
 def tool_summary(name: str, inp: dict[str, Any], cwd: Path | None = None) -> str:
     def rel(p: str) -> str:
         if cwd and p.startswith(str(cwd) + os.sep):
@@ -99,6 +107,11 @@ def tool_summary(name: str, inp: dict[str, Any], cwd: Path | None = None) -> str
         return f"{inp.get('pattern', '')!r}" + (f" in {rel(where)}" if where else "")
     if name == "Glob":
         return inp.get("pattern", "")
+    if name.startswith("mcp__prprism__"):
+        if "path" in inp:
+            start = f"{inp['start_line']}-" if inp.get("start_line") else ""
+            return f"{rel(str(inp['path']))}:{start}{inp.get('line', '')}"
+        return f"{str(inp.get('event') or 'COMMENT').lower()}" + (" with pending comments" if inp.get("include_pending") else "")
     if "codegraph" in name:
         return str(inp.get("query") or inp.get("symbol") or inp)[:120]
     return json.dumps(inp)[:120]
@@ -132,7 +145,8 @@ class StreamTranslator:
             for block in msg.get("content", []):
                 if block.get("type") == "tool_use":
                     name = block.get("name", "")
-                    out.append({"type": "tool", "name": name, "summary": tool_summary(name, block.get("input") or {}, self.cwd)})
+                    out.append({"type": "tool", "name": FRIENDLY_TOOL_NAMES.get(name, name),
+                                "summary": tool_summary(name, block.get("input") or {}, self.cwd)})
                 elif block.get("type") == "text" and msg.get("id") not in self._text_msgs and block.get("text"):
                     out.append({"type": "text", "text": block["text"]})
             return out

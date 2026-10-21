@@ -195,6 +195,13 @@ def cmd_supervise(args: argparse.Namespace, cfg: Config) -> int:
     return 0
 
 
+def cmd_mcp(args: argparse.Namespace, cfg: Config) -> int:
+    from .chat_tools import serve_stdio
+
+    serve_stdio(Path(args.pr_dir), cfg)
+    return 0
+
+
 def cmd_serve_child(args: argparse.Namespace, cfg: Config) -> int:
     from .server import serve_forever
 
@@ -231,6 +238,8 @@ def main(argv: list[str] | None = None) -> None:
     s.add_argument("--all", action="store_true", help="every PR of the current repo")
     s = sub.add_parser("_serve", help=argparse.SUPPRESS)  # the supervisor
     s.add_argument("pr_dir")
+    s = sub.add_parser("_mcp", help=argparse.SUPPRESS)  # the chat's comment tools (an MCP server on stdio)
+    s.add_argument("pr_dir")
     s = sub.add_parser("_serve-child", help=argparse.SUPPRESS)  # the server the supervisor runs
     s.add_argument("pr_dir")
     s.add_argument("--port", type=int, required=True)
@@ -239,7 +248,7 @@ def main(argv: list[str] | None = None) -> None:
     cfg = load_config()
     handlers = {"doctor": cmd_doctor, "fetch": cmd_fetch, "serve": cmd_serve, "analyze": cmd_analyze,
                 "status": cmd_status, "stop": cmd_stop, "clean": cmd_clean, "_serve": cmd_supervise,
-                "_serve-child": cmd_serve_child}
+                "_serve-child": cmd_serve_child, "_mcp": cmd_mcp}
     try:
         code = handlers[args.cmd](args, cfg)
     except (CommandError, ValueError, FileNotFoundError) as e:

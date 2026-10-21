@@ -33,10 +33,17 @@ class AnalysisSettings:
 
 
 @dataclass
+class ChatSettings:
+    can_post: bool = True      # the chat may post comments and comment-only reviews to GitHub when asked
+    can_approve: bool = False  # the chat may also approve or request changes (off: those stay on the Submit button)
+
+
+@dataclass
 class Config:
     cache_dir: Path = Path("~/.cache/pr-prism").expanduser()
     models: Models = field(default_factory=Models)
     analysis: AnalysisSettings = field(default_factory=AnalysisSettings)
+    chat: ChatSettings = field(default_factory=ChatSettings)
 
 
 def load_config() -> Config:
@@ -53,6 +60,9 @@ def load_config() -> Config:
     for key, value in raw.get("analysis", {}).items():
         if hasattr(cfg.analysis, key):
             setattr(cfg.analysis, key, int(value))
+    for key, value in raw.get("chat", {}).items():
+        if hasattr(cfg.chat, key):
+            setattr(cfg.chat, key, bool(value))
     return cfg
 
 
