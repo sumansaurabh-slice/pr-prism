@@ -13,7 +13,7 @@ from collections import defaultdict
 from pathlib import Path
 from typing import Any
 
-from . import anchors
+from . import anchors, filekinds
 from .classify import CATEGORY_ORDER, CATEGORY_TITLES
 from .models import Analysis
 from .util import read_json
@@ -196,12 +196,25 @@ def build_analysis(pr_dir: Path) -> dict[str, Any]:
         for it in c["items"]:
             keys_by_path[it["path"]].append(it["key"])
 
+    # Test/docs flags: language rules first, then files Claude listed that the rules did not catch.
+    roots = ctx.get("test_roots", [])
+    claude_tests = {p for p in map(resolve, (synthesis or {}).get("test_files", [])) if p}
+    claude_docs = {p for p in map(resolve, (synthesis or {}).get("docs_files", [])) if p}
+
     files_out, suggestions = [], []
     for f in ctx["files"]:
         entry = {k: f[k] for k in ("path", "old_path", "status", "additions", "deletions", "binary", "category",
                                    "generated", "sensitive", "minutes", "base_blob", "head_blob", "tests_for",
                                    "tested_by", "hunks")}
         entry.update({"annotated": False, "risk": None, "summary": None, "look_for": [], "notes": [], "changed_symbols": []})
+        kind, why = filekinds.kind(f["path"], roots)
+        if filekinds.AGENT_FILES.search(f["path"]):
+            pass  # AI-agent instructions are never hidden, whatever Claude listed
+        elif kind is None and f["path"] in claude_tests:
+            kind, why = "test", "Claude marked it as a test file"
+        elif kind is None and f["path"] in claude_docs:
+            kind, why = "docs", "Claude marked it as a docs file"
+        entry.update({"is_test": kind == "test", "is_docs": kind == "docs", "kind_reason": why})
         parts = [read_json(pr_dir / "partials" / f"{k}.json") for k in keys_by_path.get(f["path"], [])]
         parts = [p["annotation"] for p in parts if p]
         if parts:

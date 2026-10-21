@@ -6,7 +6,7 @@ import os
 import sys
 from pathlib import Path
 
-from . import anchors, classify, diffparse, graph
+from . import anchors, classify, diffparse, filekinds, graph
 from .config import Config, pr_dir
 from .gitgh import CommandError, PRRef, find_remote, gh_json, git, git_ok
 from .util import now_iso, read_json, write_json, write_text
@@ -136,6 +136,7 @@ def fetch(ref: PRRef, root: Path, cfg: Config) -> Path:
             for f in files
         ],
         "order": order,
+        "test_roots": filekinds.test_roots(wt),  # test folders the PR's own pytest config names
         "warnings": warnings,
     }
     write_json(d / "context.json", ctx)

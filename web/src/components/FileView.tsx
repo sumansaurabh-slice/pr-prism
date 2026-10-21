@@ -924,6 +924,11 @@ function FileSummary({ file, stale }: { file: FileEntry; stale: boolean }) {
         <strong>Claude's notes on this file</strong>
         <RiskBadge risk={file.risk} />
         <span className="Label Label--secondary">{CATEGORY_TEXT[file.category]}</span>
+        {(file.is_test || file.is_docs) && (
+          <span className="Label Label--secondary" title={file.kind_reason ?? undefined}>
+            {file.is_test ? "Test file" : "Docs file"}
+          </span>
+        )}
         {file.sensitive && (
           <span className="Label Label--attention" title="Security, CI, secrets or packaging file">
             Needs extra care

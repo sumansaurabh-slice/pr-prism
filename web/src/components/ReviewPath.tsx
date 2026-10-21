@@ -2,7 +2,7 @@ import { useEffect, useMemo, useRef, useState } from "react";
 import { IconCheck, IconChevronDown, IconChevronRight, IconSearch, StatusIcon } from "../icons";
 import { InlineText } from "../markdown";
 import { fileHref, useRoute } from "../router";
-import { fileMap, isStaleReview, readLS, splitPath, useStore, writeLS } from "../store";
+import { fileMap, hiddenByPrefs, isStaleReview, splitPath, useStore, type ViewPrefs } from "../store";
 import type { ChapterFile, FileEntry } from "../types";
 
 const OTHER_ID = "_other"; // the extra group for files the reading order left out
@@ -36,9 +36,14 @@ function FileRow({ file, why, active }: { file: FileEntry; why: string; active: 
           </span>
         )}
       </span>
-      {(dir || drafts > 0 || stale || file.sensitive) && (
+      {(dir || drafts > 0 || stale || file.sensitive || file.is_test || file.is_docs) && (
         <span className="tree-line2">
           {dir && <span className="tree-dir">{dir.replace(/\/$/, "")}</span>}
+          {(file.is_test || file.is_docs) && (
+            <span className="Label Label--secondary Label--small" title={file.kind_reason ?? undefined}>
+              {file.is_test ? "test" : "docs"}
+            </span>
+          )}
           {file.sensitive && <span className="Label Label--attention Label--small">needs care</span>}
           {stale && (
             <span className="Label Label--attention Label--small" title="This file changed after you marked it viewed">
@@ -66,7 +71,8 @@ export function ReviewPath() {
   const reviewedMap = useStore((s) => s.state.reviewed);
   const route = useRoute();
   const [filter, setFilter] = useState("");
-  const [hideViewed, setHideViewed] = useState(() => readLS("prr.hideReviewed") === "1");
+  const prefs = useStore((s) => s.prefs);
+  const setPref = useStore((s) => s.setPref);
   const [closed, setClosed] = useState<Record<string, boolean>>({});
   const [openSkim, setOpenSkim] = useState<Record<string, boolean>>({});
   const activePath = route.view === "file" ? route.path : null;
@@ -105,7 +111,18 @@ export function ReviewPath() {
   const needle = filter.trim().toLowerCase();
   const visible = (f: FileEntry) =>
     (!needle || f.path.toLowerCase().includes(needle)) &&
-    (!hideViewed || !(f.path in reviewedMap) || isStaleReview(reviewedMap, f) || f.path === activePath);
+    (f.path === activePath || !hiddenByPrefs(f, prefs, reviewedMap));
+  const total = analysis.files.length;
+  const shown = analysis.files.filter(visible).length;
+  const testCount = analysis.files.filter((f) => f.is_test).length;
+  const docsCount = analysis.files.filter((f) => f.is_docs).length;
+  const toggle = (key: keyof ViewPrefs, label: string, title: string, count?: number) => (
+    <label className={`tree-toggle${count === 0 ? " disabled" : ""}`} title={title}>
+      <input type="checkbox" checked={prefs[key]} disabled={count === 0} onChange={(e) => setPref(key, e.target.checked)} />
+      {label}
+      {count !== undefined && <span className="Counter">{count}</span>}
+    </label>
+  );
 
   return (
     <nav className="pane review-path" aria-label="Files in reading order">
@@ -120,17 +137,20 @@ export function ReviewPath() {
             onChange={(e) => setFilter(e.target.value)}
           />
         </label>
-        <label className="tree-toggle" title="Hide files you have marked as viewed">
-          <input
-            type="checkbox"
-            checked={hideViewed}
-            onChange={(e) => {
-              setHideViewed(e.target.checked);
-              writeLS("prr.hideReviewed", e.target.checked ? "1" : "0");
-            }}
-          />
-          Hide viewed files
-        </label>
+        <div className="tree-toggles">
+          {toggle("hideViewed", "Hide viewed files", "Hide files you have marked as viewed")}
+          {toggle("hideTests", "Hide test files", testCount
+            ? "Hide tests, test helpers, fixtures and eval files. Hover the \"test\" tag on a file to see why it counts."
+            : "No test files in this PR", testCount)}
+          {toggle("hideDocs", "Hide docs files", docsCount
+            ? "Hide READMEs, Markdown files, changelogs and docs folders. Hover the \"docs\" tag on a file to see why it counts."
+            : "No docs files in this PR", docsCount)}
+        </div>
+        {shown < total && !needle && (
+          <div className="tree-showing">
+            Showing {shown} of {total} files
+          </div>
+        )}
       </div>
       <div className="tree-scroll">
         {chapters.map(({ ch, entries }, i) => {

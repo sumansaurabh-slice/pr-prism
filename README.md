@@ -2,7 +2,7 @@
 
 A Claude Code skill that turns a large GitHub pull request (5–10k lines) into a local review app. The app looks and feels like GitHub's own PR pages, and everything Claude writes uses plain, simple English (about 10th-class level: short sentences, everyday words, no jargon or buzzwords).
 
-- **Reading order**: files grouped into chapters and ordered so each one only depends on what you've already read. Each file says why to read it now.
+- **Reading order**: files grouped into chapters and ordered so each one only depends on what you've already read. Each file says why to read it now. Checkboxes hide viewed files, **test files** and **docs files**; `j`/`k` and "Mark viewed & next" skip hidden files too.
 - **Overview**: a short summary, why the change was made, how it works, what could go wrong, and questions to ask the author.
 - **Files changed**: the diff with Claude's notes (explains / possible problem / data flow / missing test) right under the lines they refer to, shown like GitHub review comments. Claude's suggested comments sit next to them; you add, edit or dismiss each one. Mark files as **Viewed**, like on GitHub.
 - **Data Flow**: interactive graphs of the runtime paths the PR adds or changes. Click a node to jump to the code.
@@ -176,6 +176,7 @@ Put team rules under "Team context" in `skill/review-guidelines.md`. Claude foll
 ## Make it yours
 
 - `skill/review-guidelines.md` is your personal review checklist. It is injected into every analysis prompt.
+- `prr/filekinds.py` decides which files are tests or docs, using each language's naming rules (Go `_test.go`, Python `test_*.py` and pytest `testpaths`, JS/TS `*.test.ts`, Java `src/test/`, Rust `tests/`, `docs/`, Markdown, …). Claude adds any the rules miss. AI-agent instruction files (`CLAUDE.md`, `AGENTS.md`, `.claude/`) are never hidden. Hover the small "test" or "docs" tag on a file to see why it counts.
 - `prr/prompts/style.md` holds the plain-language writing rules (short sentences, everyday words, banned buzzwords). Every prompt includes it, so all of Claude's text follows it.
 - `prr/prompts/*.md` holds the detailed instructions for annotation, synthesis and chat.
 - `config.toml` sets the models (annotate / synthesize / chat), concurrency, batch size and cache location.

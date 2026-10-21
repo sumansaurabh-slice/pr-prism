@@ -73,6 +73,24 @@ Only include items that really matter; usually 3 to 10.
 ### 5. questions
 Give 2 to 6 short questions the reviewer should ask the PR author: things the code cannot answer, rollout or compatibility worries, or missing context. Add `refs` where they help.
 
+### 6. test_files and docs_files
+The app has "Hide test files" and "Hide docs files" checkboxes. List the changed files for each. Use exact paths from the file list.
+- **test_files:** files whose main job is testing:
+  - tests and test helpers;
+  - fixtures, mocks and sample data;
+  - eval or benchmark harnesses;
+  - test runner config.
+
+  Use the repo's own conventions, not only file names. Example: a `support/` folder that only tests import counts.
+- **docs_files:** files that are documentation:
+  - READMEs, guides, design docs and plans;
+  - changelogs;
+  - doc-site pages.
+
+  Code samples that live inside a docs folder count as docs.
+- A file goes in at most one list. Code that runs in production goes in neither, even if it is test-related, like a feature flag for tests.
+- The file list above already marks files that the language rules recognise as `test file` or `docs file`. Include those too, unless they are clearly wrong.
+
 ## Writing rules for this guide
 - Point to code as inline code: `path/to/file.ext:123` or `path:120-140`. The app turns these into links.
 - Be specific. Name the functions, fields, flags and files. No filler like "This PR improves the codebase".

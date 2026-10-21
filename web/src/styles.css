@@ -909,6 +909,21 @@ textarea.input {
   font-size: 12px;
   color: var(--text-muted);
 }
+.tree-toggles {
+  display: flex;
+  flex-direction: column;
+  gap: 4px;
+}
+.tree-toggle .Counter {
+  margin-left: auto;
+}
+.tree-toggle.disabled {
+  opacity: 0.55;
+}
+.tree-showing {
+  font-size: 12px;
+  color: var(--text-muted);
+}
 .tree-scroll {
   flex: 1;
   overflow: auto;
