@@ -34,13 +34,13 @@ Inside Claude Code, in the repo the PR belongs to:
 /pr-prism 1234
 /pr-prism https://github.com/org/repo/pull/1234 focus on the retry logic and the migration
 /pr-prism status            # fetched PRs, analysis state, running servers
-/pr-prism stop 1234         # stop that PR's web server
+/pr-prism stop 1234         # stop that PR's web server (the only way it stops)
 /pr-prism clean 1234        # remove the worktree and cached data (or: clean --all)
 ```
 
 **What the skill does:**
 1. `prr fetch` checks the PR head out into an isolated worktree under `~/.cache/pr-prism/`. Your working copy is never touched.
-2. `prr serve` opens the app; the review path is usable right away.
+2. `prr serve` opens the app; the review path is usable right away. The server keeps running until you stop it with `/pr-prism stop`. If it crashes, it restarts itself. Each PR always uses the same port and link (for example `http://127.0.0.1:47321/`), so an open browser tab keeps working after a restart, and even after a reboot once you run `/pr-prism` again.
 3. `prr analyze` runs Claude's analysis in the background. The app fills in as each batch finishes.
 
 Rerunning after the PR changes only re-annotates the files that changed, and draft comments are remapped to the new lines.
@@ -155,7 +155,7 @@ Put team rules under "Team context" in `skill/review-guidelines.md`. Claude foll
 
 ```
 /pr-prism 966           # run it again: only groups of files that changed are re-read, and your draft comments move to the new lines
-/pr-prism stop 966      # stop the app for this PR
+/pr-prism stop 966      # stop the app for this PR (it never stops by itself; the link stays the same next time)
 /pr-prism clean 966     # delete this PR's copy and cached data
 /pr-prism clean --all   # do that for every ai-banker PR you reviewed
 ```
@@ -199,7 +199,7 @@ Submit       ─► POST /api/review/submit ─► `gh api POST /repos/{o}/{r}/p
 - Bad model output is repaired, not rejected. An anchor outside the diff is clamped or folded into the file summary, an unknown path is dropped, and a file the guide forgot still lands in a chapter. All repairs are listed in `repair_log`.
 
 **Safety:**
-- **Network:** the server binds to 127.0.0.1 only and uses a random token that becomes an HttpOnly SameSite=Strict cookie. It checks the Host header (blocks DNS rebinding) and the Origin of every state-changing request. It sends a strict CSP and renders markdown without raw HTML.
+- **Network:** the server binds to 127.0.0.1 only and uses a random token (made once per PR and kept in that PR's `server.json`, readable only by you) that becomes an HttpOnly SameSite=Strict cookie. It checks the Host header (blocks DNS rebinding) and the Origin of every state-changing request. It sends a strict CSP and renders markdown without raw HTML.
 - **Claude calls:** every call uses `--setting-sources user --strict-mcp-config`, read-only tools and `--permission-mode dontAsk`. A PR's own `.claude/settings.json` hooks or `.mcp.json` never run, and chat can't execute code.
 - **Git:** worktree checkouts run with `core.hooksPath=/dev/null`.
 - **GitHub:** nothing is posted until you confirm the previewed payload.

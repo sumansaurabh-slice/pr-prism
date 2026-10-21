@@ -13,7 +13,7 @@ TOKEN = "secret-token"
 def client(tmp_path, tricky_repo):
     make_pr_dir(tmp_path, tricky_repo["diff"])
     (tmp_path / "diff.patch").write_text(tricky_repo["diff"])
-    app = Guard(create_app(tmp_path, Config()), TOKEN, PORT, on_activity=lambda: None)
+    app = Guard(create_app(tmp_path, Config()), TOKEN, PORT)
     return TestClient(app, base_url=f"http://127.0.0.1:{PORT}")
 
 

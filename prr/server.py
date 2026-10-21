@@ -12,7 +12,6 @@ import asyncio
 import hmac
 import json
 import mimetypes
-import os
 import shutil
 import time
 import uuid
@@ -43,8 +42,8 @@ MAX_CONTEXT_CHARS = 20_000
 class Guard:
     """Pure-ASGI auth + security headers (pure ASGI so streamed chat responses aren't buffered)."""
 
-    def __init__(self, app: Any, token: str, port: int, on_activity: Any):
-        self.app, self.token, self.on_activity = app, token, on_activity
+    def __init__(self, app: Any, token: str, port: int):
+        self.app, self.token = app, token
         self.hosts = {f"127.0.0.1:{port}", f"localhost:{port}"}
         self.origins = {f"http://{h}" for h in self.hosts}
 
@@ -71,7 +70,6 @@ class Guard:
                 return await self._reply(send, 303, "", [(b"location", b"/"), (b"set-cookie", cookie_hdr.encode())])
         if not hmac.compare_digest(cookie, self.token):
             return await self._reply(send, 401, "Unauthorized: open the link printed by /pr-prism (prr serve).")
-        self.on_activity()
 
         async def send_with_headers(message: Any) -> None:
             if message["type"] == "http.response.start":
@@ -529,48 +527,26 @@ def create_app(pr_dir: Path, cfg: Config) -> FastAPI:
 
 
 # --------------------------------------------------------------------------------------
-# Process entry point (`prr _serve`): bind, write server.json, idle shutdown
+# Process entry point (`prr _serve-child`). The supervisor (prr/supervise.py) chooses the port and token
+# and restarts this process if it dies; this process only serves.
 # --------------------------------------------------------------------------------------
 
 
-def serve_forever(pr_dir: Path, cfg: Config, port: int = 0) -> None:
-    import secrets
+def serve_forever(pr_dir: Path, cfg: Config, port: int, token: str) -> None:
     import socket
+    import sys
 
     import uvicorn
 
-    from .util import write_json
+    from .supervise import EXIT_PORT_BUSY
 
     sock = socket.socket(socket.AF_INET, socket.SOCK_STREAM)
     sock.setsockopt(socket.SOL_SOCKET, socket.SO_REUSEADDR, 1)
-    sock.bind(("127.0.0.1", port))
-    port = sock.getsockname()[1]
-    token = secrets.token_urlsafe(32)
-    last = {"t": time.time()}
-
-    inner = create_app(pr_dir, cfg)
-    app = Guard(inner, token, port, on_activity=lambda: last.__setitem__("t", time.time()))
-    server = uvicorn.Server(uvicorn.Config(app, log_level="warning", access_log=False, timeout_graceful_shutdown=3))
-
-    async def idle_watch() -> None:
-        while not server.should_exit:
-            await asyncio.sleep(30)
-            if time.time() - last["t"] > cfg.idle_shutdown_minutes * 60 and not inner.state.running:
-                server.should_exit = True
-
-    url = f"http://127.0.0.1:{port}/?t={token}"
-    write_json(pr_dir / "server.json", {"pid": os.getpid(), "port": port, "token": token, "url": url, "started_at": now_iso()})
-
-    async def main() -> None:
-        watcher = asyncio.create_task(idle_watch())
-        try:
-            await server.serve(sockets=[sock])
-        finally:
-            watcher.cancel()
-
     try:
-        asyncio.run(main())
-    finally:
-        info = read_json(pr_dir / "server.json")
-        if info and info.get("pid") == os.getpid():
-            (pr_dir / "server.json").unlink(missing_ok=True)
+        sock.bind(("127.0.0.1", port))
+    except OSError as e:
+        print(f"[prr] can't use port {port}: {e}", file=sys.stderr, flush=True)
+        sys.exit(EXIT_PORT_BUSY)
+    app = Guard(create_app(pr_dir, cfg), token, port)
+    server = uvicorn.Server(uvicorn.Config(app, log_level="warning", access_log=False, timeout_graceful_shutdown=3))
+    server.run(sockets=[sock])
