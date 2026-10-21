@@ -1,5 +1,5 @@
 import type {
-  Analysis, ChatEvent, ChatThread, ContextChip, Draft, ExistingComment, ReviewEvent, ReviewPreview,
+  Analysis, ApprovalDecision, ChatEvent, ChatThread, ContextChip, Draft, ExistingComment, ReviewEvent, ReviewPreview,
   ReviewState, Side,
 } from "./types";
 
@@ -64,6 +64,8 @@ export const api = {
   createThread: (title?: string) => request<ChatThread>("POST", "/api/chat/threads", { title }),
   deleteThread: (id: string) => request<{ ok: boolean }>("DELETE", `/api/chat/threads/${q(id)}`),
   stopChat: (id: string) => request<{ ok: boolean }>("POST", `/api/chat/threads/${q(id)}/stop`),
+  decideApproval: (id: string, decision: ApprovalDecision) =>
+    request<{ ok: boolean }>("POST", `/api/chat/approvals/${q(id)}`, { decision }),
 };
 
 /** POST a chat message and stream SSE `data: <json>` frames back to `onEvent`. */

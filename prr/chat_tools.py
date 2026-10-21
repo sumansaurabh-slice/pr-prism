@@ -1,18 +1,25 @@
-"""Comment tools for the chat: a small MCP server over stdio (`prr _mcp <pr_dir>`).
+"""The chat's own MCP server over stdio (`prr _mcp <pr_dir>`).
 
-The chat's `claude -p` process gets these tools instead of shell or `gh` access, so it can only ever touch
-this one PR, and only in these ways:
+Comment tools for this one PR:
 - add_pending_comment: add to the reviewer's pending comments in the app (nothing is sent to GitHub);
 - post_comment: post one line comment to GitHub now, as the reviewer;
 - post_review: post a review (a summary, optionally with all pending comments) to GitHub now.
-
 config.toml [chat] can_post turns the two posting tools off; can_approve allows APPROVE / REQUEST_CHANGES.
+
+And `approve`, Claude Code's permission prompt tool (`--permission-prompt-tool`): for every action that is not
+on the auto-allow list, it asks the reviewer in the browser (through the review server) and waits for
+Allow / Always allow / Deny.
 """
 
 from __future__ import annotations
 
 import json
+import os
+import re
 import sys
+import threading
+import urllib.error
+import urllib.request
 from pathlib import Path
 from typing import Any
 
@@ -39,8 +46,68 @@ _LINE_ARGS = {
 _COMMENT_SCHEMA = {"type": "object", "properties": _LINE_ARGS, "required": ["path", "line", "body"]}
 
 
+APPROVAL_WAIT_S = 15 * 60
+# Connector tools that only look things up (getJiraIssue, searchJiraIssuesUsingJql, slack_read_channel, …) run without asking.
+_READ_ONLY_MCP = re.compile(r"(^|_)(get|search|list|read|fetch|lookup|query|find|view)([A-Z_]|$)")
+
+
+def approval_key(tool: str, inp: dict) -> str:
+    """What "Always allow in this chat" covers: a whole tool, or for shell commands the first two words."""
+    if tool == "Bash":
+        words = str(inp.get("command", "")).split()
+        return "Bash:" + " ".join(words[:2])
+    return tool
+
+
+def auto_allowed(tool: str) -> bool:
+    if tool.startswith("mcp__"):
+        parts = tool.split("__")
+        return len(parts) >= 3 and bool(_READ_ONLY_MCP.search(parts[2]))
+    return False
+
+
+def _ask_reviewer(pr_dir: Path, tool: str, inp: dict) -> dict:
+    """Ask through the review server (which shows the card in the chat) and wait for the answer."""
+    info = read_json(pr_dir / "server.json") or {}
+    if not info.get("port"):
+        return {"decision": "deny", "message": "The review app is not running, so nobody can approve this."}
+    base = f"http://127.0.0.1:{info['port']}"
+    data = json.dumps({"thread_id": os.environ.get("PRR_THREAD_ID", ""), "tool_name": tool, "input": inp}).encode()
+    req = urllib.request.Request(f"{base}/api/internal/approvals", data=data, method="POST", headers={
+        "Content-Type": "application/json", "Cookie": f"prr_session={info['token']}", "Origin": base})
+    try:
+        with urllib.request.urlopen(req, timeout=APPROVAL_WAIT_S + 30) as resp:
+            return json.loads(resp.read())
+    except (urllib.error.URLError, OSError, json.JSONDecodeError) as e:
+        return {"decision": "deny", "message": f"Could not ask the reviewer: {e}"}
+
+
+def approve(pr_dir: Path, args: dict) -> dict:
+    """Claude Code's permission prompt. Returns {"behavior": "allow", "updatedInput": …} or a deny with a message."""
+    tool, inp = str(args.get("tool_name", "")), args.get("input") or {}
+    allow = {"behavior": "allow", "updatedInput": inp}
+    if auto_allowed(tool):
+        return allow
+    thread_id = os.environ.get("PRR_THREAD_ID", "")
+    state = StateStore(pr_dir).load()
+    thread = next((t for t in state["threads"] if t["id"] == thread_id), {})
+    if approval_key(tool, inp) in thread.get("always_allow", []):
+        return allow
+    answer = _ask_reviewer(pr_dir, tool, inp)
+    if answer.get("decision") in ("allow", "always"):
+        return allow
+    return {"behavior": "deny", "message": answer.get("message") or
+            "The reviewer said no. Don't try this again; ask them what they want instead."}
+
+
 def tool_list(cfg: Config) -> list[dict]:
     tools = [{
+        "name": "approve",
+        "description": "Internal: Claude Code calls this to ask the reviewer for permission. Do not call it yourself.",
+        "inputSchema": {"type": "object", "properties": {
+            "tool_name": {"type": "string"}, "input": {"type": "object"}, "tool_use_id": {"type": "string"}},
+            "required": ["tool_name", "input"]},
+    }, {
         "name": "add_pending_comment",
         "description": "Add a review comment to the reviewer's pending comments in the review app. It is NOT sent to "
                        "GitHub; the reviewer sends it later with Submit review. Works on any line of a changed file.",
@@ -85,6 +152,8 @@ def call_tool(pr_dir: Path, cfg: Config, name: str, args: dict) -> tuple[str, bo
     if ctx is None:
         return "This PR has not been fetched.", True
     pr = ctx["pr"]
+    if name == "approve":
+        return json.dumps(approve(pr_dir, args)), False
     allowed = {t["name"] for t in tool_list(cfg)}
     if name not in allowed:
         return (f"The tool {name} is turned off. The reviewer can change this in config.toml under [chat].", True)
@@ -141,15 +210,29 @@ def call_tool(pr_dir: Path, cfg: Config, name: str, args: dict) -> tuple[str, bo
 
 
 def serve_stdio(pr_dir: Path, cfg: Config) -> None:
-    """Minimal MCP server: newline-delimited JSON-RPC on stdin/stdout."""
+    """Minimal MCP server: newline-delimited JSON-RPC on stdin/stdout. Tool calls run in threads, so one approval
+    waiting for the reviewer doesn't block the next request."""
+    lock = threading.Lock()
+    workers: list[threading.Thread] = []
+
     def reply(msg_id: Any, result: Any = None, error: dict | None = None) -> None:
         out = {"jsonrpc": "2.0", "id": msg_id, **({"error": error} if error else {"result": result})}
-        sys.stdout.write(json.dumps(out) + "\n")
-        sys.stdout.flush()
+        with lock:
+            sys.stdout.write(json.dumps(out) + "\n")
+            sys.stdout.flush()
+
+    def run_tool(msg_id: Any, params: dict) -> None:
+        try:
+            text, is_error = call_tool(pr_dir, cfg, params.get("name", ""), params.get("arguments") or {})
+        except Exception as e:  # noqa: BLE001 — report it to Claude instead of dying mid-chat
+            text, is_error = f"The tool failed: {e}", True
+        reply(msg_id, {"content": [{"type": "text", "text": text}], "isError": is_error})
 
     while True:
         raw = sys.stdin.readline()
         if not raw:
+            for w in workers:  # finish the tool calls already started before exiting
+                w.join()
             return
         try:
             msg = json.loads(raw)
@@ -164,11 +247,9 @@ def serve_stdio(pr_dir: Path, cfg: Config) -> None:
         elif method == "tools/list":
             reply(msg_id, {"tools": tool_list(cfg)})
         elif method == "tools/call":
-            try:
-                text, is_error = call_tool(pr_dir, cfg, params.get("name", ""), params.get("arguments") or {})
-            except Exception as e:  # noqa: BLE001 — report it to Claude instead of dying mid-chat
-                text, is_error = f"The tool failed: {e}", True
-            reply(msg_id, {"content": [{"type": "text", "text": text}], "isError": is_error})
+            worker = threading.Thread(target=run_tool, args=(msg_id, params), daemon=True)
+            workers.append(worker)
+            worker.start()
         elif method == "ping":
             reply(msg_id, {})
         else:

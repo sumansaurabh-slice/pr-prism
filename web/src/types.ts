@@ -119,4 +119,8 @@ export type ChatEvent =
   | { type: "tool"; name: string; summary: string }
   | { type: "result"; session_id: string; cost_usd: number | null; duration_ms: number | null }
   | { type: "error"; message: string }
+  | { type: "approval"; id: string; tool: string; title: string; summary: string; detail: string; always_label: string }
+  | { type: "approval_done"; id: string; decision: ApprovalDecision }
   | { type: "done" };
+
+export type ApprovalDecision = "allow" | "always" | "deny";

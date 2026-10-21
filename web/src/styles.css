@@ -2187,6 +2187,44 @@ tr.line-flash > td,
   font-weight: 600;
   color: var(--accent);
 }
+.approval {
+  margin: 6px 0 10px;
+  background: var(--bg);
+  border: 1px solid var(--attention-border);
+  border-left: 3px solid var(--attention);
+  border-radius: var(--radius);
+}
+.approval.decided {
+  border-color: var(--border);
+  border-left-color: var(--border);
+}
+.approval-head {
+  display: flex;
+  flex-wrap: wrap;
+  align-items: center;
+  gap: 8px;
+  padding: 8px 12px 0;
+  font-size: 13px;
+}
+.approval-detail {
+  max-height: 220px;
+  margin: 8px 12px;
+  padding: 8px 10px;
+  overflow: auto;
+  font-size: 12px;
+  white-space: pre-wrap;
+  overflow-wrap: anywhere;
+  background: var(--bg-subtle);
+  border-radius: var(--radius);
+}
+.approval-actions {
+  display: flex;
+  flex-wrap: wrap;
+  justify-content: flex-end;
+  align-items: center;
+  gap: 6px;
+  padding: 0 12px 10px;
+}
 .thinking {
   display: flex;
   align-items: center;

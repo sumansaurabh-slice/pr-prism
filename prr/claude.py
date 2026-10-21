@@ -1,9 +1,14 @@
 """Running `claude -p`: structured-output calls for analysis and streamed, resumable calls for chat.
 
-Every call is locked down the same way:
-- `--setting-sources user`: the PR's own .claude/settings.json (hooks, allow rules) is never loaded;
-- `--strict-mcp-config`: no MCP servers except the ones we pass explicitly;
-- `--tools` limits the available tools to read-only ones, and `--permission-mode dontAsk` refuses everything else.
+Analysis calls are locked down: read-only tools (`--tools`), no MCP servers except ours (`--strict-mcp-config`),
+and `--permission-mode dontAsk` refuses everything else.
+
+Chat calls are full Claude Code: every built-in tool, the reviewer's own MCP servers and claude.ai connectors
+(Jira, Slack, …). Anything that is not on a short read-only list goes to the app's approval tool
+(`--permission-prompt-tool`), which asks the reviewer in the browser first.
+
+Both use `--setting-sources user`: the PR's own .claude/settings.json (hooks, allow rules) is never loaded, and a
+PR's .mcp.json is not loaded either (it would need approval in project settings).
 """
 
 from __future__ import annotations
@@ -19,6 +24,17 @@ from typing import Any, AsyncIterator
 from .gitgh import claude_env
 
 READ_ONLY_TOOLS = ["Read", "Grep", "Glob"]
+
+# The chat runs these without asking: reading and searching, and git/shell commands that only look at things.
+CHAT_AUTO_ALLOW = [
+    "Read", "Grep", "Glob", "LS", "NotebookRead", "TodoWrite", "ToolSearch", "Task",
+    "mcp__prprism", "mcp__codegraph",
+    *(f"Bash({c} *)" for c in (
+        "git blame", "git log", "git show", "git diff", "git status", "git grep", "git rev-parse", "git ls-files",
+        "git branch", "git shortlog", "git cat-file", "rg", "grep", "ls", "wc", "tree", "file",
+    )),
+]
+APPROVAL_TOOL = "mcp__prprism__approve"
 STREAM_LIMIT = 64 * 1024 * 1024  # tool results can put whole files on one stream-json line
 
 
@@ -91,12 +107,29 @@ FRIENDLY_TOOL_NAMES = {
 }
 
 
+def friendly_tool_name(name: str) -> str:
+    """mcp__claude_ai_Atlassian__createJiraIssue → "Atlassian: createJiraIssue"."""
+    if name in FRIENDLY_TOOL_NAMES:
+        return FRIENDLY_TOOL_NAMES[name]
+    if name.startswith("mcp__"):
+        parts = name.split("__")
+        if len(parts) >= 3:
+            return f"{parts[1].removeprefix('claude_ai_').replace('_', ' ')}: {parts[2]}"
+    return name
+
+
 def tool_summary(name: str, inp: dict[str, Any], cwd: Path | None = None) -> str:
     def rel(p: str) -> str:
         if cwd and p.startswith(str(cwd) + os.sep):
             return p[len(str(cwd)) + 1:]
         return p
 
+    if name == "Bash":
+        return str(inp.get("command", ""))[:200]
+    if name in ("Edit", "Write", "MultiEdit", "NotebookEdit"):
+        return rel(str(inp.get("file_path") or inp.get("notebook_path") or ""))
+    if name in ("WebFetch", "WebSearch"):
+        return str(inp.get("url") or inp.get("query") or "")[:200]
     if name == "Read":
         s = rel(inp.get("file_path", ""))
         if inp.get("offset"):
@@ -145,7 +178,7 @@ class StreamTranslator:
             for block in msg.get("content", []):
                 if block.get("type") == "tool_use":
                     name = block.get("name", "")
-                    out.append({"type": "tool", "name": FRIENDLY_TOOL_NAMES.get(name, name),
+                    out.append({"type": "tool", "name": friendly_tool_name(name),
                                 "summary": tool_summary(name, block.get("input") or {}, self.cwd)})
                 elif block.get("type") == "text" and msg.get("id") not in self._text_msgs and block.get("text"):
                     out.append({"type": "text", "text": block["text"]})
@@ -167,13 +200,28 @@ class ChatProcess:
             self.proc.terminate()
 
 
-async def stream_chat(prompt: str, *, cwd: Path, session_id: str, resume: bool, model: str, system_file: Path,
-                      add_dirs: list[Path], mcp_config: str | None = None, mcp_tools: list[str] | None = None,
-                      on_start: Any = None) -> AsyncIterator[dict[str, Any]]:
-    argv = base_argv(model, READ_ONLY_TOOLS, mcp_config=mcp_config, mcp_tools=mcp_tools, add_dirs=add_dirs)
-    argv += ["--output-format", "stream-json", "--verbose", "--include-partial-messages",
-             "--append-system-prompt-file", str(system_file), "--max-turns", "60"]
+def chat_argv(model: str, *, mcp_config: str, system_file: Path, add_dirs: list[Path], ask_first: bool,
+              session_id: str, resume: bool) -> list[str]:
+    """Full Claude Code for the chat. With ask_first, anything off CHAT_AUTO_ALLOW is asked about in the app."""
+    argv = ["claude", "-p", "--model", model, "--setting-sources", "user", "--mcp-config", mcp_config,
+            "--output-format", "stream-json", "--verbose", "--include-partial-messages",
+            "--append-system-prompt-file", str(system_file), "--max-turns", "100"]
+    if ask_first:
+        argv += ["--permission-mode", "default", "--permission-prompts", "host", "--permission-prompt-tool", APPROVAL_TOOL]
+    else:
+        argv += ["--permission-mode", "bypassPermissions"]
+    argv += ["--allowedTools", *CHAT_AUTO_ALLOW]
+    for d in add_dirs:
+        argv += ["--add-dir", str(d)]
     argv += ["--resume", session_id] if resume else ["--session-id", session_id]
+    return argv
+
+
+async def stream_chat(prompt: str, *, cwd: Path, session_id: str, resume: bool, model: str, system_file: Path,
+                      add_dirs: list[Path], mcp_config: str, ask_first: bool = True,
+                      on_start: Any = None) -> AsyncIterator[dict[str, Any]]:
+    argv = chat_argv(model, mcp_config=mcp_config, system_file=system_file, add_dirs=add_dirs, ask_first=ask_first,
+                     session_id=session_id, resume=resume)
     proc = await asyncio.create_subprocess_exec(
         *argv, cwd=cwd, env=claude_env(), limit=STREAM_LIMIT,
         stdin=asyncio.subprocess.PIPE, stdout=asyncio.subprocess.PIPE, stderr=asyncio.subprocess.PIPE,
