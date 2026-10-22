@@ -36,6 +36,7 @@ The SPA never handles the token. It uses relative URLs, and `fetch` sends the co
 | `POST /api/suggestions/{id}/dismiss` | | `{dismissed_suggestions}` |
 | `POST /api/suggestions/{id}/restore` | | `{dismissed_suggestions}` |
 | `GET /api/github/threads` | | `{comments: ExistingComment[]}`: review comments already on the PR |
+| `POST /api/ci/refresh` | | `CIInfo`: reads the CI checks again and explains new failures; the next `/api/analysis` includes them |
 | `POST /api/review/preview` | `{body, event}` | `ReviewPreview` |
 | `POST /api/review/draft-summary` | | `{body}`: Claude drafts the overall review body from the drafts and the analysis |
 | `POST /api/review/submit` | `{body, event, commit: "analyzed"\|"current"}` | `{ok, review_id, html_url}`, or 4xx `{detail}`. Submitted drafts are removed. |

@@ -49,8 +49,47 @@ export interface Flow { id: string; title: string; narrative: string; nodes: Flo
 export interface Ref { path: string; line: number | null; at: "head" | "base" }
 export interface ImpactItem { kind: ImpactKind; severity: Level; title: string; detail: string; refs: Ref[] }
 export interface Question { text: string; refs: Ref[] }
-export interface Suggestion {
-  id: string; path: string; side: Side; line: number; start_line: number | null; severity: Severity; body: string;
+/** A problem found in the PR, ready to post as a review comment. */
+export interface Finding {
+  id: string; path: string; side: Side; line: number; start_line: number | null;
+  anchored: boolean;            // on a diff line; false = shown at file level, posted inside the review summary
+  anchor: string;
+  severity: Severity;           // blocker = blocks merge (rule-checked), major = must fix, minor = should fix, nit = could improve
+  category: string; title: string; impact: string; fix: string;
+  suggestion: string | null; one_click: boolean;
+  why: string; evidence: string;
+  confidence: number | null; judge_score: number | null; judge_reason: string | null;
+  low_confidence: boolean;      // hidden by default
+  source: string;               // "claude" | "rule:<id>"
+  note: string | null;
+  status: "new" | "still-open";
+  also_flagged_by: string[];
+  comment_body: string;
+}
+
+/** A comment another review tool (a bot) already posted, with Claude's second look. */
+export interface BotFinding {
+  comment_id: number; bot: string; path: string; line: number | null; side: Side | null;
+  severity: Severity | null; title: string; body: string; html_url: string;
+  verdict: "agree" | "disagree" | "unsure" | null; verdict_reason: string | null;
+}
+
+export interface CIExplanation {
+  summary: string; cause: string; caused_by_pr: "yes" | "no" | "unclear";
+  related: { path: string; line: number | null }[]; fix: string;
+}
+export interface CICheck {
+  name: string; kind: "check" | "status"; state: "pass" | "fail" | "pending" | "skipped" | "neutral";
+  url: string | null; app: string | null; summary: string | null; log_tail: string | null;
+  explanation: CIExplanation | null;
+}
+export interface CIAnnotation { check: string; path: string; line: number; end_line: number | null; level: string; message: string }
+export interface CIInfo { fetched_at: string | null; head_sha: string | null; checks: CICheck[]; annotations: CIAnnotation[] }
+
+/** An earlier finding or comment, re-checked after new commits. */
+export interface Rechecked {
+  kind: "finding" | "comment"; title: string; path: string; line: number | null;
+  status: "fixed" | "still-open"; how: string; author: string | null; html_url: string | null;
 }
 
 export interface Progress {
@@ -61,7 +100,8 @@ export interface Progress {
 export interface Analysis {
   schema_version: number; status: ProgressStatus; focus: string | null; pr: PRInfo;
   summary: Summary | null; files: FileEntry[]; chapters: Chapter[]; flows: Flow[];
-  impact: ImpactItem[]; questions: Question[]; suggestions: Suggestion[];
+  impact: ImpactItem[]; questions: Question[];
+  findings: Finding[]; bot_findings: BotFinding[]; ci: CIInfo | null; rechecked: Rechecked[];
   progress: Progress; repair_log: string[];
 }
 

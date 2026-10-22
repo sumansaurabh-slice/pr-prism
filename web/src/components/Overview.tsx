@@ -5,6 +5,7 @@ import { goFile } from "../router";
 import { fileMap, fmtMinutes, splitPath, totalMinutes, useStore } from "../store";
 import type { Ref } from "../types";
 import { RiskBadge } from "./Header";
+import { BlockerBanner, CIBox, FindingsBox, OtherToolsBox, RecheckedBox } from "./ReviewSignals";
 
 export function RefList({ refs }: { refs: Ref[] }) {
   if (!refs.length) return null;
@@ -44,6 +45,7 @@ export function Overview() {
   return (
     <div className="overview">
       <div className="overview-main">
+        <BlockerBanner />
         {summary ? (
           <section className="timeline-comment">
             <div className="tc-head">
@@ -90,6 +92,11 @@ export function Overview() {
             </div>
           </section>
         )}
+
+        <FindingsBox />
+        <CIBox />
+        <RecheckedBox />
+        <OtherToolsBox />
 
         <section className="Box">
           <div className="Box-header">

@@ -16,7 +16,11 @@ Level = Literal["low", "medium", "high"]
 Side = Literal["LEFT", "RIGHT"]
 Category = Literal["schema", "types", "core", "api", "ui", "config", "infra", "test", "docs", "generated"]
 NoteKind = Literal["explain", "risk", "flow", "test-gap"]
+# blocker = blocks merge (only from the rule pass, confirmed in code); major = must fix; minor = should fix; nit = could improve
 Severity = Literal["blocker", "major", "minor", "nit"]
+FindingCategory = Literal["security", "correctness", "performance", "concurrency", "reliability", "data",
+                          "observability", "design", "testing", "maintainability"]
+FindingStatus = Literal["new", "still-open"]
 FileStatus = Literal["added", "modified", "deleted", "renamed", "copied"]
 ImpactKind = Literal["callers", "breaking", "migration", "config", "perf", "security", "tests", "sensitive", "other"]
 FlowNodeKind = Literal["entry", "logic", "store", "external", "test"]
@@ -36,12 +40,20 @@ class NoteOut(BaseModel):
     text: str = Field(description="Markdown, 1-3 sentences")
 
 
-class SuggestionOut(BaseModel):
-    side: Side
-    line: int = Field(description="Last line of the commented range")
-    start_line: int | None = Field(default=None, description="First line for a multi-line range, else null")
-    severity: Severity
-    body: str = Field(description="Markdown review comment, written to the PR author")
+class FindingOut(BaseModel):
+    title: str = Field(description="The problem in 70 characters or fewer, plain words")
+    category: FindingCategory
+    severity: Literal["major", "minor", "nit"] = Field(description="major = must fix, minor = should fix, nit = could improve")
+    side: Side = Field(description="RIGHT for added or unchanged lines (new numbers), LEFT for deleted lines (old numbers)")
+    anchor: str = Field(description="ONE line copied exactly from the diff (without the R/L tag and +/-): the line the comment belongs on")
+    line: int = Field(description="That line's number, as shown in the diff")
+    start_line: int | None = Field(default=None, description="First line, only when the comment covers several lines")
+    impact: str = Field(description="One sentence: who or what is affected, and how")
+    fix: str = Field(description="One clear instruction: the better option, not a list of options")
+    suggestion: str | None = Field(default=None, description="Drop-in replacement code for exactly the commented line(s), or null")
+    why: str = Field(description="Short reasoning in Markdown, 1-4 sentences")
+    evidence: str = Field(description="What you read to confirm it, as path:line plus a short quote; or 'diff only'")
+    confidence: int = Field(description="0-100: how sure you are this is a real problem")
 
 
 class FileAnnotation(BaseModel):
@@ -51,7 +63,7 @@ class FileAnnotation(BaseModel):
     look_for: list[str] = Field(description="2-5 concrete things the reviewer should verify in this file")
     notes: list[NoteOut]
     changed_symbols: list[str] = Field(description="Functions/types/constants whose behavior or signature changed")
-    suggestions: list[SuggestionOut]
+    findings: list[FindingOut]
 
 
 class FlowEdgeOut(BaseModel):
@@ -214,14 +226,86 @@ class FileEntry(BaseModel):
     changed_symbols: list[str]
 
 
-class Suggestion(BaseModel):
+class Finding(BaseModel):
     id: str
     path: str
     side: Side
     line: int
     start_line: int | None
+    anchored: bool                 # on a diff line; False = shown at file level, posted inside the review summary
+    anchor: str                    # the exact code line the finding is about
     severity: Severity
+    category: str
+    title: str
+    impact: str
+    fix: str
+    suggestion: str | None         # replacement code
+    one_click: bool                # the code is safe to offer as a GitHub "suggestion" (applies with one click)
+    why: str
+    evidence: str
+    confidence: int | None         # the reviewer's own 0-100
+    judge_score: int | None        # the second-look score, 1-10
+    judge_reason: str | None
+    low_confidence: bool           # hidden by default
+    source: str                    # "claude" or "rule:<id>"
+    note: str | None               # e.g. why a blocker was shown as "must fix" instead
+    status: FindingStatus          # "still-open": also found in the previous review round
+    also_flagged_by: list[str]     # other review tools that flagged the same spot
+    comment_body: str              # ready-to-post Markdown
+
+
+class BotFinding(BaseModel):
+    """A finding another review tool (a bot account) already posted on the PR."""
+    comment_id: int
+    bot: str
+    path: str
+    line: int | None
+    side: Side | None
+    severity: Severity | None
+    title: str
     body: str
+    html_url: str
+    verdict: Literal["agree", "disagree", "unsure"] | None   # Claude's second look
+    verdict_reason: str | None
+
+
+class CICheck(BaseModel):
+    name: str
+    kind: Literal["check", "status"]   # a GitHub check run, or a commit status (e.g. Jenkins)
+    state: Literal["pass", "fail", "pending", "skipped", "neutral"]
+    url: str | None
+    app: str | None
+    summary: str | None
+    log_tail: str | None
+    explanation: dict | None           # Claude's {summary, cause, caused_by_pr, related, fix}
+
+
+class CIAnnotation(BaseModel):
+    check: str
+    path: str
+    line: int
+    end_line: int | None
+    level: str
+    message: str
+
+
+class CIInfo(BaseModel):
+    fetched_at: str | None
+    head_sha: str | None
+    checks: list[CICheck]
+    annotations: list[CIAnnotation]
+
+
+class Resolved(BaseModel):
+    """An earlier finding or comment that the re-check found fixed or still open."""
+    kind: Literal["finding", "comment"]
+    title: str
+    path: str
+    line: int | None
+    status: Literal["fixed", "still-open"]
+    how: str                           # plain words: "the file was removed", "the line is still there", …
+    author: str | None
+    html_url: str | None
 
 
 class Progress(BaseModel):
@@ -246,7 +330,10 @@ class Analysis(BaseModel):
     flows: list[Flow]
     impact: list[ImpactItem]
     questions: list[Question]
-    suggestions: list[Suggestion]
+    findings: list[Finding]
+    bot_findings: list[BotFinding]
+    ci: CIInfo | None
+    rechecked: list[Resolved]
     progress: Progress
     repair_log: list[str]
 

@@ -87,10 +87,15 @@ def existing_comments(owner: str, repo: str, number: int) -> list[dict]:
         if not line.strip():
             continue
         c = json.loads(line)
+        user = c.get("user") or {}
+        login = user.get("login", "")
         comments.append({
             "id": c["id"], "path": c["path"], "line": c.get("line"), "side": c.get("side"),
-            "start_line": c.get("start_line"), "body": c.get("body", ""), "user": (c.get("user") or {}).get("login", ""),
+            "start_line": c.get("start_line"), "body": c.get("body", ""), "user": login,
             "created_at": c.get("created_at", ""), "html_url": c.get("html_url", ""), "in_reply_to_id": c.get("in_reply_to_id"),
+            "is_bot": user.get("type") == "Bot" or login.endswith("[bot]"),
+            "commit_id": c.get("commit_id"), "original_commit_id": c.get("original_commit_id"),
+            "original_line": c.get("original_line"), "diff_hunk": c.get("diff_hunk", ""),
         })
     return comments
 

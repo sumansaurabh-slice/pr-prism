@@ -132,8 +132,19 @@ def _print_summary(a: dict, d: Path) -> None:
     for i, ch in enumerate(a["chapters"], 1):
         mins = sum(next((f["minutes"] for f in a["files"] if f["path"] == cf["path"]), 0) for cf in ch["files"])
         print(f"  {i}. {ch['title']} ({len(ch['files'])} files, ~{mins:.0f} min)")
-    sugg = len(a["suggestions"])
-    print(f"Claude wrote {sugg} suggested comment{'s' if sugg != 1 else ''}. Nothing is posted until you submit.")
+    shown = [f for f in a["findings"] if not f["low_confidence"]]
+    count = {s: sum(1 for f in shown if f["severity"] == s) for s in ("blocker", "major", "minor", "nit")}
+    print(f"Findings: {count['blocker']} blocking merge, {count['major']} must fix, {count['minor']} should fix, "
+          f"{count['nit']} could improve ({len(a['findings']) - len(shown)} more hidden as low confidence).")
+    failing = [c["name"] for c in (a.get("ci") or {}).get("checks", []) if c["state"] == "fail"]
+    if failing:
+        print(f"Failing CI checks: {', '.join(failing)}")
+    if a.get("bot_findings"):
+        print(f"Other review tools left {len(a['bot_findings'])} comments; Claude checked each one.")
+    fixed = sum(1 for r in a.get("rechecked", []) if r["status"] == "fixed")
+    if a.get("rechecked"):
+        print(f"Earlier problems re-checked: {fixed} fixed, {len(a['rechecked']) - fixed} still open.")
+    print("Nothing is posted until you submit.")
     if a["repair_log"]:
         print(f"({len(a['repair_log'])} small fixes were made to Claude's output: see repair_log in analysis.json)")
     if info.get("url"):
