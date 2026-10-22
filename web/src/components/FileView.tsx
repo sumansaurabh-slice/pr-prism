@@ -17,7 +17,7 @@ import { registerFileNav, stepFile } from "../keyboard";
 import { Markdown } from "../markdown";
 import { goFile, navigate, fileHref, useNavTick } from "../router";
 import { fileByPath, fmtMinutes, isStaleReview, readLS, splitPath, useStore, writeLS, type Selection } from "../store";
-import type { Draft, ExistingComment, FileEntry, Note, Side, Suggestion } from "../types";
+import type { CIAnnotation, Draft, ExistingComment, FileEntry, Finding, Note, Severity, Side } from "../types";
 import { Avatar, DiffStat, StatusIcon } from "../icons";
 import { RiskBadge } from "./Header";
 
@@ -141,16 +141,19 @@ const NOTE_LABEL: Record<Note["kind"], string> = {
 const NOTE_VARIANT: Record<Note["kind"], string> = {
   explain: "accent", risk: "danger", flow: "done", "test-gap": "attention",
 };
-export const SEVERITY_TEXT: Record<Suggestion["severity"], string> = {
-  blocker: "Must fix", major: "Should fix", minor: "Could fix", nit: "Small thing",
+export const SEVERITY_TEXT: Record<Severity, string> = {
+  blocker: "Blocks merge", major: "Must fix", minor: "Should fix", nit: "Could improve",
 };
-const SEVERITY_VARIANT: Record<Suggestion["severity"], string> = {
+const SEVERITY_VARIANT: Record<Severity, string> = {
   blocker: "danger", major: "severe", minor: "attention", nit: "secondary",
 };
 
-export function SeverityLabel({ severity }: { severity: Suggestion["severity"] }) {
+export function SeverityLabel({ severity }: { severity: Severity }) {
   return <span className={`Label Label--${SEVERITY_VARIANT[severity]}`}>{SEVERITY_TEXT[severity]}</span>;
 }
+
+const VERDICT_TEXT = { agree: "Claude agrees", disagree: "Claude disagrees", unsure: "Claude isn't sure" } as const;
+const VERDICT_VARIANT = { agree: "success", disagree: "danger", unsure: "secondary" } as const;
 
 function lineText(side: Side, start: number, end: number, startSide: Side = side) {
   if (startSide !== side) return `old L${start} to new L${end}`;
@@ -173,30 +176,72 @@ function NoteCard({ note, index }: { note: Note; index: number }) {
   );
 }
 
-function SuggestionCard({ s }: { s: Suggestion }) {
+function FindingCard({ f }: { f: Finding }) {
   const addDraft = useStore((st) => st.addDraft);
   const dismiss = useStore((st) => st.dismissSuggestion);
   const [editing, setEditing] = useState(false);
-  const [body, setBody] = useState(s.body);
+  const [body, setBody] = useState(f.comment_body);
   const accept = (text: string) =>
     void addDraft({
-      path: s.path, side: s.side, line: s.line, start_line: s.start_line, body: text,
-      source: "suggestion", suggestion_id: s.id,
+      path: f.path, side: f.side, line: f.line, start_line: f.start_line, body: text,
+      source: "suggestion", suggestion_id: f.id,
     });
+  const by = f.source.startsWith("rule:") ? "Blocker check" : "Claude";
   return (
-    <div className="review-comment suggestion">
+    <div className={`review-comment finding sev-${f.severity}${f.low_confidence ? " low" : ""}`} data-finding={f.id}>
       <div className="rc-head">
         <Avatar name="Claude" kind="claude" />
-        <strong>Claude</strong>
-        <span className="rc-meta">suggests a comment</span>
-        <SeverityLabel severity={s.severity} />
-        <span className="rc-meta">{lineText(s.side, s.start_line ?? s.line, s.line)}</span>
+        <SeverityLabel severity={f.severity} />
+        <span className="Label Label--secondary">{f.category}</span>
+        {f.status === "still-open" && <span className="Label Label--attention" title="Also found in the previous review round">Still open</span>}
+        {f.also_flagged_by.map((b) => (
+          <span key={b} className="Label Label--accent" title="Another review tool flagged the same spot">
+            Also flagged by {b.replace(/\[bot\]$/, "")}
+          </span>
+        ))}
+        <span className="rc-meta">{lineText(f.side, f.start_line ?? f.line, f.line)}</span>
       </div>
       <div className="rc-body">
         {editing ? (
-          <textarea className="input comment-input" value={body} autoFocus onChange={(e) => setBody(e.target.value)} rows={5} />
+          <textarea className="input comment-input" value={body} autoFocus onChange={(e) => setBody(e.target.value)} rows={8} />
         ) : (
-          <Markdown text={s.body} />
+          <>
+            <div className="finding-title">{f.title}</div>
+            {f.impact && <Markdown className="finding-impact" text={f.impact} />}
+            {f.fix && (
+              <div className="finding-fix">
+                <strong>Fix:</strong> <Markdown className="inline-md" text={f.fix} />
+              </div>
+            )}
+            {f.suggestion && (
+              <div className="finding-code">
+                <div className="finding-code-label">
+                  {f.one_click ? "Suggested change (can be applied on GitHub with one click)" : "Suggested code"}
+                </div>
+                <pre>{f.suggestion}</pre>
+              </div>
+            )}
+            {f.note && <div className="finding-note">{f.note}</div>}
+            {(f.why || f.evidence) && (
+              <details className="finding-why">
+                <summary>Why</summary>
+                {f.why && <Markdown text={f.why} />}
+                {f.evidence && f.evidence !== "diff only" && (
+                  <div className="finding-evidence">
+                    Checked: <Markdown className="inline-md" text={f.evidence} />
+                  </div>
+                )}
+              </details>
+            )}
+            <div className="finding-meta">
+              {by}
+              {f.confidence != null && ` · ${f.confidence}% sure`}
+              {f.judge_score != null && (
+                <span title={f.judge_reason ?? undefined}> · second look {f.judge_score}/10</span>
+              )}
+              {f.low_confidence && " · low confidence"}
+            </div>
+          </>
         )}
       </div>
       <div className="rc-actions">
@@ -211,17 +256,32 @@ function SuggestionCard({ s }: { s: Suggestion }) {
           </>
         ) : (
           <>
-            <button className="btn btn-invisible btn-sm" onClick={() => void dismiss(s.id)} title="Hide this suggestion">
+            <button className="btn btn-invisible btn-sm" onClick={() => void dismiss(f.id)} title="Hide this finding">
               Dismiss
             </button>
             <button className="btn btn-sm" onClick={() => setEditing(true)}>
               Edit first
             </button>
-            <button className="btn btn-primary btn-sm" onClick={() => accept(s.body)}>
+            <button className="btn btn-primary btn-sm" onClick={() => accept(f.comment_body)}>
               Add to my review
             </button>
           </>
         )}
+      </div>
+    </div>
+  );
+}
+
+function CINote({ a }: { a: CIAnnotation }) {
+  return (
+    <div className={`review-comment ci-note ci-${a.level}`}>
+      <div className="rc-head">
+        <span className={`Label Label--${a.level === "failure" ? "danger" : "attention"}`}>CI</span>
+        <strong>{a.check}</strong>
+        <span className="rc-meta">L{a.line}{a.end_line && a.end_line !== a.line ? `–${a.end_line}` : ""}</span>
+      </div>
+      <div className="rc-body">
+        <pre className="ci-message">{a.message}</pre>
       </div>
     </div>
   );
@@ -302,8 +362,16 @@ export function DraftCard({ d, compact }: { d: Draft; compact?: boolean }) {
 }
 
 function GithubThread({ comments }: { comments: ExistingComment[] }) {
+  const analysis = useStore((s) => s.analysis);
+  const bot = analysis?.bot_findings.find((b) => b.comment_id === comments[0]?.id);
   return (
     <div className="review-comment gh-thread">
+      {bot?.verdict && (
+        <div className={`bot-verdict verdict-${bot.verdict}`}>
+          <span className={`Label Label--${VERDICT_VARIANT[bot.verdict]}`}>{VERDICT_TEXT[bot.verdict]}</span>
+          {bot.verdict_reason && <Markdown className="inline-md" text={bot.verdict_reason} />}
+        </div>
+      )}
       {comments.map((c) => (
         <div key={c.id} className="gh-comment">
           <div className="rc-head">
@@ -654,12 +722,21 @@ export function FileView({ path, line, side, full }: { path: string; line: numbe
     [state.drafts],
   );
   const dismissed = useMemo(() => new Set(state.dismissed_suggestions), [state.dismissed_suggestions]);
+  const [showLow, setShowLow] = useState(false);
   const fileSuggestions = useMemo(
-    () => (analysis?.suggestions ?? []).filter((s) => s.path === path && !acceptedIds.has(s.id)),
+    () => (analysis?.findings ?? []).filter((s) => s.path === path && !acceptedIds.has(s.id)),
     [analysis, path, acceptedIds],
   );
-  const liveSuggestions = useMemo(() => fileSuggestions.filter((s) => !dismissed.has(s.id)), [fileSuggestions, dismissed]);
+  const lowFindings = useMemo(
+    () => fileSuggestions.filter((s) => s.low_confidence && !dismissed.has(s.id)),
+    [fileSuggestions, dismissed],
+  );
+  const liveSuggestions = useMemo(
+    () => fileSuggestions.filter((s) => !dismissed.has(s.id) && (showLow || !s.low_confidence)),
+    [fileSuggestions, dismissed, showLow],
+  );
   const dismissedSuggestions = useMemo(() => fileSuggestions.filter((s) => dismissed.has(s.id)), [fileSuggestions, dismissed]);
+  const ciNotes = useMemo(() => (analysis?.ci?.annotations ?? []).filter((a) => a.path === path), [analysis, path]);
   const fileDrafts = useMemo(() => state.drafts.filter((d) => d.path === path), [state.drafts, path]);
 
   const { widgets, floating } = useMemo(() => {
@@ -675,7 +752,12 @@ export function FileView({ path, line, side, full }: { path: string; line: numbe
       }
     };
     sortedNotes.forEach(({ n }, order) => put(n.side, n.end, <NoteCard key={`n${order}`} note={n} index={order} />));
-    for (const s of liveSuggestions) put(s.side, s.line, <SuggestionCard key={`s${s.id}`} s={s} />);
+    for (const s of liveSuggestions) {
+      const card = <FindingCard key={`s${s.id}`} f={s} />;
+      if (s.anchored) put(s.side, s.line, card);
+      else floating.push(card);
+    }
+    for (const [i, a] of ciNotes.entries()) put("RIGHT", a.line, <CINote key={`ci${i}`} a={a} />);
     const roots = new Map<number, ExistingComment[]>();
     const ghFile = githubComments.filter((c) => c.path === path);
     for (const c of ghFile) {
@@ -695,7 +777,7 @@ export function FileView({ path, line, side, full }: { path: string; line: numbe
     const widgets: Record<string, ReactNode> = {};
     for (const [k, nodes] of byKey) widgets[k] = <div className="widget-stack">{nodes}</div>;
     return { widgets, floating };
-  }, [index, sortedNotes, liveSuggestions, githubComments, fileDrafts, composer, path, hunks.length]);
+  }, [index, sortedNotes, liveSuggestions, ciNotes, githubComments, fileDrafts, composer, path, hunks.length]);
 
   // ---- keyboard registration
   useEffect(() => {
@@ -740,6 +822,16 @@ export function FileView({ path, line, side, full }: { path: string; line: numbe
           onMarkNext={() => void markAndNext()}
         />
 
+        {lowFindings.length > 0 && (
+          <div className="dismissed-bar">
+            <button className="btn-link" onClick={() => setShowLow((v) => !v)}>
+              {showLow ? "Hide" : "Show"} {lowFindings.length} low-confidence finding{lowFindings.length > 1 ? "s" : ""}
+            </button>{" "}
+            <span className="color-muted">
+              (the second look scored {lowFindings.length > 1 ? "them" : "it"} low, or Claude wasn't sure)
+            </span>
+          </div>
+        )}
         {dismissedSuggestions.length > 0 && (
           <div className="dismissed-bar">
             <button className="btn-link" onClick={() => setShowDismissed((v) => !v)}>
@@ -750,7 +842,7 @@ export function FileView({ path, line, side, full }: { path: string; line: numbe
               dismissedSuggestions.map((s) => (
                 <div key={s.id} className="dismissed-item">
                   <SeverityLabel severity={s.severity} />
-                  <span className="dismissed-text">{s.body.slice(0, 140)}</span>
+                  <span className="dismissed-text">{s.title}</span>
                   <button className="btn btn-sm" onClick={() => void restoreSuggestion(s.id)}>
                     Show again
                   </button>
@@ -761,7 +853,7 @@ export function FileView({ path, line, side, full }: { path: string; line: numbe
 
         {!showFull && floating.length > 0 && (
           <div className="floating-notes">
-            <div className="floating-title">Comments on lines that are not shown in this diff</div>
+            <div className="floating-title">About this file, or about lines not shown in this diff</div>
             {floating}
           </div>
         )}

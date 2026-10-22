@@ -1,5 +1,5 @@
 import type {
-  Analysis, ApprovalDecision, ChatEvent, ChatThread, ContextChip, Draft, ExistingComment, ReviewEvent, ReviewPreview,
+  Analysis, ApprovalDecision, CIInfo, ChatEvent, ChatThread, ContextChip, Draft, ExistingComment, ReviewEvent, ReviewPreview,
   ReviewState, Side,
 } from "./types";
 
@@ -66,6 +66,7 @@ export const api = {
   stopChat: (id: string) => request<{ ok: boolean }>("POST", `/api/chat/threads/${q(id)}/stop`),
   decideApproval: (id: string, decision: ApprovalDecision) =>
     request<{ ok: boolean }>("POST", `/api/chat/approvals/${q(id)}`, { decision }),
+  refreshCI: () => request<CIInfo>("POST", "/api/ci/refresh"),
 };
 
 /** POST a chat message and stream SSE `data: <json>` frames back to `onEvent`. */

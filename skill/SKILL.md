@@ -65,6 +65,7 @@ ${CLAUDE_SKILL_DIR}/bin/prr analyze <PR> --focus '<focus>'
 
 When the background task completes, read its output. It ends with a "Review ready" block. Give the user a short summary in plain, simple English: short sentences, everyday words, no jargon or buzzwords. Include:
 - risk and the top reasons;
+- any problem that blocks the merge, and any failing CI check with its likely cause;
 - the summary;
 - the reading order as a numbered list of chapters with file counts and minutes;
 - the number of suggested comments Claude drafted. Say clearly that nothing is posted to GitHub until they press **Submit review** in the app;

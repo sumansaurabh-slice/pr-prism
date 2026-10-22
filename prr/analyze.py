@@ -15,13 +15,19 @@ from concurrent.futures import ThreadPoolExecutor, as_completed
 from pathlib import Path
 from typing import Any, Callable
 
-from . import cluster, diffparse, impact, merge
+from . import blockers, bots, ci, cluster, diffparse, filekinds, github, impact, judge, merge, recheck, rubrics
 from .claude import ClaudeError, run_structured
 from .config import GUIDELINES_FILE, PROMPTS_DIR, Config
 from .models import AnnotateOut, SynthesisOut, llm_schema
+
+SECOND_LOOK = """**This is a second, closer read.** A first review of these files found no problems. That can be right, but
+it is also what a review that didn't read closely looks like. Read each file in full again and look for real
+problems. Do not invent findings: if the files are clean, return no findings again.
+
+"""
 from .util import now_iso, read_json, write_json
 
-PROMPT_VERSION = "2"  # bump when prompts change: cached file notes are keyed on it
+PROMPT_VERSION = "4"  # bump when prompts change: cached file notes are keyed on it
 MAX_BODY_CHARS = 8000
 MAX_FILE_MAP_LINES = 300
 
@@ -71,11 +77,18 @@ def _file_map(ctx: dict, highlight: set[str]) -> str:
     return "\n".join(lines)
 
 
-def annotate_prompt(ctx: dict, c: cluster.Cluster, idx: int, total: int, focus: str | None) -> str:
+def annotate_prompt(ctx: dict, c: cluster.Cluster, idx: int, total: int, focus: str | None, conventions: str = "") -> str:
+    head = (_template("annotate.md", focus).replace("{{RUBRICS}}", rubrics.rubrics_for(c.paths))
+            .replace("{{CONVENTIONS}}", conventions or "(The repo has no CLAUDE.md or AGENTS.md.)"))
+    return head + cluster_files(ctx, c, idx, total)
+
+
+def cluster_files(ctx: dict, c: cluster.Cluster, idx: int, total: int) -> str:
+    """The PR header, the whole-PR file map and this batch's diffs (with R/L line tags)."""
     files = {f["path"]: f for f in ctx["files"]}
-    parts = [_template("annotate.md", focus), "\n---\n", _pr_header(ctx),
+    parts = ["\n---\n", _pr_header(ctx),
              "\n## All changed files (→ marks this batch; others are context only)\n", _file_map(ctx, set(c.paths)),
-             f"\n\n## Batch {idx} of {total}: annotate exactly these {len(c.items)} file(s)\n"]
+             f"\n\n## Batch {idx} of {total}: review exactly these {len(c.items)} file(s)\n"]
     for it in c.items:
         f = files[it.path]
         meta = [f["status"], f["category"], f"+{f['additions']}/-{f['deletions']}"]
@@ -136,6 +149,21 @@ def synthesis_prompt(ctx: dict, analysis: dict, impact_data: dict, edges: list[d
                 continue
             refs = ", ".join(f"{r['path']}:{r['line']}" for r in s["outside_refs"][:4])
             out.append(f"- `{s['symbol']}` (defined in {s['defined_in']}): used in {s['count']} places, e.g. {refs}\n")
+    found = analysis.get("findings", [])
+    if found:
+        counts = {s: sum(1 for f in found if f["severity"] == s and not f["low_confidence"]) for s in ("blocker", "major", "minor", "nit")}
+        out.append(f"\n## Findings so far\nBlockers: {counts['blocker']}, must fix: {counts['major']}, should fix: "
+                   f"{counts['minor']}, could improve: {counts['nit']}\n")
+        for f in [f for f in found if f["severity"] in ("blocker", "major") and not f["low_confidence"]][:15]:
+            out.append(f"- [{f['severity']}] {f['path']}:{f['line']} {f['title']}\n")
+    ci_info = analysis.get("ci") or {}
+    failing = [c for c in ci_info.get("checks", []) if c["state"] == "fail"]
+    if failing:
+        out.append("\n## Failing CI checks\n")
+        for c in failing:
+            ex = c.get("explanation") or {}
+            out.append(f"- {c['name']}: {ex.get('summary') or c.get('summary') or 'failed'}"
+                       + (f" (caused by this PR: {ex['caused_by_pr']})" if ex.get("caused_by_pr") else "") + "\n")
     sensitive = [f["path"] for f in ctx["files"] if f["sensitive"]]
     if sensitive:
         out.append("\n## Files that need extra care (security, CI, secrets, packaging)\n" + "\n".join(f"- {p}" for p in sensitive[:40]) + "\n")
@@ -213,29 +241,66 @@ def _analyze(pr_dir: Path, ctx: dict, cfg: Config, focus: str | None, force: boo
     if force:
         (pr_dir / "synthesis.json").unlink(missing_ok=True)
 
+    conventions = rubrics.repo_conventions(Path(ctx["repo_root"]), ctx["pr"]["merge_base_sha"])
+    blocker_head = (PROMPTS_DIR / "blockers.md").read_text().replace("{{STYLE}}", style_rules())
+
+    def structured(prompt: str, schema: type, model: str, *, tools: list[str] | None = None, turns: int = 40,
+                   timeout: int | None = None) -> tuple[dict, float]:
+        last_err: Exception | None = None
+        for _ in range(cfg.analysis.retries + 1):
+            try:
+                raw, stats = run_structured(prompt, llm_schema(schema), cwd=worktree, model=model, tools=tools,
+                                            timeout=timeout or cfg.analysis.annotate_timeout_s, max_turns=turns)
+                return schema.model_validate(raw).model_dump(mode="json"), stats.cost_usd or 0.0
+            except (ClaudeError, ValueError) as e:
+                last_err = e
+        raise ClaudeError(str(last_err))
+
     def run_cluster(c: cluster.Cluster) -> float:
         idx = clusters.index(c) + 1
         docs_only = all(files_ctx[p]["category"] == "docs" for p in c.paths)
         model = cfg.models.docs if docs_only else cfg.models.annotate
-        prompt = annotate_prompt(ctx, c, idx, len(clusters), focus)
-        last_err: Exception | None = None
-        for attempt in range(cfg.analysis.retries + 1):
+        prompt = annotate_prompt(ctx, c, idx, len(clusters), focus, conventions)
+        try:
+            out, cost = structured(prompt, AnnotateOut, model)
+        except ClaudeError as e:
+            progress.update(f"Group {idx}: Claude could not read it: {str(e)[:200]}")
+            raise
+        roots = ctx.get("test_roots", [])
+        code_files = [p for p in c.paths if filekinds.kind(p, roots)[0] is None
+                      and files_ctx[p]["category"] not in ("docs", "test", "generated")]
+        second_pass = False
+        if code_files and not any(a["findings"] for a in out["files"]):
+            # Zero findings is also what a review that didn't read closely looks like: read once more.
             try:
-                raw, stats = run_structured(prompt, llm_schema(AnnotateOut), cwd=worktree, model=model,
-                                            timeout=cfg.analysis.annotate_timeout_s, max_turns=30)
-                out = AnnotateOut.model_validate(raw).model_dump(mode="json")
-                break
-            except (ClaudeError, ValueError) as e:
-                last_err = e
-                progress.update(f"Group {idx}: try {attempt + 1} failed: {str(e)[:200]}")
-        else:
-            raise ClaudeError(str(last_err))
+                again, more = structured(SECOND_LOOK + prompt, AnnotateOut, model)
+                cost += more
+                found = {a["path"]: a["findings"] for a in again["files"]}
+                for a in out["files"]:
+                    a["findings"] = found.get(a["path"], [])
+                second_pass = True
+            except ClaudeError as e:
+                progress.update(f"Group {idx}: the closer second read failed: {str(e)[:150]}")
+        proposed: list[dict] = []
+        if code_files:
+            try:
+                bo, more = structured(blocker_head + cluster_files(ctx, c, idx, len(clusters)), blockers.BlockersOut,
+                                      cfg.models.blockers, tools=[], turns=3, timeout=600)
+                cost += more
+                proposed = bo["blockers"]
+            except ClaudeError as e:
+                progress.update(f"Group {idx}: the blocker check failed: {str(e)[:150]}")
         resolve = merge.PathResolver(c.paths)
         anns = {}
         for a in out["files"]:
             p = resolve(a["path"])
             if p:
                 anns[p] = a
+        for b in proposed:
+            b["path"] = resolve(b["path"]) or b["path"]
+            # Code must confirm the rule's key parts before it counts as a blocker (stored with the proposal).
+            b["problem"] = blockers.corroborate(b, diffs.get(b["path"]), blockers.head_text(worktree, b["path"]))
+        proposed = [b for b in proposed if b["path"] in code_files]  # no blockers in tests, docs or generated files
         for it in c.items:
             a = anns.get(it.path)
             if a is None:
@@ -246,8 +311,9 @@ def _analyze(pr_dir: Path, ctx: dict, cfg: Config, focus: str | None, force: boo
             if it is c.items[0]:
                 edges += [e for e in out["flow_edges"] if not any(e["source"].startswith(p) or e["target"].startswith(p) for p in c.paths)]
             write_json(partials / f"{keys[(c.id, it.path, it.part)]}.json",
-                       {"annotation": a, "flow_edges": edges, "cluster": c.id, "model": model, "at": now_iso()})
-        return stats.cost_usd or 0.0
+                       {"annotation": a, "blockers": [b for b in proposed if b["path"] == it.path], "flow_edges": edges,
+                        "cluster": c.id, "model": model, "second_pass": second_pass, "at": now_iso()})
+        return cost
 
     with ThreadPoolExecutor(max_workers=max(1, cfg.analysis.concurrency)) as pool:
         futures = {pool.submit(run_cluster, c): c for c in pending}
@@ -261,6 +327,53 @@ def _analyze(pr_dir: Path, ctx: dict, cfg: Config, focus: str | None, force: boo
             except Exception as e:  # noqa: BLE001 — one failed batch must not sink the review
                 progress.update(f"Group {clusters.index(c) + 1} failed, so its files have no notes: {str(e)[:200]}",
                                 clusters_failed=progress.data["clusters_failed"] + 1)
+
+    # Second look at every finding (cheap model, can only veto).
+    progress.update("Taking a second look at every finding")
+    placed = merge.placed_findings(pr_dir, ctx)
+    verdicts = judge.run(placed, diffs, cfg, worktree, read_json(pr_dir / "judge.json") or {}, progress.update)
+    write_json(pr_dir / "judge.json", verdicts)
+
+    # CI results, other review tools' comments, and re-checking earlier problems run side by side.
+    pr = ctx["pr"]
+    previous = read_json(pr_dir / "history.json") or {}
+
+    def do_ci() -> None:
+        try:
+            info = ci.fetch(pr["owner"], pr["repo"], pr["head_sha"])
+            failing = sum(1 for c in info["checks"] if c["state"] == "fail")
+            progress.update(f"Read {len(info['checks'])} CI checks ({failing} failing)")
+            write_json(pr_dir / "ci.json", ci.explain_failures(info, ctx, cfg, worktree, progress.update))
+        except Exception as e:  # noqa: BLE001 — CI is extra information; the review goes on without it
+            progress.update(f"Could not read the CI checks: {str(e)[:150]}")
+
+    def do_comments() -> None:
+        try:
+            comments = github.existing_comments(pr["owner"], pr["repo"], pr["number"])
+        except Exception as e:  # noqa: BLE001
+            progress.update(f"Could not read the PR's existing comments: {str(e)[:150]}")
+            return
+        found = bots.from_comments(comments)
+        saved = read_json(pr_dir / "bots.json") or {}
+        verdict_cache = bots.check(found, cfg, worktree, saved.get("verdicts", {}), progress.update) if found else {}
+        write_json(pr_dir / "bots.json", {"found": found, "verdicts": verdict_cache})
+        if found:
+            progress.update(f"Checked {len(found)} comments from other review tools")
+        items = []
+        if previous.get("head_sha") and previous["head_sha"] != pr["head_sha"]:
+            items += previous.get("items", [])
+        items += [e for c in comments if c.get("line") is None and not c.get("in_reply_to_id")
+                  for e in [recheck.comment_entry(c)] if e]
+        if items:
+            saved_checks = (read_json(pr_dir / "recheck.json") or {}).get("cache", {})
+            results = recheck.run(items, ctx, worktree, cfg, saved_checks, progress.update)  # updates saved_checks
+            write_json(pr_dir / "recheck.json", {"cache": saved_checks, "results": results,
+                                                 "previous_head": previous.get("head_sha")})
+            fixed = sum(1 for r in results.values() if r["status"] == "fixed")
+            progress.update(f"Re-checked {len(results)} earlier problems: {fixed} fixed")
+
+    with ThreadPoolExecutor(max_workers=2) as side:
+        list(side.map(lambda fn: fn(), [do_ci, do_comments]))
 
     partial_view = merge.build_analysis(pr_dir)
     progress.update("Looking for other code that uses the changed names")
@@ -297,4 +410,20 @@ def _analyze(pr_dir: Path, ctx: dict, cfg: Config, focus: str | None, force: boo
                     status="failed" if all_failed else "complete", finished_at=now_iso())
     analysis = merge.build_analysis(pr_dir)
     write_json(pr_dir / "analysis.json", analysis)
+    _save_history(pr_dir, ctx, analysis)
     return analysis
+
+
+def _save_history(pr_dir: Path, ctx: dict, analysis: dict) -> None:
+    """What the next review round re-checks: this round's open findings, with the code around them."""
+    worktree = Path(ctx["worktree"])
+    items = []
+    for f in analysis["findings"]:
+        if f["low_confidence"] or f["severity"] == "nit":
+            continue
+        try:
+            lines = (worktree / f["path"]).read_text(errors="replace").splitlines()
+        except OSError:
+            lines = []
+        items.append(recheck.history_entry(f, lines))
+    write_json(pr_dir / "history.json", {"head_sha": ctx["pr"]["head_sha"], "saved_at": now_iso(), "items": items})

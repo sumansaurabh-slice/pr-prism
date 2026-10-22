@@ -7,13 +7,12 @@ still placed in a chapter. Everything that was repaired is listed in `repair_log
 
 from __future__ import annotations
 
-import hashlib
 import posixpath
 from collections import defaultdict
 from pathlib import Path
 from typing import Any
 
-from . import anchors, filekinds
+from . import anchors, blockers, bots, ci, diffparse, filekinds, findings, judge
 from .classify import CATEGORY_ORDER, CATEGORY_TITLES
 from .models import Analysis
 from .util import read_json
@@ -83,23 +82,87 @@ def _fix_note(file_ctx: dict, note: dict) -> dict | None:
     return None
 
 
-def _fix_suggestion(file_ctx: dict, s: dict) -> dict | None:
-    side, line, start = s.get("side"), s.get("line"), s.get("start_line")
-    if not isinstance(line, int):
-        return None
-    if start is not None and start > line:
-        start, line = line, start
-    if start == line:
-        start = None
-    for cand_side in ([side] if side in ("LEFT", "RIGHT") else []) + [x for x in ("RIGHT", "LEFT") if x != side]:
-        for cand_start in ([start, None] if start is not None else [None]):
-            if anchors.check(file_ctx, cand_side, line, cand_start) is None:
-                return {**s, "side": cand_side, "line": line, "start_line": cand_start}
-    return None
+_LINES_CACHE: dict[str, Any] = {}
 
 
-def _suggestion_id(path: str, s: dict) -> str:
-    return "s-" + hashlib.sha1(f"{path}|{s['side']}|{s['line']}|{s['body']}".encode()).hexdigest()[:10]
+def file_lines(pr_dir: Path) -> dict[str, findings.FileLines]:
+    """Every file's commentable diff lines, parsed once per diff.patch version (this runs on every page poll)."""
+    patch = pr_dir / "diff.patch"
+    if not patch.exists():
+        return {}
+    key = f"{patch}:{patch.stat().st_mtime_ns}"
+    if _LINES_CACHE.get("key") != key:
+        parsed = diffparse.parse(patch.read_bytes().decode("utf-8", errors="replace"))
+        _LINES_CACHE.update(key=key, lines={fd.path: findings.FileLines(fd) for fd in parsed})
+    return _LINES_CACHE["lines"]
+
+
+def _keys_by_path(pr_dir: Path) -> dict[str, list[str]]:
+    manifest = read_json(pr_dir / "clusters.json") or {"clusters": []}
+    out: dict[str, list[str]] = defaultdict(list)
+    for c in manifest["clusters"]:
+        for it in c["items"]:
+            out[it["path"]].append(it["key"])
+    return out
+
+
+def placed_findings(pr_dir: Path, ctx: dict) -> list[dict]:
+    """The reviewer's findings plus the blocker rules' proposals, placed on diff lines and de-duplicated."""
+    fls = file_lines(pr_dir)
+    raw: list[tuple[str, dict]] = []
+    for path, keys in _keys_by_path(pr_dir).items():
+        for k in keys:
+            part = read_json(pr_dir / "partials" / f"{k}.json")
+            if not part:
+                continue
+            ann = part["annotation"]
+            items = ann.get("findings")
+            if items is None:  # an analysis from before findings had titles, fixes and anchors
+                items = [findings.from_legacy(old, fls.get(path)) for old in ann.get("suggestions", [])]
+            raw += [(path, x) for x in items]
+            raw += [(b["path"], blockers.to_raw_finding(b, b.get("problem"))) for b in part.get("blockers", [])]
+    placed = [findings.place(x, path, fls.get(path)) for path, x in raw]
+    kept, _ = findings.dedupe(placed)
+    return kept
+
+
+def _carry_over(r: dict, fls: dict[str, findings.FileLines]) -> dict:
+    """An earlier finding that is still open but wasn't found again this round."""
+    raw = {"title": r["title"], "category": r.get("category") or "correctness", "severity": r.get("severity") or "minor",
+           "side": r["side"], "anchor": r["anchor"], "line": r["line"], "impact": "", "fix": "",
+           "why": f"Found in the previous review round and not fixed yet: {r['how']}.", "evidence": "", "confidence": None}
+    f = findings.place(raw, r["path"], fls.get(r["path"]))
+    f["id"] = r["id"]
+    return f
+
+
+def build_findings(pr_dir: Path, ctx: dict) -> tuple[list[dict], list[dict], list[dict]]:
+    """(findings, other tools' findings, re-checked earlier problems) for the analysis."""
+    fls = file_lines(pr_dir)
+    placed = placed_findings(pr_dir, ctx)
+    scores = read_json(pr_dir / "judge.json") or {}
+    saved_bots = read_json(pr_dir / "bots.json") or {}
+    verdicts = saved_bots.get("verdicts", {})
+    bot_found = [{**b, "verdict": (verdicts.get(str(b["comment_id"])) or {}).get("verdict"),
+                  "verdict_reason": (verdicts.get(str(b["comment_id"])) or {}).get("reason")}
+                 for b in saved_bots.get("found", [])]
+    results = (read_json(pr_dir / "recheck.json") or {}).get("results", {})
+    current = {f["id"] for f in placed}
+    placed += [_carry_over(r, fls) for rid, r in results.items()
+               if r["kind"] == "finding" and r["status"] == "still-open" and rid not in current]
+    for f in placed:
+        v = scores.get(f["id"])
+        f["judge_score"] = v["score"] if v else None
+        f["judge_reason"] = v["reason"] if v else None
+        f["low_confidence"] = judge.is_low(f, v)
+        f["status"] = "still-open" if f["id"] in results and results[f["id"]]["status"] == "still-open" else "new"
+        f["also_flagged_by"] = sorted({b["bot"] for b in bot_found if bots.same_spot(f, b)})
+        f["comment_body"] = findings.comment_body(f)
+    placed.sort(key=lambda f: (f["low_confidence"], findings.SEVERITY_RANK.get(f["severity"], 9), f["path"], f["line"]))
+    rechecked = [{"kind": r["kind"], "title": r["title"], "path": r["path"], "line": r.get("line"),
+                  "status": r["status"], "how": r["how"], "author": r.get("author"), "html_url": r.get("html_url")}
+                 for r in results.values() if r["kind"] == "comment" or r["status"] == "fixed"]
+    return placed, bot_found, rechecked
 
 
 def default_chapters(ctx: dict) -> list[dict]:
@@ -201,7 +264,7 @@ def build_analysis(pr_dir: Path) -> dict[str, Any]:
     claude_tests = {p for p in map(resolve, (synthesis or {}).get("test_files", [])) if p}
     claude_docs = {p for p in map(resolve, (synthesis or {}).get("docs_files", [])) if p}
 
-    files_out, suggestions = [], []
+    files_out = []
     for f in ctx["files"]:
         entry = {k: f[k] for k in ("path", "old_path", "status", "additions", "deletions", "binary", "category",
                                    "generated", "sensitive", "minutes", "base_blob", "head_blob", "tests_for",
@@ -231,14 +294,6 @@ def build_analysis(pr_dir: Path) -> dict[str, Any]:
                         entry["notes"].append(fixed)
                     else:
                         orphans.append(n.get("text", ""))
-                for s in p.get("suggestions", []):
-                    fixed = _fix_suggestion(f, s)
-                    if fixed:
-                        suggestions.append({"id": _suggestion_id(f["path"], fixed), "path": f["path"], "side": fixed["side"],
-                                            "line": fixed["line"], "start_line": fixed["start_line"],
-                                            "severity": fixed["severity"], "body": fixed["body"]})
-                    else:
-                        log.append(f"{f['path']}: removed a suggested comment on a line outside the diff ({s.get('side')} {s.get('line')})")
             if orphans:
                 log.append(f"{f['path']}: moved {len(orphans)} note(s) that pointed outside the diff into the file summary")
                 entry["summary"] = (entry["summary"] or "") + "\n\n**More notes:**\n" + "\n".join(f"- {t}" for t in orphans)
@@ -262,6 +317,7 @@ def build_analysis(pr_dir: Path) -> dict[str, Any]:
     questions = [{**q, "refs": [{**r, "path": resolve(r.get("path")) or r.get("path")} for r in q.get("refs", []) if r.get("path")]}
                  for q in (synthesis or {}).get("questions", [])]
 
+    found, bot_found, rechecked = build_findings(pr_dir, ctx)
     analysis = {
         "status": progress.get("status", "fetched"),
         "focus": progress.get("focus"),
@@ -272,7 +328,10 @@ def build_analysis(pr_dir: Path) -> dict[str, Any]:
         "flows": flows,
         "impact": impact,
         "questions": questions,
-        "suggestions": suggestions,
+        "findings": found,
+        "bot_findings": bot_found,
+        "ci": ci.public(read_json(pr_dir / "ci.json")),
+        "rechecked": rechecked,
         "progress": {k: progress.get(k) for k in ("status", "clusters_total", "clusters_done", "clusters_failed",
                                                    "message", "started_at", "finished_at", "log") if k in progress},
         "repair_log": ctx.get("warnings", []) + log,

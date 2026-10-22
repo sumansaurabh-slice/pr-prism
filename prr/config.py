@@ -20,13 +20,16 @@ class Models:
     docs: str = "haiku"
     synthesize: str = "opus"
     chat: str = "opus"
+    blockers: str = "sonnet"   # the blocker-rule pass
+    judge: str = "haiku"       # the second look at every finding
+    ci: str = "sonnet"         # explaining CI failures, other tools' comments, re-checks
 
 
 @dataclass
 class AnalysisSettings:
-    concurrency: int = 5
-    cluster_tokens: int = 25_000
-    cluster_max_files: int = 40
+    concurrency: int = 6
+    cluster_tokens: int = 12_000   # small batches, so the reviewer can read every file in full
+    cluster_max_files: int = 8
     retries: int = 2
     annotate_timeout_s: int = 900
     synthesize_timeout_s: int = 1200

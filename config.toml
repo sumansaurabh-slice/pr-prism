@@ -8,11 +8,14 @@ annotate = "sonnet"   # per-cluster file annotations (runs in parallel)
 docs = "haiku"        # clusters that contain only docs
 synthesize = "opus"   # one call: why/how, review path, flows, impact
 chat = "opus"         # deep-dive chat in the web app
+blockers = "sonnet"   # the blocker-rule pass (SQL/shell from request input, secrets, removed auth checks, destructive migrations)
+judge = "haiku"       # the second look that scores every finding
+ci = "sonnet"         # explaining CI failures, checking other review tools' comments, re-checking earlier findings
 
 [analysis]
-concurrency = 5            # parallel `claude -p` annotation calls
-cluster_tokens = 25000     # max diff tokens per annotation call
-cluster_max_files = 40
+concurrency = 6            # parallel `claude -p` review calls
+cluster_tokens = 12000     # max diff tokens per review call (small, so every file can be read in full)
+cluster_max_files = 8
 retries = 2
 annotate_timeout_s = 900
 synthesize_timeout_s = 1200

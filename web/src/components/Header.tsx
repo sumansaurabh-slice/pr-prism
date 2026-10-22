@@ -50,6 +50,8 @@ export function Header() {
   const { pr } = analysis;
   const commits = pr.commits.length;
   const verb = pr.state === "MERGED" ? "merged" : "wants to merge";
+  const blockers = analysis.findings.filter((f) => f.severity === "blocker" && !f.low_confidence).length;
+  const failingCI = (analysis.ci?.checks ?? []).filter((c) => c.state === "fail").length;
   return (
     <header className="gh-header">
       <div className="gh-header-row">
@@ -78,6 +80,16 @@ export function Header() {
           <span className="branch-name">{pr.base_ref}</span> from <span className="branch-name">{pr.head_ref}</span>
         </span>
         <RiskBadge risk={analysis.summary?.risk} />
+        {blockers > 0 && (
+          <a className="Label Label--danger" href="#/overview" title="Problems that should block this merge">
+            {blockers} blocking
+          </a>
+        )}
+        {failingCI > 0 && (
+          <a className="Label Label--danger" href="#/overview" title="Failing CI checks">
+            CI failing ({failingCI})
+          </a>
+        )}
         <span className="gh-meta-muted" title="Rough time to review every file">
           {fmtMinutes(totalMinutes(analysis))} to review
         </span>

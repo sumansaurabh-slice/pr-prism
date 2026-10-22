@@ -299,6 +299,32 @@ def create_app(pr_dir: Path, cfg: Config) -> FastAPI:
             content = content[:MAX_FILE_BYTES] + "\n…[truncated]"
         return {"path": path, "at": at, "content": content}
 
+    @app.post("/api/ci/refresh")
+    async def refresh_ci() -> dict:
+        """Read the CI checks again (and explain new failures). The page shows the result on its next poll."""
+        from . import ci as ci_mod
+        from .util import write_json
+
+        c = ctx()
+        pr = c["pr"]
+
+        def work() -> dict:
+            info = ci_mod.fetch(pr["owner"], pr["repo"], pr["head_sha"])
+            old = {x["name"]: x for x in (read_json(pr_dir / "ci.json") or {}).get("checks", [])}
+            for check in info["checks"]:  # keep explanations for failures that didn't change
+                prev = old.get(check["name"])
+                if prev and prev.get("explanation") and prev["state"] == check["state"] == "fail":
+                    check["explanation"] = prev["explanation"]
+            todo = {**info, "checks": [x for x in info["checks"] if x["state"] == "fail" and not x.get("explanation")]}
+            ci_mod.explain_failures(todo, c, cfg, Path(c["worktree"]), lambda _m: None)
+            write_json(pr_dir / "ci.json", info)
+            return ci_mod.public(info) or {}
+
+        try:
+            return await asyncio.to_thread(work)
+        except Exception as e:  # noqa: BLE001
+            raise HTTPException(502, f"could not read the CI checks: {e}") from e
+
     @app.get("/api/github/threads")
     def threads() -> dict:
         now = time.time()

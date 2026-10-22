@@ -2619,3 +2619,193 @@ tr.line-flash > td,
     display: none;
   }
 }
+
+/* ------------------------------------------------------------------ findings, CI, other tools, re-checks */
+.finding {
+  border-left: 3px solid var(--attention);
+}
+.finding.sev-blocker {
+  border-left-color: var(--danger);
+  box-shadow: 0 0 0 1px var(--danger-border);
+}
+.finding.sev-major {
+  border-left-color: var(--severe);
+}
+.finding.sev-nit {
+  border-left-color: var(--border);
+}
+.finding.low {
+  opacity: 0.75;
+  border-style: dashed;
+}
+.finding-title {
+  margin-bottom: 4px;
+  font-weight: 600;
+}
+.finding-impact {
+  margin-bottom: 6px;
+}
+.finding-fix {
+  margin-bottom: 6px;
+}
+.finding-code {
+  margin: 6px 0;
+}
+.finding-code-label {
+  margin-bottom: 4px;
+  font-size: 12px;
+  color: var(--text-muted);
+}
+.finding-code pre,
+.ci-message,
+.ci-log pre {
+  margin: 0;
+  padding: 8px 10px;
+  overflow: auto;
+  font-size: 12px;
+  white-space: pre-wrap;
+  overflow-wrap: anywhere;
+  background: var(--bg-subtle);
+  border: 1px solid var(--border-muted);
+  border-radius: var(--radius);
+}
+.finding-note {
+  margin: 6px 0;
+  padding: 6px 10px;
+  font-size: 13px;
+  background: var(--attention-bg);
+  border-radius: var(--radius);
+}
+.finding-why {
+  margin-top: 6px;
+  font-size: 13px;
+}
+.finding-why summary {
+  color: var(--text-muted);
+  cursor: pointer;
+}
+.finding-evidence {
+  margin-top: 4px;
+  color: var(--text-muted);
+}
+.finding-meta {
+  margin-top: 6px;
+  font-size: 12px;
+  color: var(--text-muted);
+}
+.ci-note {
+  border-left: 3px solid var(--attention);
+}
+.ci-note.ci-failure {
+  border-left-color: var(--danger);
+}
+.bot-verdict {
+  display: flex;
+  flex-wrap: wrap;
+  align-items: baseline;
+  gap: 8px;
+  padding: 8px 12px 0;
+  font-size: 13px;
+}
+.gh-thread .bot-verdict {
+  padding-bottom: 4px;
+  border-bottom: 1px solid var(--border-muted);
+}
+.blocker-banner {
+  align-items: flex-start;
+  margin-bottom: 16px;
+}
+.blocker-banner ul {
+  margin: 4px 0 0;
+  padding-left: 1.2em;
+}
+.finding-count {
+  display: inline-flex;
+  align-items: center;
+  gap: 4px;
+  font-size: 12px;
+}
+.finding-row,
+.recheck-row,
+.bot-line,
+.ci-line {
+  display: flex;
+  flex-wrap: wrap;
+  align-items: center;
+  gap: 8px;
+}
+.finding-row {
+  color: var(--text);
+  text-decoration: none !important;
+}
+.finding-row:hover {
+  background: var(--bg-subtle);
+}
+.finding-row-title,
+.recheck-title {
+  flex: 1;
+  min-width: 200px;
+}
+.ci-refresh {
+  margin-left: auto;
+}
+.ci-icon {
+  display: inline-grid;
+  place-items: center;
+  width: 18px;
+  height: 18px;
+  font-size: 10px;
+  border-radius: 50%;
+}
+.ci-icon.pass {
+  color: var(--success);
+}
+.ci-icon.fail {
+  color: #fff;
+  background: var(--danger);
+}
+.ci-icon.pending {
+  color: var(--attention);
+}
+.ci-icon.skipped,
+.ci-icon.neutral {
+  color: var(--text-muted);
+}
+.ci-link {
+  margin-left: auto;
+}
+.ci-explain {
+  margin: 8px 0 0 26px;
+  font-size: 14px;
+}
+.ci-summary {
+  margin: 6px 0 0 26px;
+  font-size: 13px;
+}
+.ci-log {
+  margin: 8px 0 0 26px;
+  font-size: 13px;
+}
+.ci-log summary {
+  color: var(--text-muted);
+  cursor: pointer;
+}
+.ci-log pre {
+  max-height: 300px;
+  margin-top: 6px;
+}
+.ci-rest {
+  margin: 8px 0 0;
+  padding: 0;
+  list-style: none;
+  font-size: 13px;
+}
+.ci-rest li {
+  display: flex;
+  align-items: center;
+  gap: 6px;
+  padding: 2px 0;
+}
+.bot-row .bot-verdict {
+  padding: 6px 0 0;
+}
