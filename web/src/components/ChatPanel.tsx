@@ -39,9 +39,9 @@ function ApprovalCard({ a, onDecide }: { a: Approval; onDecide: (decision: Appro
           <button
             className="btn btn-sm"
             onClick={() => onDecide("always")}
-            title={`Don't ask again in this chat for ${a.tool === "Bash" ? `commands starting with "${a.always_label}"` : "this tool"}`}
+            title={`Don't ask again in this chat for ${a.tool === "Bash" ? `commands that use only: ${a.always_label}` : "this tool"}`}
           >
-            Always allow
+            {a.tool === "Bash" && a.always_label.length <= 24 ? `Always allow ${a.always_label}` : "Always allow"}
           </button>
           <button className="btn btn-sm btn-primary" onClick={() => onDecide("allow")}>
             Allow

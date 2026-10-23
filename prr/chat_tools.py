@@ -8,7 +8,8 @@ config.toml [chat] can_post turns the two posting tools off; can_approve allows 
 
 And `approve`, Claude Code's permission prompt tool (`--permission-prompt-tool`): for every action that is not
 on the auto-allow list, it asks the reviewer in the browser (through the review server) and waits for
-Allow / Always allow / Deny.
+Allow / Always allow / Deny. Shell commands that only read (see shellsafe.py) and connector lookups run
+without asking.
 """
 
 from __future__ import annotations
@@ -23,7 +24,7 @@ import urllib.request
 from pathlib import Path
 from typing import Any
 
-from . import anchors, github
+from . import anchors, github, shellsafe
 from .config import Config
 from .drafts import new_draft
 from .gitgh import viewer_login
@@ -51,18 +52,20 @@ APPROVAL_WAIT_S = 15 * 60
 _READ_ONLY_MCP = re.compile(r"(^|_)(get|search|list|read|fetch|lookup|query|find|view)([A-Z_]|$)")
 
 
-def approval_key(tool: str, inp: dict) -> str:
-    """What "Always allow in this chat" covers: a whole tool, or for shell commands the first two words."""
+def approval_keys(tool: str, inp: dict) -> list[str]:
+    """What "Always allow in this chat" covers: a whole tool, or for shell commands each program that isn't
+    read-only (`awk`, `npm test`), so the next command using only those programs doesn't ask again."""
     if tool == "Bash":
-        words = str(inp.get("command", "")).split()
-        return "Bash:" + " ".join(words[:2])
-    return tool
+        return ["Bash:" + k for k in shellsafe.approval_keys(str(inp.get("command", "")))]
+    return [tool]
 
 
-def auto_allowed(tool: str) -> bool:
+def auto_allowed(tool: str, inp: dict | None = None) -> bool:
     if tool.startswith("mcp__"):
         parts = tool.split("__")
         return len(parts) >= 3 and bool(_READ_ONLY_MCP.search(parts[2]))
+    if tool == "Bash":
+        return shellsafe.is_read_only(str((inp or {}).get("command", "")))
     return False
 
 
@@ -86,12 +89,12 @@ def approve(pr_dir: Path, args: dict) -> dict:
     """Claude Code's permission prompt. Returns {"behavior": "allow", "updatedInput": …} or a deny with a message."""
     tool, inp = str(args.get("tool_name", "")), args.get("input") or {}
     allow = {"behavior": "allow", "updatedInput": inp}
-    if auto_allowed(tool):
+    if auto_allowed(tool, inp):
         return allow
     thread_id = os.environ.get("PRR_THREAD_ID", "")
     state = StateStore(pr_dir).load()
     thread = next((t for t in state["threads"] if t["id"] == thread_id), {})
-    if approval_key(tool, inp) in thread.get("always_allow", []):
+    if set(approval_keys(tool, inp)) <= set(thread.get("always_allow", [])):
         return allow
     answer = _ask_reviewer(pr_dir, tool, inp)
     if answer.get("decision") in ("allow", "always"):
