@@ -86,7 +86,8 @@ def test_approval_rules(tmp_path, tricky_repo, monkeypatch):
     assert not chat_tools.auto_allowed("mcp__claude_ai_Atlassian__createJiraIssue")
     assert not chat_tools.auto_allowed("mcp__claude_ai_Slack__slack_send_message")
     assert not chat_tools.auto_allowed("Bash")
-    assert chat_tools.approval_key("Bash", {"command": "npm test -- --watch"}) == "Bash:npm test"
+    assert chat_tools.approval_keys("Bash", {"command": "npm test -- --watch"}) == ["Bash:npm test"]
+    assert chat_tools.auto_allowed("Bash", {"command": "awk 'NR==5{print}' a.py | head"})
 
     lookup = {"tool_name": "mcp__claude_ai_Atlassian__getJiraIssue", "input": {"issueIdOrKey": "ATI-1"}}
     assert chat_tools.approve(tmp_path, lookup)["behavior"] == "allow"

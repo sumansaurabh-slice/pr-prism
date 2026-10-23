@@ -489,7 +489,7 @@ def create_app(pr_dir: Path, cfg: Config) -> FastAPI:
         detail = str(inp.get("command")) if tool == "Bash" else json.dumps(inp, indent=1, ensure_ascii=False)[:3000]
         return {"type": "approval", "id": aid, "tool": tool, "title": title,
                 "summary": tool_summary(tool, inp, Path(ctx()["worktree"])), "detail": detail,
-                "always_label": chat_tools.approval_key(tool, inp).replace("Bash:", "")}
+                "always_label": ", ".join(k.removeprefix("Bash:") for k in chat_tools.approval_keys(tool, inp))}
 
     @app.post("/api/internal/approvals")
     async def ask_approval(body: ApprovalIn) -> dict:
@@ -508,12 +508,13 @@ def create_app(pr_dir: Path, cfg: Config) -> FastAPI:
             approvals.pop(aid, None)
         answer = item["answer"] or {"decision": "deny"}
         if answer["decision"] == "always":
-            key = chat_tools.approval_key(body.tool_name, body.input)
+            keys = chat_tools.approval_keys(body.tool_name, body.input)
 
             def remember(s: dict) -> None:
                 t = next((t for t in s["threads"] if t["id"] == body.thread_id), None)
-                if t is not None and key not in t.setdefault("always_allow", []):
-                    t["always_allow"].append(key)
+                if t is not None:
+                    allowed = t.setdefault("always_allow", [])
+                    allowed += [k for k in keys if k not in allowed]
 
             store.update(remember)
         return answer
