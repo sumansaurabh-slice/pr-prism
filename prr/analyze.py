@@ -15,7 +15,8 @@ from concurrent.futures import ThreadPoolExecutor, as_completed
 from pathlib import Path
 from typing import Any, Callable
 
-from . import blockers, bots, ci, cluster, diffparse, filekinds, github, impact, judge, merge, recheck, rubrics
+from . import (blockers, bots, ci, cluster, cost, diffparse, filekinds, github, impact, judge, ledger, merge, recheck,
+               rubrics)
 from .claude import ClaudeError, run_structured
 from .config import GUIDELINES_FILE, PROMPTS_DIR, Config
 from .models import AnnotateOut, SynthesisOut, llm_schema
@@ -171,17 +172,22 @@ def synthesis_prompt(ctx: dict, analysis: dict, impact_data: dict, edges: list[d
 
 
 class Progress:
+    """progress.json for one analysis run. Its cost_usd is this run's lines in calls.jsonl, so a run that is killed
+    keeps its spend in the PR total."""
+
     def __init__(self, pr_dir: Path, focus: str | None, echo: Callable[[str], None]):
         self.path = pr_dir / "progress.json"
         self.lock = threading.Lock()
         self.echo = echo
+        self.ledger = ledger.Ledger(pr_dir, ledger.new_run_id())
         self.data: dict[str, Any] = {"status": "annotating", "focus": focus, "clusters_total": 0, "clusters_done": 0,
                                      "clusters_failed": 0, "message": "", "started_at": now_iso(),
-                                     "finished_at": None, "log": [], "cost_usd": 0.0}
+                                     "finished_at": None, "log": [], "cost_usd": 0.0, "run_id": self.ledger.run_id}
 
     def update(self, msg: str | None = None, **fields: Any) -> None:
         with self.lock:
             self.data.update(fields)
+            self.data["cost_usd"] = round(cost.run_total(ledger.read(self.ledger.pr_dir), self.ledger.run_id), 4)
             if msg:
                 self.data["message"] = msg
                 self.data["log"] = (self.data["log"] + [f"{time.strftime('%H:%M:%S')} {msg}"])[-100:]
@@ -244,25 +250,26 @@ def _analyze(pr_dir: Path, ctx: dict, cfg: Config, focus: str | None, force: boo
     conventions = rubrics.repo_conventions(Path(ctx["repo_root"]), ctx["pr"]["merge_base_sha"])
     blocker_head = (PROMPTS_DIR / "blockers.md").read_text().replace("{{STYLE}}", style_rules())
 
-    def structured(prompt: str, schema: type, model: str, *, tools: list[str] | None = None, turns: int = 40,
-                   timeout: int | None = None) -> tuple[dict, float]:
+    def structured(prompt: str, schema: type, model: str, *, purpose: str, target: str,
+                   tools: list[str] | None = None, turns: int = 40, timeout: int | None = None) -> dict:
         last_err: Exception | None = None
         for _ in range(cfg.analysis.retries + 1):
             try:
-                raw, stats = run_structured(prompt, llm_schema(schema), cwd=worktree, model=model, tools=tools,
-                                            timeout=timeout or cfg.analysis.annotate_timeout_s, max_turns=turns)
-                return schema.model_validate(raw).model_dump(mode="json"), stats.cost_usd or 0.0
+                raw, _ = run_structured(prompt, llm_schema(schema), cwd=worktree, model=model, tools=tools,
+                                        timeout=timeout or cfg.analysis.annotate_timeout_s, max_turns=turns,
+                                        ledger=progress.ledger, purpose=purpose, target=target)
+                return schema.model_validate(raw).model_dump(mode="json")
             except (ClaudeError, ValueError) as e:
                 last_err = e
         raise ClaudeError(str(last_err))
 
-    def run_cluster(c: cluster.Cluster) -> float:
+    def run_cluster(c: cluster.Cluster) -> None:
         idx = clusters.index(c) + 1
         docs_only = all(files_ctx[p]["category"] == "docs" for p in c.paths)
         model = cfg.models.docs if docs_only else cfg.models.annotate
         prompt = annotate_prompt(ctx, c, idx, len(clusters), focus, conventions)
         try:
-            out, cost = structured(prompt, AnnotateOut, model)
+            out = structured(prompt, AnnotateOut, model, purpose="annotate", target=f"group {idx}")
         except ClaudeError as e:
             progress.update(f"Group {idx}: Claude could not read it: {str(e)[:200]}")
             raise
@@ -273,8 +280,8 @@ def _analyze(pr_dir: Path, ctx: dict, cfg: Config, focus: str | None, force: boo
         if code_files and not any(a["findings"] for a in out["files"]):
             # Zero findings is also what a review that didn't read closely looks like: read once more.
             try:
-                again, more = structured(SECOND_LOOK + prompt, AnnotateOut, model)
-                cost += more
+                again = structured(SECOND_LOOK + prompt, AnnotateOut, model, purpose="annotate",
+                                   target=f"group {idx} (closer second read)")
                 found = {a["path"]: a["findings"] for a in again["files"]}
                 for a in out["files"]:
                     a["findings"] = found.get(a["path"], [])
@@ -284,9 +291,9 @@ def _analyze(pr_dir: Path, ctx: dict, cfg: Config, focus: str | None, force: boo
         proposed: list[dict] = []
         if code_files:
             try:
-                bo, more = structured(blocker_head + cluster_files(ctx, c, idx, len(clusters)), blockers.BlockersOut,
-                                      cfg.models.blockers, tools=[], turns=3, timeout=600)
-                cost += more
+                bo = structured(blocker_head + cluster_files(ctx, c, idx, len(clusters)), blockers.BlockersOut,
+                                cfg.models.blockers, purpose="blockers", target=f"group {idx}", tools=[], turns=3,
+                                timeout=600)
                 proposed = bo["blockers"]
             except ClaudeError as e:
                 progress.update(f"Group {idx}: the blocker check failed: {str(e)[:150]}")
@@ -313,17 +320,15 @@ def _analyze(pr_dir: Path, ctx: dict, cfg: Config, focus: str | None, force: boo
             write_json(partials / f"{keys[(c.id, it.path, it.part)]}.json",
                        {"annotation": a, "blockers": [b for b in proposed if b["path"] == it.path], "flow_edges": edges,
                         "cluster": c.id, "model": model, "second_pass": second_pass, "at": now_iso()})
-        return cost
 
     with ThreadPoolExecutor(max_workers=max(1, cfg.analysis.concurrency)) as pool:
         futures = {pool.submit(run_cluster, c): c for c in pending}
         for fut in as_completed(futures):
             c = futures[fut]
             try:
-                cost = fut.result()
+                fut.result()
                 progress.update(f"Group {clusters.index(c) + 1} of {len(clusters)} done ({len(c.items)} files)",
-                                clusters_done=progress.data["clusters_done"] + 1,
-                                cost_usd=round(progress.data["cost_usd"] + cost, 4))
+                                clusters_done=progress.data["clusters_done"] + 1)
             except Exception as e:  # noqa: BLE001 — one failed batch must not sink the review
                 progress.update(f"Group {clusters.index(c) + 1} failed, so its files have no notes: {str(e)[:200]}",
                                 clusters_failed=progress.data["clusters_failed"] + 1)
@@ -331,7 +336,8 @@ def _analyze(pr_dir: Path, ctx: dict, cfg: Config, focus: str | None, force: boo
     # Second look at every finding (cheap model, can only veto).
     progress.update("Taking a second look at every finding")
     placed = merge.placed_findings(pr_dir, ctx)
-    verdicts = judge.run(placed, diffs, cfg, worktree, read_json(pr_dir / "judge.json") or {}, progress.update)
+    verdicts = judge.run(placed, diffs, cfg, worktree, read_json(pr_dir / "judge.json") or {}, progress.update,
+                         ledger=progress.ledger)
     write_json(pr_dir / "judge.json", verdicts)
 
     # CI results, other review tools' comments, and re-checking earlier problems run side by side.
@@ -343,7 +349,8 @@ def _analyze(pr_dir: Path, ctx: dict, cfg: Config, focus: str | None, force: boo
             info = ci.fetch(pr["owner"], pr["repo"], pr["head_sha"])
             failing = sum(1 for c in info["checks"] if c["state"] == "fail")
             progress.update(f"Read {len(info['checks'])} CI checks ({failing} failing)")
-            write_json(pr_dir / "ci.json", ci.explain_failures(info, ctx, cfg, worktree, progress.update))
+            write_json(pr_dir / "ci.json", ci.explain_failures(info, ctx, cfg, worktree, progress.update,
+                                                               ledger=progress.ledger))
         except Exception as e:  # noqa: BLE001 — CI is extra information; the review goes on without it
             progress.update(f"Could not read the CI checks: {str(e)[:150]}")
 
@@ -355,7 +362,8 @@ def _analyze(pr_dir: Path, ctx: dict, cfg: Config, focus: str | None, force: boo
             return
         found = bots.from_comments(comments)
         saved = read_json(pr_dir / "bots.json") or {}
-        verdict_cache = bots.check(found, cfg, worktree, saved.get("verdicts", {}), progress.update) if found else {}
+        verdict_cache = (bots.check(found, cfg, worktree, saved.get("verdicts", {}), progress.update,
+                                    ledger=progress.ledger) if found else {})
         write_json(pr_dir / "bots.json", {"found": found, "verdicts": verdict_cache})
         if found:
             progress.update(f"Checked {len(found)} comments from other review tools")
@@ -366,7 +374,8 @@ def _analyze(pr_dir: Path, ctx: dict, cfg: Config, focus: str | None, force: boo
                   for e in [recheck.comment_entry(c)] if e]
         if items:
             saved_checks = (read_json(pr_dir / "recheck.json") or {}).get("cache", {})
-            results = recheck.run(items, ctx, worktree, cfg, saved_checks, progress.update)  # updates saved_checks
+            results = recheck.run(items, ctx, worktree, cfg, saved_checks, progress.update,  # updates saved_checks
+                                  ledger=progress.ledger)
             write_json(pr_dir / "recheck.json", {"cache": saved_checks, "results": results,
                                                  "previous_head": previous.get("head_sha")})
             fixed = sum(1 for r in results.values() if r["status"] == "fixed")
@@ -395,10 +404,11 @@ def _analyze(pr_dir: Path, ctx: dict, cfg: Config, focus: str | None, force: boo
     prompt = synthesis_prompt(ctx, partial_view, impact_data, edges, focus)
     for attempt in range(cfg.analysis.retries + 1):
         try:
-            raw, stats = run_structured(prompt, llm_schema(SynthesisOut), cwd=worktree, model=cfg.models.synthesize,
-                                        timeout=cfg.analysis.synthesize_timeout_s, max_turns=30)
+            raw, _ = run_structured(prompt, llm_schema(SynthesisOut), cwd=worktree, model=cfg.models.synthesize,
+                                    timeout=cfg.analysis.synthesize_timeout_s, max_turns=30, ledger=progress.ledger,
+                                    purpose="synthesis", target=f"try {attempt + 1}")
             write_json(pr_dir / "synthesis.json", SynthesisOut.model_validate(raw).model_dump(mode="json"))
-            progress.update("Summary written", cost_usd=round(progress.data["cost_usd"] + (stats.cost_usd or 0), 4))
+            progress.update("Summary written")
             break
         except (ClaudeError, ValueError) as e:
             progress.update(f"Summary try {attempt + 1} failed: {str(e)[:200]}")

@@ -174,7 +174,7 @@ Put team rules under "Team context" in `skill/review-guidelines.md`. Claude foll
 
 ### Good to know
 
-- **Cost:** each analysis uses your Claude Code plan. A medium PR is about $0.50 to $2. Each chat question is about $0.10 to $0.30.
+- **Cost:** each analysis uses your Claude Code plan. A medium PR is about $0.50 to $2. Each chat question is about $0.10 to $0.30, and more in a long thread, because each answer re-reads the whole thread. Every Claude call is recorded in the PR's `calls.jsonl`; the app shows what each chat answer cost and the PR's total, and `prr status` lists each PR's spend.
 - **Your ai-banker settings are not loaded.** ai-banker's own `.claude/` settings, hooks and MCP servers are not loaded by the analysis or the chat. This is on purpose, so a PR can't run its own code on your machine. Your normal Claude Code session in ai-banker still uses them.
 - **Running without Claude Code:** you can run the same steps from a plain terminal:
 
@@ -195,7 +195,8 @@ Put team rules under "Team context" in `skill/review-guidelines.md`. Claude foll
 - `config.toml` sets:
   - the models for each step (`annotate`, `synthesize`, `chat`, `blockers`, `judge`, `ci`);
   - concurrency, batch size and cache location;
-  - the chat's switches under `[chat]`.
+  - the chat's switches under `[chat]`;
+  - an optional spend warning per PR under `[budget]` (`warn_usd`; a warning only).
 
 ## How a review is made
 
@@ -214,7 +215,7 @@ Put team rules under "Team context" in `skill/review-guidelines.md`. Claude foll
 
    Plain pattern checks in code must confirm each one before it can show as **Blocks merge**. Otherwise it shows as **Must fix**, with a note.
 3. **Placement and de-duplication.** Each finding carries the exact code line (its anchor), and is placed by matching that text. Duplicates from overlapping batches are merged.
-4. **Second look.** A separate, cheaper model scores every finding against its code. It can only veto. Findings that score low are hidden as **low confidence**, not deleted.
+4. **Second look.** A separate, cheaper model scores every finding against its code. It can only veto. Findings that score low are hidden as **low confidence**, not deleted. The first reviewer's own "% sure" never hides a finding by itself. If the second look fails, the finding stays shown, marked "not second-checked", and is checked again on the next run.
 5. **CI, other tools, re-checks.** These run side by side (see above).
 6. **Summary.** The summary, reading order, data flows and impact take all of the above into account.
 

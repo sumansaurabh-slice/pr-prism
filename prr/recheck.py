@@ -17,6 +17,7 @@ from pydantic import BaseModel
 
 from .bots import comment_title
 from .claude import ClaudeError, run_structured
+from .ledger import Ledger
 from .config import PROMPTS_DIR, Config
 from .findings import norm
 from .models import llm_schema
@@ -77,7 +78,8 @@ def _present(anchor: str, head_lines: list[str]) -> bool:
     return len(want) >= MIN_SUBSTRING_ANCHOR and any(want in norm(x) for x in head_lines)
 
 
-def run(items: list[dict], ctx: dict, worktree: Path, cfg: Config, cache: dict, echo: Callable[[str], None]) -> dict:
+def run(items: list[dict], ctx: dict, worktree: Path, cfg: Config, cache: dict, echo: Callable[[str], None],
+        ledger: Ledger | None = None) -> dict:
     """{item id: {status, how, ...item}} for every item, reusing `cache` for items already decided at this head."""
     from .analyze import style_rules
 
@@ -111,7 +113,8 @@ def run(items: list[dict], ctx: dict, worktree: Path, cfg: Config, cache: dict, 
         decided: dict[str, Check] = {}
         try:
             raw, _ = run_structured(prompt, llm_schema(ChecksOut), cwd=worktree, model=cfg.models.ci, tools=[],
-                                    max_turns=3, timeout=600)
+                                    max_turns=3, timeout=600, ledger=ledger, purpose="recheck",
+                                    target=f"{len(ask[:MAX_CHECKED])} earlier problems")
             decided = {c.id: c for c in ChecksOut.model_validate(raw).checks}
         except (ClaudeError, ValueError) as e:
             echo(f"Could not re-check earlier findings: {str(e)[:150]}")

@@ -14,7 +14,7 @@ import sys
 import webbrowser
 from pathlib import Path
 
-from . import supervise
+from . import cost, supervise
 from .config import SKILL_DIR, WEB_DIST, Config, load_config, pr_dir
 from .gitgh import CommandError, PRRef, parse_pr_arg, repo_root
 from .util import read_json
@@ -163,9 +163,12 @@ def cmd_status(args: argparse.Namespace, cfg: Config) -> int:
         prog = read_json(d / "progress.json") or {}
         info = read_json(d / "server.json") or {}
         pr = ctx.get("pr", {})
+        spent = cost.summary(d, cfg.budget.warn_usd)  # analysis + chat + other checks, from calls.jsonl
         rows.append({
             "pr": f"{pr.get('owner')}/{pr.get('repo')}#{pr.get('number')}", "title": pr.get("title"),
             "head": (pr.get("head_sha") or "")[:10], "analysis": prog.get("status", "not analyzed"),
+            "spend": cost.label(spent) + (" (over your limit)" if spent["over_budget"] else ""),
+            "spend_usd": spent["total_usd"],
             "server": info.get("url") if supervise.healthy(d) else None, "dir": str(d),
         })
     print(json.dumps(rows, indent=1))

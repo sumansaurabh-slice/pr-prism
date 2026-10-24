@@ -17,6 +17,7 @@ from pydantic import BaseModel
 from .claude import ClaudeError, run_structured
 from .config import PROMPTS_DIR, Config
 from .diffparse import FileDiff, render_for_llm
+from .ledger import Ledger
 from .models import llm_schema
 from .util import now_iso
 
@@ -59,7 +60,7 @@ def _render(f: dict, diffs: dict[str, FileDiff]) -> str:
 
 
 def run(findings: list[dict], diffs: dict[str, FileDiff], cfg: Config, cwd: Path, cache: dict,
-        echo: Callable[[str], None]) -> dict:
+        echo: Callable[[str], None], ledger: Ledger | None = None) -> dict:
     """Score findings not yet in `cache` ({id: {score, verdict, reason}}). Returns the updated cache.
 
     A finding the judge could not score gets a failure marker, {id: {failed: true, reason, at}}, so the app can
@@ -76,7 +77,8 @@ def run(findings: list[dict], diffs: dict[str, FileDiff], cfg: Config, cwd: Path
     def one(batch: list[dict]) -> list[Score]:
         prompt = head + "\n---\n\n" + "\n\n".join(_render(f, diffs) for f in batch)
         raw, _ = run_structured(prompt, llm_schema(JudgeOut), cwd=cwd, model=cfg.models.judge, tools=[],
-                                max_turns=3, timeout=300)
+                                max_turns=3, timeout=300, ledger=ledger, purpose="judge",
+                                target=",".join(f["id"] for f in batch))
         return JudgeOut.model_validate(raw).scores
 
     with ThreadPoolExecutor(max_workers=4) as pool:

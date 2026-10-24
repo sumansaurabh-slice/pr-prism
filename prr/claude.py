@@ -17,11 +17,13 @@ import asyncio
 import json
 import os
 import subprocess
+import time
 from dataclasses import dataclass, field
 from pathlib import Path
 from typing import Any, AsyncIterator
 
 from .gitgh import claude_env
+from .ledger import Ledger
 
 READ_ONLY_TOOLS = ["Read", "Grep", "Glob"]
 
@@ -70,19 +72,40 @@ class CallStats:
 
 
 def run_structured(prompt: str, schema: dict[str, Any], *, cwd: Path, model: str, tools: list[str] | None = None,
-                   max_turns: int = 40, timeout: float = 900, add_dirs: list[Path] | None = None) -> tuple[dict, CallStats]:
+                   max_turns: int = 40, timeout: float = 900, add_dirs: list[Path] | None = None,
+                   ledger: Ledger | None = None, purpose: str = "other", target: str = "") -> tuple[dict, CallStats]:
+    """One structured-output call. With a ledger, its cost goes to calls.jsonl before this returns or raises
+    (a timeout's cost is unknown: the process was killed before it reported one)."""
+    started = time.monotonic()
+    call = {"stats": CallStats(), "outcome": "error", "error": None}
+    try:
+        return _run_structured(prompt, schema, cwd, model, tools, max_turns, timeout, add_dirs, call)
+    except Exception as e:
+        call["error"] = str(e)
+        raise
+    finally:
+        if ledger is not None:
+            ledger.record(purpose, model=model, target=target, cost_usd=call["stats"].cost_usd,
+                          duration_ms=int((time.monotonic() - started) * 1000), outcome=call["outcome"],
+                          error=call["error"])
+
+
+def _run_structured(prompt: str, schema: dict[str, Any], cwd: Path, model: str, tools: list[str] | None,
+                    max_turns: int, timeout: float, add_dirs: list[Path] | None, call: dict) -> tuple[dict, CallStats]:
     argv = base_argv(model, READ_ONLY_TOOLS if tools is None else tools, add_dirs=add_dirs)
     argv += ["--output-format", "json", "--json-schema", json.dumps(schema), "--max-turns", str(max_turns)]
     try:
         proc = subprocess.run(argv, input=prompt, cwd=cwd, env=claude_env(), capture_output=True, text=True, timeout=timeout)
     except subprocess.TimeoutExpired as e:
+        call["outcome"] = "timeout"
         raise ClaudeError(f"timed out after {timeout:.0f}s") from e
     try:
         data = json.loads(proc.stdout)
     except json.JSONDecodeError as e:
         tail = (proc.stderr or proc.stdout).strip()[-500:]
         raise ClaudeError(f"claude exited {proc.returncode} without JSON output: {tail}") from e
-    stats = CallStats(data.get("total_cost_usd"), data.get("duration_ms"), data.get("session_id"), data.get("num_turns"))
+    stats = call["stats"] = CallStats(data.get("total_cost_usd"), data.get("duration_ms"), data.get("session_id"),
+                                      data.get("num_turns"))
     if data.get("is_error") or data.get("subtype") != "success":
         raise ClaudeError(f"{data.get('subtype')}: {str(data.get('result'))[:500]}")
     out = data.get("structured_output")
@@ -90,7 +113,9 @@ def run_structured(prompt: str, schema: dict[str, Any], *, cwd: Path, model: str
         try:
             out = json.loads(data.get("result") or "")
         except json.JSONDecodeError as e:
+            call["outcome"] = "refused"
             raise ClaudeError("no structured_output in result") from e
+    call["outcome"] = "ok"
     return out, stats
 
 

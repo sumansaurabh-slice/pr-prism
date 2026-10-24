@@ -14,6 +14,7 @@ from typing import Callable, Literal
 from pydantic import BaseModel
 
 from .claude import ClaudeError, run_structured
+from .ledger import Ledger
 from .config import PROMPTS_DIR, Config
 from .gitgh import gh
 from .models import llm_schema
@@ -109,7 +110,8 @@ def fetch(owner: str, repo: str, head_sha: str) -> dict:
     return {"fetched_at": now_iso(), "head_sha": head_sha, "checks": checks, "annotations": annotations}
 
 
-def explain_failures(ci: dict, ctx: dict, cfg: Config, cwd: Path, echo: Callable[[str], None]) -> dict:
+def explain_failures(ci: dict, ctx: dict, cfg: Config, cwd: Path, echo: Callable[[str], None],
+                     ledger: Ledger | None = None) -> dict:
     """Ask Claude why each failing check failed (up to MAX_EXPLAINED), in parallel."""
     from .analyze import style_rules
 
@@ -131,7 +133,8 @@ def explain_failures(ci: dict, ctx: dict, cfg: Config, cwd: Path, echo: Callable
             prompt += "\n\nThere is no log or file note for this check. Explain what you can from its name and summary."
         prompt += f"\n\n## Files this PR changes\n{changed}\n"
         try:
-            raw, _ = run_structured(prompt, llm_schema(Explanation), cwd=cwd, model=cfg.models.ci, max_turns=12, timeout=600)
+            raw, _ = run_structured(prompt, llm_schema(Explanation), cwd=cwd, model=cfg.models.ci, max_turns=12, timeout=600,
+                                    ledger=ledger, purpose="ci", target=check["name"])
             check["explanation"] = Explanation.model_validate(raw).model_dump()
         except (ClaudeError, ValueError) as e:
             echo(f"Could not explain the failing check {check['name']}: {str(e)[:150]}")
