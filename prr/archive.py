@@ -32,8 +32,8 @@ from .util import now_iso, read_json
 # A PR whose keys are all empty (and that has no cost ledger) is not archived. New kinds of work go here.
 WORK_FIELDS = (
     "threads", "drafts", "stop_verdicts", "reviewed_stop_ids", "submitted", "reviewed", "dismissed_suggestions",
-    "seen_hunks", "review_body_draft", "analysis_cost_total", "server_cost_usd",
-)
+    "seen_hunks", "review_body_draft",
+)  # spend lives in calls.jsonl (archived beside the state), not in state.json
 LEDGER = "calls.jsonl"
 _NAME = re.compile(r"^pr-(\d+)-(\d{8}T\d{6}Z)(?:-(\d+))?\.(json|calls\.jsonl)$")
 _STAMP = "%Y%m%dT%H%M%SZ"

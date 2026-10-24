@@ -13,7 +13,7 @@ import pytest
 
 from prr import archive, cli, fetch, gitgh
 from prr.config import SKILL_DIR, Config
-from prr.state import StateStore, empty_state
+from prr.state import STATE_VERSION, StateStore, empty_state
 from prr.util import write_json
 from tests.conftest import _git
 
@@ -118,8 +118,9 @@ class _NoTerminal:
 
 
 def work_state(head: str) -> dict:
-    """A state.json with some of everything the reviewer makes."""
+    """A state.json with some of everything the reviewer makes (current version, so loading it changes nothing)."""
     return {
+        "version": STATE_VERSION,
         "reviewed": {"src/a.py": "blob1"},
         "dismissed_suggestions": ["f-1"],
         "drafts": [
