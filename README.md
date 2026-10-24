@@ -258,7 +258,7 @@ Submit       ─► POST /api/review/submit ─► `gh api POST /repos/{o}/{r}/p
 
 ```bash
 .venv/bin/python -m pytest          # backend tests
-cd web && npm run typecheck && npm run build
+cd web && npm run typecheck && npm test && npm run build   # UI tests (vitest + Testing Library)
 cd web && npm run mock              # dependency-free mock API (web/mock/*) for UI work without a PR
 cd web && PRR_PORT=<port of a running prr server> npm run dev   # UI dev server with API proxy
 ```
