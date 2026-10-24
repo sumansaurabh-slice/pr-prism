@@ -252,7 +252,10 @@ class FakeClaude:
     """Stands in for `claude -p --output-format json`: each call reports a cost; nothing leaves the machine."""
 
     OUT = {"scores": {"scores": []}, "verdicts": {"verdicts": []}, "checks": {"checks": []}, "body": {"body": "Fine."},
-           "cause": {"summary": "s", "cause": "c", "caused_by_pr": "no", "related": [], "fix": "f"}}
+           "cause": {"summary": "s", "cause": "c", "caused_by_pr": "no", "related": [], "fix": "f"},
+           "flow_edges": {"files": [], "flow_edges": []}, "blockers": {"blockers": []},
+           "chapters": {"summary": {"tldr": "t", "why": "w", "how": "h", "risk": "low", "risk_reasons": []},
+                        "chapters": [], "flows": [], "impact": [], "questions": [], "test_files": [], "docs_files": []}}
 
     def __init__(self, monkeypatch):
         self.reported: list[float] = []
@@ -347,6 +350,36 @@ def test_totals_match_the_ledger_across_two_runs_and_every_call_type(tmp_path, m
     assert s["breakdown"]["chat"] == 0.8 and s["threads"]["t1"]["total_usd"] == 0.8
     assert s["unknown"] and by_run["r2"]["unknown"] and not by_run["r1"]["unknown"]
     assert s["over_budget"] and s["warn_usd"] == 1.0 and cost.label(s).startswith("≥ $")
+
+
+def test_two_analysis_runs_record_every_call(tmp_path, tricky_repo, monkeypatch):
+    from prr import analyze, github
+
+    fake = FakeClaude(monkeypatch)
+    pr_dir = tmp_path / "pr"
+    pr_dir.mkdir()
+    ctx = make_pr_dir(pr_dir, tricky_repo["diff"])
+    ctx["pr"].update(merge_base_sha=tricky_repo["base"], head_sha=tricky_repo["head"])
+    write_json(pr_dir / "context.json", {**ctx, "repo_root": str(tricky_repo["root"]), "worktree": str(tricky_repo["root"])})
+    (pr_dir / "diff.patch").write_text(tricky_repo["diff"])
+    monkeypatch.setattr(ci, "fetch", lambda *a: {"fetched_at": None, "head_sha": "h", "annotations": [], "checks": [
+        {"name": "lint", "kind": "check", "state": "fail", "url": None, "app": None, "summary": "s", "log_tail": "x",
+         "explanation": None}]})
+    monkeypatch.setattr(github, "existing_comments", lambda *a: [
+        {"id": 1, "user": "tool[bot]", "is_bot": True, "path": "src/core.py", "line": 5, "side": "RIGHT",
+         "body": "**Possible bug in this line**", "html_url": "u"}])
+
+    first = analyze.analyze(pr_dir, Config(), echo=lambda m: None)
+    second = analyze.analyze(pr_dir, Config(), force=True, echo=lambda m: None)
+
+    lines = ledger.read(pr_dir)
+    assert {x["purpose"] for x in lines} >= {"annotate", "blockers", "ci", "bots", "synthesis"}
+    assert len({x["run_id"] for x in lines}) == 2 and all(x["outcome"] == "ok" for x in lines)
+    s = cost.summary(pr_dir)
+    assert s["total_usd"] == pytest.approx(sum(fake.reported)) and s["breakdown"]["analysis"] == s["total_usd"]
+    assert [r["cost_usd"] for r in s["runs"]] == [first["progress"]["cost_usd"], second["progress"]["cost_usd"]]
+    assert read_json(pr_dir / "progress.json")["cost_usd"] == second["progress"]["cost_usd"] > 0
+    assert not s["running"] and not s["unknown"]
 
 
 def test_prr_status_shows_each_prs_spend(tmp_path, capsys):
