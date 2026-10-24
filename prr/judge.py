@@ -1,7 +1,9 @@
 """Second look: a separate, cheaper model scores every finding against its code. It can only veto.
 
-Findings scoring below MIN_SCORE (or marked "drop") are kept but hidden as "low confidence". If the judge
-fails, the finding is kept: the second look must never silently remove a real problem.
+Findings scoring below MIN_SCORE (or marked "drop") are kept but hidden as "low confidence". The reviewer's own
+"% sure" never hides a finding by itself: the second look decides. If the judge fails, the finding is kept and
+marked "not second-checked" (a failure marker in judge.json), and it is tried again on the next run: the second
+look must never silently remove a real problem.
 """
 
 from __future__ import annotations
@@ -16,6 +18,7 @@ from .claude import ClaudeError, run_structured
 from .config import PROMPTS_DIR, Config
 from .diffparse import FileDiff, render_for_llm
 from .models import llm_schema
+from .util import now_iso
 
 MIN_SCORE = 5  # hide only findings the second look rejects; it only sees the hunk, so "can't confirm" (5-7) stays shown
 BATCH = 12
@@ -57,10 +60,14 @@ def _render(f: dict, diffs: dict[str, FileDiff]) -> str:
 
 def run(findings: list[dict], diffs: dict[str, FileDiff], cfg: Config, cwd: Path, cache: dict,
         echo: Callable[[str], None]) -> dict:
-    """Score findings not yet in `cache` ({id: {score, verdict, reason}}). Returns the updated cache."""
+    """Score findings not yet in `cache` ({id: {score, verdict, reason}}). Returns the updated cache.
+
+    A finding the judge could not score gets a failure marker, {id: {failed: true, reason, at}}, so the app can
+    tell "not second-checked" from "waiting for its second look". Marked findings are tried again next run.
+    """
     from .analyze import style_rules
 
-    todo = [f for f in findings if f["severity"] != "blocker" and f["id"] not in cache]
+    todo = [f for f in findings if f["severity"] != "blocker" and (f["id"] not in cache or failed(cache[f["id"]]))]
     if not todo:
         return cache
     head = (PROMPTS_DIR / "judge.md").read_text().replace("{{STYLE}}", style_rules())
@@ -72,22 +79,56 @@ def run(findings: list[dict], diffs: dict[str, FileDiff], cfg: Config, cwd: Path
                                 max_turns=3, timeout=300)
         return JudgeOut.model_validate(raw).scores
 
-    wanted = {f["id"] for f in todo}
     with ThreadPoolExecutor(max_workers=4) as pool:
-        futures = [pool.submit(one, b) for b in batches]
+        futures = {pool.submit(one, b): b for b in batches}
         for fut in as_completed(futures):
+            batch = futures[fut]
+            wanted = {f["id"] for f in batch}
+            reason = "the second look gave no score for it"
             try:
                 for s in fut.result():
                     if s.id in wanted:
                         cache[s.id] = {"score": max(1, min(10, s.score)), "verdict": s.verdict, "reason": s.reason}
+                        wanted.discard(s.id)
             except (ClaudeError, ValueError) as e:
-                echo(f"The second look failed for some findings, so they stay as they are: {str(e)[:150]}")
+                reason = str(e)[:300]
+                echo(f"The second look failed for some findings, so they stay shown, marked not second-checked: "
+                     f"{str(e)[:150]}")
+            for fid in wanted:
+                cache[fid] = {"failed": True, "reason": reason, "at": now_iso()}
     return cache
 
 
-def is_low(f: dict, verdict: dict | None) -> bool:
+def failed(verdict: dict | None) -> bool:
+    """A failure marker: the judge was asked but gave no verdict."""
+    return bool(verdict and verdict.get("failed"))
+
+
+def is_low(f: dict, verdict: dict | None, floor: int | None = None) -> bool:
+    """Hidden as low confidence: the second look said drop or scored it under MIN_SCORE.
+
+    The reviewer's own confidence counts only when `floor` is given (eval compares with the old rule); normal runs
+    never pass it. A failed second look never hides anything.
+    """
     if f["severity"] == "blocker":
         return False
-    if verdict and (verdict["score"] < MIN_SCORE or verdict["verdict"] == "drop"):
+    if verdict and not failed(verdict) and (verdict["score"] < MIN_SCORE or verdict["verdict"] == "drop"):
         return True
-    return f.get("confidence") is not None and f["confidence"] < 50
+    return floor is not None and f.get("confidence") is not None and f["confidence"] < floor
+
+
+def second_look(f: dict, verdict: dict | None, *, carried: bool = False, done: bool = False) -> str:
+    """Where a finding's second look stands: judge | rule | carried | pending | none.
+
+    `done` means the analysis run has finished, so a finding with no verdict and no marker (an analysis from
+    before failure markers) was never scored: "none", not "pending".
+    """
+    if f["severity"] == "blocker":
+        return "rule"
+    if carried:
+        return "carried"
+    if failed(verdict):
+        return "none"
+    if verdict:
+        return "judge"
+    return "none" if done else "pending"

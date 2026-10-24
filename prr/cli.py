@@ -135,7 +135,7 @@ def _print_summary(a: dict, d: Path) -> None:
     shown = [f for f in a["findings"] if not f["low_confidence"]]
     count = {s: sum(1 for f in shown if f["severity"] == s) for s in ("blocker", "major", "minor", "nit")}
     print(f"Findings: {count['blocker']} blocking merge, {count['major']} must fix, {count['minor']} should fix, "
-          f"{count['nit']} could improve ({len(a['findings']) - len(shown)} more hidden as low confidence).")
+          f"{count['nit']} could improve ({len(a['findings']) - len(shown)} more hidden by the second look).")
     failing = [c["name"] for c in (a.get("ci") or {}).get("checks", []) if c["state"] == "fail"]
     if failing:
         print(f"Failing CI checks: {', '.join(failing)}")
