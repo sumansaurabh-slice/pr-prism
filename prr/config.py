@@ -43,11 +43,17 @@ class ChatSettings:
 
 
 @dataclass
+class BudgetSettings:
+    warn_usd: float = 0.0  # the app shows "over your $N limit" once a PR's spend passes this (0: off); warning only
+
+
+@dataclass
 class Config:
     cache_dir: Path = Path("~/.cache/pr-prism").expanduser()
     models: Models = field(default_factory=Models)
     analysis: AnalysisSettings = field(default_factory=AnalysisSettings)
     chat: ChatSettings = field(default_factory=ChatSettings)
+    budget: BudgetSettings = field(default_factory=BudgetSettings)
 
 
 def load_config() -> Config:
@@ -67,6 +73,9 @@ def load_config() -> Config:
     for key, value in raw.get("chat", {}).items():
         if hasattr(cfg.chat, key):
             setattr(cfg.chat, key, bool(value))
+    for key, value in raw.get("budget", {}).items():
+        if hasattr(cfg.budget, key):
+            setattr(cfg.budget, key, float(value))
     return cfg
 
 

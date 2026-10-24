@@ -12,6 +12,10 @@ export type ImpactKind =
 export type FlowNodeKind = "entry" | "logic" | "store" | "external" | "test";
 export type ProgressStatus = "fetched" | "annotating" | "synthesizing" | "complete" | "failed";
 export type ReviewEvent = "COMMENT" | "APPROVE" | "REQUEST_CHANGES" | "PENDING";
+// judge = scored by the second look; rule = a blocker the code check confirmed ("confirmed by rule");
+// carried = from the previous round, keeping its verdict; pending = waiting for its second look;
+// none = the second look failed ("not second-checked"; never hidden)
+export type SecondLook = "judge" | "rule" | "carried" | "pending" | "none";
 
 export interface Commit { sha: string; headline: string; author: string }
 
@@ -59,7 +63,8 @@ export interface Finding {
   suggestion: string | null; one_click: boolean;
   why: string; evidence: string;
   confidence: number | null; judge_score: number | null; judge_reason: string | null;
-  low_confidence: boolean;      // hidden by default
+  low_confidence: boolean;      // hidden by default: only the second look hides (drop, or a score under 5)
+  second_look: SecondLook;
   source: string;               // "claude" | "rule:<id>"
   note: string | null;
   status: "new" | "still-open";
@@ -95,6 +100,7 @@ export interface Rechecked {
 export interface Progress {
   status: ProgressStatus; clusters_total: number; clusters_done: number; clusters_failed: number;
   message: string; started_at: string | null; finished_at: string | null; log: string[];
+  cost_usd: number;             // this analysis run's spend so far
 }
 
 export interface Analysis {
@@ -121,7 +127,11 @@ export interface ToolEvent { name: string; summary: string }
 
 export interface ChatMessage {
   role: "user" | "assistant"; text: string; context: ContextChip[]; tools: ToolEvent[];
-  cost_usd: number | null; error: string | null; ts: string;
+  cost_usd: number | null;       // this answer's own cost (null: unknown, or a stopped answer)
+  error: string | null; ts: string;
+  cost_unknown?: boolean;        // "cost unknown"
+  includes_stopped?: boolean;    // "(includes the stopped answer)": an earlier stopped answer's cost is in this one
+  session_total_usd?: number | null;
 }
 
 export interface ChatThread { id: string; title: string; session_id: string; messages: ChatMessage[]; created_at: string }
@@ -157,10 +167,40 @@ export type ChatEvent =
   | { type: "text"; text: string }
   | { type: "thinking" }
   | { type: "tool"; name: string; summary: string }
-  | { type: "result"; session_id: string; cost_usd: number | null; duration_ms: number | null }
+  | {
+      type: "result"; session_id: string; duration_ms: number | null;
+      cost_usd: number | null; cost_unknown: boolean; includes_stopped: boolean; session_total_usd: number | null;
+      thread: ThreadCost;
+    }
   | { type: "error"; message: string }
   | { type: "approval"; id: string; tool: string; title: string; summary: string; detail: string; always_label: string }
   | { type: "approval_done"; id: string; decision: ApprovalDecision }
   | { type: "done" };
 
 export type ApprovalDecision = "allow" | "always" | "deny";
+
+// ---- GET /api/cost (every total comes from the PR's calls.jsonl) ----
+
+export interface ThreadCost {
+  total_usd: number;   // the thread so far
+  turns: number;       // answers in the thread
+  unknown: boolean;    // part of its cost isn't counted (yet): show "≥"
+  long: boolean;       // 15+ answers or $3+: the "start a fresh thread" hint may show
+}
+
+export interface CostRun {
+  run_id: string; started_at: string | null; cost_usd: number; calls: number;
+  unknown: boolean; running: boolean;
+}
+
+export interface CostSummary {
+  total_usd: number;                                         // analysis + chat + other
+  unknown: boolean;                                          // some cost is unknown: show "≥ $X"
+  running: boolean;                                          // the analysis is still running: show "so far"
+  breakdown: { analysis: number; chat: number; other: number };
+  runs: CostRun[];                                           // analysis runs, oldest first (killed runs included)
+  threads: Record<string, ThreadCost>;                       // by thread id
+  warn_usd: number;                                          // [budget] warn_usd; 0 = off
+  over_budget: boolean;                                      // total_usd > warn_usd: "over your $N limit"
+  long_thread: { turns: number; usd: number };               // the hint's thresholds (15, 3.0)
+}

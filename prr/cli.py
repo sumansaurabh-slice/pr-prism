@@ -14,7 +14,7 @@ import sys
 import webbrowser
 from pathlib import Path
 
-from . import supervise
+from . import cost, supervise
 from .config import SKILL_DIR, WEB_DIST, Config, load_config, pr_dir
 from .gitgh import CommandError, PRRef, git, parse_pr_arg, repo_root
 from .util import read_json
@@ -135,7 +135,7 @@ def _print_summary(a: dict, d: Path) -> None:
     shown = [f for f in a["findings"] if not f["low_confidence"]]
     count = {s: sum(1 for f in shown if f["severity"] == s) for s in ("blocker", "major", "minor", "nit")}
     print(f"Findings: {count['blocker']} blocking merge, {count['major']} must fix, {count['minor']} should fix, "
-          f"{count['nit']} could improve ({len(a['findings']) - len(shown)} more hidden as low confidence).")
+          f"{count['nit']} could improve ({len(a['findings']) - len(shown)} more hidden by the second look).")
     failing = [c["name"] for c in (a.get("ci") or {}).get("checks", []) if c["state"] == "fail"]
     if failing:
         print(f"Failing CI checks: {', '.join(failing)}")
@@ -163,9 +163,12 @@ def cmd_status(args: argparse.Namespace, cfg: Config) -> int:
         prog = read_json(d / "progress.json") or {}
         info = read_json(d / "server.json") or {}
         pr = ctx.get("pr", {})
+        spent = cost.summary(d, cfg.budget.warn_usd)  # analysis + chat + other checks, from calls.jsonl
         rows.append({
             "pr": f"{pr.get('owner')}/{pr.get('repo')}#{pr.get('number')}", "title": pr.get("title"),
             "head": (pr.get("head_sha") or "")[:10], "analysis": prog.get("status", "not analyzed"),
+            "spend": cost.label(spent) + (" (over your limit)" if spent["over_budget"] else ""),
+            "spend_usd": spent["total_usd"],
             "server": info.get("url") if supervise.healthy(d) else None, "dir": str(d),
         })
     print(json.dumps(rows, indent=1))

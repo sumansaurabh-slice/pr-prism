@@ -26,12 +26,13 @@ from fastapi import FastAPI, HTTPException
 from fastapi.responses import Response, StreamingResponse
 from pydantic import BaseModel
 
-from . import chat_tools, github, merge
+from . import chat_tools, cost, github, merge
 from .analyze import style_rules
 from .drafts import claim_for_post, finish_post, is_posting, new_draft, postable, release
 from .claude import ChatProcess, ClaudeError, run_structured, stream_chat
 from .config import PROMPTS_DIR, WEB_DIST, Config
 from .gitgh import git, viewer_login
+from .ledger import Ledger
 from .state import StateStore
 from .util import now_iso, read_json, write_text
 
@@ -176,6 +177,9 @@ def _compose_prompt(text: str, chips: list[ChipIn]) -> str:
 def create_app(pr_dir: Path, cfg: Config) -> FastAPI:
     app = FastAPI(docs_url=None, redoc_url=None, openapi_url=None)
     store = StateStore(pr_dir)
+    if store.read()[1]:  # an older state.json: store each chat answer's own cost from now on (written back once)
+        store.update(lambda s: None)
+    calls = Ledger(pr_dir)  # the server's own Claude calls (chat, review summary, CI refresh) go to calls.jsonl
     running: dict[str, ChatProcess] = {}
     cache: dict[str, Any] = {}
 
@@ -285,6 +289,11 @@ def create_app(pr_dir: Path, cfg: Config) -> FastAPI:
     def state() -> dict:
         return store.load()
 
+    @app.get("/api/cost")
+    def spend() -> dict:
+        """The PR's spend, from calls.jsonl: total, breakdown, per run and per chat thread, and the budget warning."""
+        return cost.summary(pr_dir, cfg.budget.warn_usd)
+
     @app.get("/api/diff")
     def diff(path: str) -> dict:
         patch = patches().get(path)
@@ -324,7 +333,7 @@ def create_app(pr_dir: Path, cfg: Config) -> FastAPI:
                 if prev and prev.get("explanation") and prev["state"] == check["state"] == "fail":
                     check["explanation"] = prev["explanation"]
             todo = {**info, "checks": [x for x in info["checks"] if x["state"] == "fail" and not x.get("explanation")]}
-            ci_mod.explain_failures(todo, c, cfg, Path(c["worktree"]), lambda _m: None)
+            ci_mod.explain_failures(todo, c, cfg, Path(c["worktree"]), lambda _m: None, ledger=calls)
             write_json(pr_dir / "ci.json", info)
             return ci_mod.public(info) or {}
 
@@ -527,7 +536,8 @@ def create_app(pr_dir: Path, cfg: Config) -> FastAPI:
         schema = {"type": "object", "properties": {"body": {"type": "string"}}, "required": ["body"]}
         try:
             out, _ = await asyncio.to_thread(run_structured, prompt, schema, cwd=Path(ctx()["worktree"]),
-                                             model=cfg.models.chat, tools=[], max_turns=3, timeout=180)
+                                             model=cfg.models.chat, tools=[], max_turns=3, timeout=180,
+                                             ledger=calls, purpose="summary", target="review summary")
         except ClaudeError as e:
             raise HTTPException(502, str(e)) from e
         return {"body": out["body"]}
@@ -661,6 +671,8 @@ def create_app(pr_dir: Path, cfg: Config) -> FastAPI:
         async def events():
             reply = {"role": "assistant", "text": "", "context": [], "tools": [], "cost_usd": None, "error": None, "ts": now_iso()}
             started = thread.get("started", False)
+            began = time.monotonic()
+            turn: tuple[dict, dict] | None = None  # (this answer's cost fields, the thread's new bookmark)
             # One queue gets Claude's stream events and approval requests, so approval cards appear in the stream.
             queue: asyncio.Queue = asyncio.Queue()
             live_streams[tid] = queue
@@ -688,7 +700,13 @@ def create_app(pr_dir: Path, cfg: Config) -> FastAPI:
                         reply["tools"].append({"name": ev["name"], "summary": ev["summary"]})
                         started = True
                     elif ev["type"] == "result":
-                        reply["cost_usd"] = ev.get("cost_usd")
+                        # The event carries the session's running total; this answer's own cost is the difference.
+                        turn = cost.turn_cost(thread, ev.get("session_id"), ev.get("cost_usd"))
+                        reply.update(turn[0])
+                        took = ev.get("duration_ms") or int((time.monotonic() - began) * 1000)
+                        calls.record("chat", **cost.chat_line(tid, cfg.models.chat, turn[0], error=None, duration_ms=took))
+                        after = {**thread, **turn[1], "messages": [*thread["messages"], reply]}
+                        ev = {**ev, **turn[0], "thread": cost.thread_status(after, cost.chat_spent(pr_dir, tid))}
                         started = True
                     elif ev["type"] == "error":
                         reply["error"] = ev["message"]
@@ -703,10 +721,17 @@ def create_app(pr_dir: Path, cfg: Config) -> FastAPI:
                 producer.cancel()
                 running.pop(tid, None)
                 cache.pop("threads_at", None)  # the chat may have posted comments; reload them from GitHub next time
+                if turn is None:  # stopped or failed: no result, so its cost folds into the next answer
+                    calls.record("chat", **cost.chat_line(tid, cfg.models.chat, cost.stopped_turn(thread)[0],
+                                                          error=reply["error"] or "stopped",
+                                                          duration_ms=int((time.monotonic() - began) * 1000)))
 
                 def save(s: dict) -> None:
                     t = next((t for t in s["threads"] if t["id"] == tid), None)
                     if t is not None:
+                        fields, mark = turn or cost.stopped_turn(t)
+                        reply.update(fields)
+                        t.update(mark)
                         t["messages"].append(reply)
                         t["started"] = started
 

@@ -13,6 +13,7 @@ from typing import Callable, Literal
 from pydantic import BaseModel
 
 from .claude import ClaudeError, run_structured
+from .ledger import Ledger
 from .config import PROMPTS_DIR, Config
 from .models import llm_schema
 
@@ -75,7 +76,8 @@ def from_comments(comments: list[dict]) -> list[dict]:
     return out
 
 
-def check(found: list[dict], cfg: Config, cwd: Path, cache: dict, echo: Callable[[str], None]) -> dict:
+def check(found: list[dict], cfg: Config, cwd: Path, cache: dict, echo: Callable[[str], None],
+          ledger: Ledger | None = None) -> dict:
     """Claude's verdict on bot findings not yet in `cache` ({comment_id: {verdict, reason}})."""
     from .analyze import style_rules
 
@@ -87,7 +89,8 @@ def check(found: list[dict], cfg: Config, cwd: Path, cache: dict, echo: Callable
         prompt += (f"\n### comment_id {b['comment_id']} by {b['bot']}\nOn `{b['path']}:{b['line']}` ({b['side'] or 'RIGHT'})\n"
                    f"```\n{b['body'][:1500]}\n```\n")
     try:
-        raw, _ = run_structured(prompt, llm_schema(VerdictsOut), cwd=cwd, model=cfg.models.ci, max_turns=25, timeout=900)
+        raw, _ = run_structured(prompt, llm_schema(VerdictsOut), cwd=cwd, model=cfg.models.ci, max_turns=25, timeout=900,
+                                ledger=ledger, purpose="bots", target=f"{len(todo)} comments")
         ids = {b["comment_id"] for b in todo}
         for v in VerdictsOut.model_validate(raw).verdicts:
             if v.comment_id in ids:
