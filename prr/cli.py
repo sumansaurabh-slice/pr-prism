@@ -16,7 +16,7 @@ from pathlib import Path
 
 from . import supervise
 from .config import SKILL_DIR, WEB_DIST, Config, load_config, pr_dir
-from .gitgh import CommandError, PRRef, parse_pr_arg, repo_root
+from .gitgh import CommandError, PRRef, git, parse_pr_arg, repo_root
 from .util import read_json
 
 
@@ -178,27 +178,97 @@ def cmd_stop(args: argparse.Namespace, cfg: Config) -> int:
     return 0
 
 
+def _has_terminal() -> bool:
+    """A person typing in a terminal, as opposed to an agent or a script running `prr`."""
+    try:
+        return sys.stdin is not None and sys.stdin.isatty()
+    except (ValueError, OSError):  # stdin closed
+        return False
+
+
+def _remove_refs(root: Path, number: int) -> None:
+    out = git("for-each-ref", "--format=%(refname)", f"refs/pr-prism/{number}/", cwd=root, check=False)
+    for name in out.split():
+        git("update-ref", "-d", name, cwd=root, check=False)
+
+
 def cmd_clean(args: argparse.Namespace, cfg: Config) -> int:
+    """Free a PR's disk space: stop its server, remove its worktree and folder.
+
+    The reviewer's work (state.json and the cost ledger) is archived first and comes back on the next fetch;
+    `--purge` deletes it too, with all of the PR's refs. A PR whose review page is running is skipped unless
+    `--force`. `--all` from an agent or a script (no terminal) refuses unless `--yes`.
+    """
+    from . import archive
     from .fetch import remove_worktree
 
     root = repo_root(args.repo or ".")
     if args.all:
         from .gitgh import default_repo
         owner, repo = default_repo(root)
-        targets = sorted((cfg.cache_dir / f"{owner}__{repo}").glob("pr-*"))
+        base = cfg.cache_dir / f"{owner}__{repo}"
+        targets = sorted(base.glob("pr-*"))
+        if args.purge:  # also the saved work of PRs whose folders are already gone
+            targets = sorted(set(targets) | {base / f"pr-{n}" for n in archive.archived_numbers(cfg, owner, repo)})
     else:
         if not args.pr:
             _err("give a PR number or --all")
             return 2
-        targets = [_resolve(args, cfg)[2]]
+        ref, _, d = _resolve(args, cfg)
+        owner, repo = ref.owner, ref.repo
+        targets = [d]
+
+    if args.all and not args.yes and not _has_terminal():
+        print(f"Not cleaned: `prr clean --all` removes every review of {owner}/{repo} at once, "
+              "so it only runs when typed in a terminal.")
+        if targets:
+            print("It would remove:")
+            for d in targets:
+                title = ((read_json(d / "context.json") or {}).get("pr") or {}).get("title") or ""
+                note = " (saved work only)" if not d.exists() else ""
+                note = " (its review page is running)" if d.exists() and supervise.running(d) else note
+                print(f"  #{d.name.split('-', 1)[1]} {title}{note}".rstrip())
+        else:
+            print("There is nothing to remove.")
+        print("To clean one review, run `prr clean <PR>`.")
+        return 1
+
+    failed = False
     for d in targets:
+        number = int(d.name.split("-", 1)[1])
         if not d.exists():
+            if args.purge:
+                _remove_refs(root, number)
+                for p in archive.purge(cfg, owner, repo, number):
+                    print(f"removed {p}")
             continue
-        supervise.stop(d)
-        remove_worktree(root, d, int(d.name.split("-", 1)[1]))
+        if not args.force and supervise.running(d):
+            print(f"Skipped #{number}: its review page is running (use --force)")
+            continue
+        supervise.stop(d)  # first, so the server can't change state.json after it is archived
+        kept = None
+        if not args.purge:
+            try:
+                kept = archive.save(cfg, owner, repo, number, d)
+            except OSError as e:
+                print(f"Not cleaned #{number}: couldn't archive state ({e.strerror or e})")
+                failed = True
+                continue
+        remove_worktree(root, d, number)  # keeps refs/pr-prism/<n>/reviewed
         shutil.rmtree(d, ignore_errors=True)
         print(f"removed {d}")
-    return 0
+        if args.purge:
+            _remove_refs(root, number)
+            for p in archive.purge(cfg, owner, repo, number):
+                print(f"removed {p}")
+            continue
+        if kept:
+            what = archive.describe(kept["counts"]) or "your review state"
+            print(f"kept {what} in {kept['path']}" + (" with its cost log" if kept["ledger"] else ""))
+            print(f"  it comes back the next time you open #{number}")
+        if git("rev-parse", "--verify", "--quiet", f"refs/pr-prism/{number}/reviewed", cwd=root, check=False).strip():
+            print(f"kept refs/pr-prism/{number}/reviewed (the commit you last reviewed)")
+    return 1 if failed else 0
 
 
 def cmd_supervise(args: argparse.Namespace, cfg: Config) -> int:
@@ -244,9 +314,13 @@ def main(argv: list[str] | None = None) -> None:
     s.add_argument("pr", nargs="?")
     s = sub.add_parser("stop", help="stop a PR's web server (it only ever stops when asked)")
     s.add_argument("pr")
-    s = sub.add_parser("clean", help="stop the server, remove the worktree and cached data")
+    s = sub.add_parser("clean", help="stop the server, remove the worktree and cached data (your review work is kept)")
     s.add_argument("pr", nargs="?")
     s.add_argument("--all", action="store_true", help="every PR of the current repo")
+    s.add_argument("--purge", action="store_true",
+                   help="also delete the kept review work (chats, pending comments, viewed marks) and the PR's refs")
+    s.add_argument("--force", action="store_true", help="also clean PRs whose review page is running")
+    s.add_argument("--yes", action="store_true", help="run --all without a terminal (scripts)")
     s = sub.add_parser("_serve", help=argparse.SUPPRESS)  # the supervisor
     s.add_argument("pr_dir")
     s = sub.add_parser("_mcp", help=argparse.SUPPRESS)  # the chat's comment tools (an MCP server on stdio)

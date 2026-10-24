@@ -47,7 +47,7 @@ Inside Claude Code, in the repo the PR belongs to:
 /pr-prism https://github.com/org/repo/pull/1234 focus on the retry logic and the migration
 /pr-prism status            # fetched PRs, analysis state, running servers
 /pr-prism stop 1234         # stop that PR's web server (the only way it stops)
-/pr-prism clean 1234        # remove the worktree and cached data (or: clean --all)
+/pr-prism clean 1234        # remove the worktree and cached data (your review work is kept)
 ```
 
 **What the skill does:**
@@ -168,9 +168,10 @@ Put team rules under "Team context" in `skill/review-guidelines.md`. Claude foll
 ```
 /pr-prism 966           # run it again: only groups of files that changed are re-read, and your draft comments move to the new lines
 /pr-prism stop 966      # stop the app for this PR (it never stops by itself; the link stays the same next time)
-/pr-prism clean 966     # delete this PR's copy and cached data
-/pr-prism clean --all   # do that for every ai-banker PR you reviewed
+/pr-prism clean 966     # delete this PR's copy and cached data; your chats, pending comments and viewed marks are kept
 ```
+
+`clean` saves your review work to `~/.cache/pr-prism/archive/` first, and it comes back the next time you open the PR. Pending comments made on an older commit come back marked outdated: re-place or delete them; they aren't sent until you do. A PR whose review page is running is skipped. From a terminal, `prr clean --all` cleans every ai-banker PR you reviewed, and `prr clean 966 --purge` also deletes the saved work.
 
 ### Good to know
 

@@ -110,6 +110,13 @@ class DraftPatch(BaseModel):
     body: str
 
 
+class DraftPlace(BaseModel):
+    side: str
+    line: int
+    start_line: int | None = None
+    start_side: str | None = None
+
+
 class ReviewIn(BaseModel):
     body: str = ""
     event: str = "COMMENT"
@@ -372,6 +379,8 @@ def create_app(pr_dir: Path, cfg: Config) -> FastAPI:
                 if d["id"] == draft_id:
                     if is_posting(d):
                         raise HTTPException(409, BEING_POSTED)
+                    if d.get("outdated"):  # read-only until re-placed
+                        raise HTTPException(409, "This comment is from an older commit. Re-place it first.")
                     d["body"] = body.body
                     return d
             return None
@@ -407,6 +416,39 @@ def create_app(pr_dir: Path, cfg: Config) -> FastAPI:
             return s["dismissed_suggestions"]
 
         return {"dismissed_suggestions": store.update(apply)}
+
+    @app.post("/api/drafts/{draft_id}/replace")
+    def replace_draft(draft_id: str, body: DraftPlace) -> dict:
+        """Move a pending comment to a new line. This is how an outdated comment (e.g. restored after
+        `prr clean` from an older commit) becomes sendable again; it is checked like a new comment."""
+        c = ctx()
+
+        def apply(s: dict) -> dict | None:
+            d = next((d for d in s["drafts"] if d["id"] == draft_id), None)
+            if d is None:
+                return None
+            if is_posting(d):
+                raise HTTPException(409, BEING_POSTED)
+            try:
+                placed = new_draft(c, d["path"], body.side, body.line, d["body"], start_line=body.start_line,
+                                   start_side=body.start_side, source=d.get("source", "user"))
+            except ValueError as e:
+                raise HTTPException(400, str(e)) from e
+            for key in ("side", "line", "start_line", "start_side", "anchored", "commit_id"):
+                d[key] = placed[key]
+            d["outdated"] = False
+            return d
+
+        d = store.update(apply)
+        if d is None:
+            raise HTTPException(404, "no such draft")
+        return d
+
+    @app.post("/api/restored/dismiss")
+    def dismiss_restored() -> dict:
+        """Hide the one-time 'Restored your work from …' banner."""
+        store.update(lambda s: s.pop("restored", None))
+        return {"ok": True}
 
     # ---- publishing ----------------------------------------------------------------
 
