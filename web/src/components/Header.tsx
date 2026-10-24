@@ -1,3 +1,4 @@
+import { breakdownText, overLimitText, spentText } from "../cost";
 import { IconMerged, IconPullRequest } from "../icons";
 import { fmtMinutes, totalMinutes, useStore } from "../store";
 import type { PRInfo } from "../types";
@@ -37,6 +38,25 @@ function StateLabel({ pr }: { pr: PRInfo }) {
     <span className="State State--open">
       <IconPullRequest /> Open
     </span>
+  );
+}
+
+/** What Claude has cost on this PR so far: "$12.40 spent", with the analysis / chat / other split as a tooltip.
+ * Over the [budget] limit it also shows a lasting "over your $10 limit" label. */
+function Spend() {
+  const cost = useStore((s) => s.cost);
+  if (!cost) return null;
+  return (
+    <>
+      <span className="gh-meta-muted" title={breakdownText(cost)}>
+        {spentText(cost)}
+      </span>
+      {cost.over_budget && (
+        <span className="Label Label--attention" title="A warning only: nothing is stopped. The limit is warn_usd under [budget] in config.toml.">
+          {overLimitText(cost.warn_usd)}
+        </span>
+      )}
+    </>
   );
 }
 
@@ -93,6 +113,7 @@ export function Header() {
         <span className="gh-meta-muted" title="Rough time to review every file">
           {fmtMinutes(totalMinutes(analysis))} to review
         </span>
+        <Spend />
       </div>
     </header>
   );

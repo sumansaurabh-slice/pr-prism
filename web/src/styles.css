@@ -534,6 +534,23 @@ button {
   overflow: hidden;
   text-overflow: ellipsis;
 }
+/* one-line strips (restore banner, long-thread hint): text, then its buttons on the right */
+.strip {
+  flex-wrap: wrap;
+}
+.strip-text {
+  flex: 1 1 200px;
+  min-width: 0;
+}
+.strip-actions {
+  display: flex;
+  gap: 6px;
+  margin-left: auto;
+}
+.chat-compose .strip {
+  padding: 8px 12px;
+  font-size: 13px;
+}
 
 .input {
   width: 100%;
@@ -1825,6 +1842,31 @@ tr.line-flash > td,
   background: rgba(255, 255, 255, 0.18);
   border-color: rgba(255, 255, 255, 0.35);
   box-shadow: none;
+}
+
+/* Re-place pick mode for an outdated comment: sits where the selection bar does, in accent colours */
+.replace-banner {
+  position: sticky;
+  bottom: 16px;
+  z-index: 5;
+  display: flex;
+  flex-wrap: wrap;
+  align-items: center;
+  gap: 8px 12px;
+  width: fit-content;
+  max-width: calc(100% - 32px);
+  margin: 16px auto 0;
+  padding: 6px 6px 6px 14px;
+  font-size: 14px;
+  font-weight: 600;
+  background: var(--accent-bg);
+  border: 1px solid var(--accent-border);
+  border-radius: 12px;
+  box-shadow: var(--shadow-overlay);
+}
+.rc-error {
+  margin-top: 8px;
+  font-size: 13px;
 }
 
 /* whole-file view */

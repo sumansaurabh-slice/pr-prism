@@ -42,6 +42,7 @@ export function useGlobalKeys() {
         if (st.helpOpen) st.setHelpOpen(false);
         else if (st.submitOpen) st.setSubmitOpen(false);
         else if (st.draftsOpen) st.setDraftsOpen(false);
+        else if (st.replacing) st.cancelReplace();
         else if (st.composer) st.closeComposer();
         else if (st.selection) st.setSelection(null);
         return;
@@ -100,5 +101,5 @@ export const SHORTCUTS: [string, string][] = [
   ["r", "Mark this file as viewed, or not viewed"],
   ["o", "Go to the overview"],
   ["?", "Show or hide this list"],
-  ["Esc", "Close a window or clear the picked lines"],
+  ["Esc", "Close a window, stop moving a comment, or clear the picked lines"],
 ];
