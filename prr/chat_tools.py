@@ -21,12 +21,13 @@ import sys
 import threading
 import urllib.error
 import urllib.request
+import uuid
 from pathlib import Path
 from typing import Any
 
 from . import anchors, github, shellsafe
 from .config import Config
-from .drafts import new_draft
+from .drafts import claim_for_post, finish_post, new_draft, release
 from .gitgh import viewer_login
 from .state import StateStore
 from .util import now_iso, read_json
@@ -139,14 +140,10 @@ def tool_list(cfg: Config) -> list[dict]:
     return tools
 
 
-def _record(pr_dir: Path, html_url: str, event: str, comments: int, review_id: Any = None, clear_drafts: bool = False) -> None:
-    def apply(s: dict) -> None:
-        s["submitted"].append({"review_id": review_id, "html_url": html_url, "event": event, "comments": comments,
-                               "at": now_iso(), "source": "chat"})
-        if clear_drafts:
-            s["drafts"] = []
-
-    StateStore(pr_dir).update(apply)
+def _record(pr_dir: Path, html_url: str, event: str, comments: int, review_id: Any = None, post_id: str = "") -> None:
+    """Note the post in state.json. For a review with pending comments, also remove the ones it claimed (only those)."""
+    finish_post(StateStore(pr_dir), post_id, {"review_id": review_id, "html_url": html_url, "event": event,
+                                              "comments": comments, "at": now_iso(), "source": "chat"})
 
 
 def call_tool(pr_dir: Path, cfg: Config, name: str, args: dict) -> tuple[str, bool]:
@@ -200,16 +197,28 @@ def call_tool(pr_dir: Path, cfg: Config, name: str, args: dict) -> tuple[str, bo
                 return "GitHub doesn't let the PR author approve or request changes on their own PR.", True
         except Exception:  # noqa: BLE001 — if gh can't tell, let GitHub decide
             pass
-    include = bool(args.get("include_pending"))
-    drafts = StateStore(pr_dir).load()["drafts"] if include else []
+    # Pending comments are claimed first (see drafts.py): one that another post is already sending, or one added
+    # while this one posts, isn't sent twice or lost. When none are left to claim, only the summary goes.
+    store, post_id = StateStore(pr_dir), uuid.uuid4().hex[:12]
+    claim = claim_for_post(store, post_id) if args.get("include_pending") else None
     try:
-        payload, _ = github.build_payload(ctx, drafts, args.get("body", ""), event, pr["head_sha"])
+        payload, _ = github.build_payload(ctx, claim.drafts if claim else [], args.get("body", ""), event, pr["head_sha"])
         res = github.submit(pr["owner"], pr["repo"], pr["number"], payload)
-    except github.ReviewError as e:
-        return str(e), True
-    _record(pr_dir, res.get("html_url", ""), event, len(payload["comments"]), review_id=res.get("id"), clear_drafts=include)
+    except BaseException as e:
+        if claim:
+            release(store, post_id)  # the claimed comments are pending again
+        if isinstance(e, github.ReviewError):
+            return str(e), True
+        raise
+    _record(pr_dir, res.get("html_url", ""), event, len(payload["comments"]), review_id=res.get("id"), post_id=post_id)
     kind = {"COMMENT": "comment", "APPROVE": "approval", "REQUEST_CHANGES": "request for changes"}[event]
-    return (f"Posted the review ({kind}, {len(payload['comments'])} line comments) to GitHub: {res.get('html_url', '')}", False)
+    text = f"Posted the review ({kind}, {len(payload['comments'])} line comments) to GitHub: {res.get('html_url', '')}"
+    if claim and claim.busy:
+        text += f" {claim.busy} pending comments were left out because another post is already sending them."
+    if claim and claim.outdated:
+        text += (f" {claim.outdated} pending comments are from an older commit and were not sent; the reviewer can "
+                 "re-place or delete them in the app.")
+    return text, False
 
 
 def serve_stdio(pr_dir: Path, cfg: Config) -> None:
