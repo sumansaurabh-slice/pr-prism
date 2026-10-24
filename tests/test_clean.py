@@ -14,7 +14,7 @@ import pytest
 from prr import archive, cli, fetch, gitgh
 from prr.config import SKILL_DIR, Config
 from prr.state import STATE_VERSION, StateStore, empty_state
-from prr.util import write_json
+from prr.util import read_json, write_json
 from tests.conftest import _git
 
 
@@ -476,6 +476,28 @@ def test_the_restore_summary_shows_once_and_can_be_dismissed(app_client):
     assert c.get("/api/state").json()["restored"]["need_replacing"] == 1
     assert c.post("/api/restored/dismiss", headers=ORIGIN).json() == {"ok": True}
     assert "restored" not in c.get("/api/state").json()
+
+
+def test_the_app_gets_the_restore_banner_text(app_client, tmp_path):
+    restored = app_client.get("/api/state").json()["restored"]
+    assert restored["message"] == archive.message(restored)
+    assert restored["message"].startswith("Restored your work from Oct 2")  # Oct 23 (or 24 east of UTC+6)
+    assert restored["message"].endswith(": 2 pending comments (1 needs re-placing).")
+    assert "message" not in read_json(tmp_path / "state.json")["restored"]  # added when sent, never stored
+
+
+def test_an_unreadable_archive_date_still_gets_a_banner(tmp_path, tricky_repo):
+    from fastapi.testclient import TestClient
+
+    from prr.server import Guard, create_app
+    from tests.test_merge import make_pr_dir
+
+    make_pr_dir(tmp_path, tricky_repo["diff"])
+    restored = {"archived_at": "yesterday", "chats": 3, "pending_comments": 0, "need_replacing": 0, "viewed_marks": 12}
+    write_json(tmp_path / "state.json", {**empty_state(), "restored": restored})
+    client = TestClient(Guard(create_app(tmp_path, Config()), TOKEN, PORT), base_url=f"http://127.0.0.1:{PORT}")
+    client.cookies.set("prr_session", TOKEN)
+    assert client.get("/api/state").json()["restored"]["message"] == "Restored your work: 3 chats, 12 viewed marks."
 
 
 def test_submit_never_sends_outdated_drafts(app_client, monkeypatch):

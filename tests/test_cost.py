@@ -172,6 +172,19 @@ def test_each_chat_answer_shows_its_own_cost(app_dir, monkeypatch):
     assert (s["unknown"], s["running"], s["warn_usd"], s["over_budget"]) == (False, False, 0.0, False)
 
 
+def test_keep_going_hides_the_long_thread_hint_for_that_thread_only(app_dir):
+    client = client_for(app_dir)
+    h = {"origin": f"http://127.0.0.1:{PORT}"}
+    long_one = client.post("/api/chat/threads", json={}, headers=h).json()["id"]
+    other = client.post("/api/chat/threads", json={}, headers=h).json()["id"]
+    assert client.post(f"/api/chat/threads/{long_one}/long-hint/dismiss", headers=h).json() == {"ok": True}
+    threads = {t["id"]: t for t in client.get("/api/state").json()["threads"]}
+    assert threads[long_one]["long_hint_dismissed"] is True
+    assert "long_hint_dismissed" not in threads[other]
+    assert client.post("/api/chat/threads/nope/long-hint/dismiss", headers=h).status_code == 404
+    assert client.post(f"/api/chat/threads/{other}/long-hint/dismiss").status_code == 403  # same-origin only
+
+
 # ---- migration --------------------------------------------------------------------------------------
 
 
