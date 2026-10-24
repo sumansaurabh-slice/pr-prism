@@ -6,7 +6,7 @@ import os
 import sys
 from pathlib import Path
 
-from . import anchors, classify, diffparse, filekinds, graph
+from . import anchors, archive, classify, diffparse, filekinds, graph
 from .config import Config, pr_dir
 from .gitgh import CommandError, PRRef, find_remote, gh_json, git, git_ok
 from .util import now_iso, read_json, write_json, write_text
@@ -54,6 +54,7 @@ def _ensure_worktree(root: Path, wt: Path, sha: str) -> None:
 
 def fetch(ref: PRRef, root: Path, cfg: Config) -> Path:
     d = pr_dir(cfg, ref.owner, ref.repo, ref.number)
+    fresh = not (d / "state.json").exists()  # e.g. after `prr clean`: the saved work is restored below
     d.mkdir(parents=True, exist_ok=True)
     previous = read_json(d / "context.json")
 
@@ -144,6 +145,10 @@ def fetch(ref: PRRef, root: Path, cfg: Config) -> Path:
         moved = anchors.remap_state(d, root, previous["pr"]["head_sha"], head_sha, files)
         if moved:
             _log(f"PR moved since last fetch: remapped {moved['remapped']} drafts, {moved['outdated']} now outdated")
+    if fresh:
+        restored = archive.restore(cfg, ref.owner, ref.repo, ref.number, d, head_sha)
+        if restored:
+            _log(archive.message(restored))
     for w in warnings:
         _log(f"warning: {w}")
     return d

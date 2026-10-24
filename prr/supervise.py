@@ -99,6 +99,13 @@ def runtime(pr_dir: Path) -> dict | None:
     return rt if rt and pid_alive(rt.get("pid")) else None
 
 
+def running(pr_dir: Path) -> bool:
+    """True while the PR's review page is up: its supervisor runs (even mid-restart), or an older server does."""
+    rt = read_json(pr_dir / "server.pid") or {}
+    info = read_json(pr_dir / "server.json") or {}
+    return any(pid_alive(p) and _is_prr_process(p) for p in (rt.get("pid"), info.get("pid")))
+
+
 def healthy(pr_dir: Path, timeout: float = 2) -> bool:
     info = read_json(pr_dir / "server.json")
     alive = runtime(pr_dir) or (info and pid_alive(info.get("pid")))  # older servers kept their pid in server.json

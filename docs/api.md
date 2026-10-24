@@ -5,7 +5,7 @@
 **Port and token:**
 - Each PR gets a fixed port, chosen from 47100–47899 based on the PR's name, and a random token.
 - Both are saved in the PR's `server.json` and reused on every start, so the link never changes.
-- The server stops only on `prr stop` (or `prr clean`). There is no idle timeout.
+- The server stops only on `prr stop` (or `prr clean --force`; a plain `prr clean` skips a PR whose server is running). There is no idle timeout.
 
 ## Auth
 
@@ -31,15 +31,17 @@ The SPA never handles the token. It uses relative URLs, and `fetch` sends the co
 | `GET /api/file?path=&at=head\|base` | | `{path, at, content}`: full file text at the PR head or merge-base |
 | `PUT /api/reviewed` | `{path, reviewed: bool}` | `{reviewed: Record<path, blob>}` |
 | `POST /api/drafts` | `{path, side, line, start_line?, body, source, suggestion_id?}` | `Draft`. Comments outside a hunk are accepted with `anchored: false`. |
-| `PATCH /api/drafts/{id}` | `{body}` | `Draft` |
+| `PATCH /api/drafts/{id}` | `{body}` | `Draft`. 409 while the draft is `outdated` (read-only until re-placed). |
 | `DELETE /api/drafts/{id}` | | `{ok: true}` |
+| `POST /api/drafts/{id}/replace` | `{side, line, start_line?, start_side?}` | `Draft` on the new line, with `outdated: false` and `commit_id` = the analyzed head. Checked like `POST /api/drafts` (400 with `{detail}`); 404 for an unknown id. |
+| `POST /api/restored/dismiss` | | `{ok: true}`: removes `restored` (the one-time "Restored your work" summary) from the state |
 | `POST /api/suggestions/{id}/dismiss` | | `{dismissed_suggestions}` |
 | `POST /api/suggestions/{id}/restore` | | `{dismissed_suggestions}` |
 | `GET /api/github/threads` | | `{comments: ExistingComment[]}`: review comments already on the PR |
 | `POST /api/ci/refresh` | | `CIInfo`: reads the CI checks again and explains new failures; the next `/api/analysis` includes them |
 | `POST /api/review/preview` | `{body, event}` | `ReviewPreview` |
 | `POST /api/review/draft-summary` | | `{body}`: Claude drafts the overall review body from the drafts and the analysis |
-| `POST /api/review/submit` | `{body, event, commit: "analyzed"\|"current"}` | `{ok, review_id, html_url}`, or 4xx `{detail}`. Submitted drafts are removed. |
+| `POST /api/review/submit` | `{body, event, commit: "analyzed"\|"current"}` | `{ok, review_id, html_url}`, or 4xx `{detail}`. Submitted drafts are removed. Outdated drafts are never sent and stay pending. |
 | `GET /api/chat/threads` | | `ChatThread[]` |
 | `POST /api/chat/threads` | `{title?}` | `ChatThread` |
 | `DELETE /api/chat/threads/{id}` | | `{ok: true}` |

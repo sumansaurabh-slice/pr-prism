@@ -144,7 +144,7 @@ def _record(pr_dir: Path, html_url: str, event: str, comments: int, review_id: A
         s["submitted"].append({"review_id": review_id, "html_url": html_url, "event": event, "comments": comments,
                                "at": now_iso(), "source": "chat"})
         if clear_drafts:
-            s["drafts"] = []
+            s["drafts"] = [d for d in s["drafts"] if d.get("outdated")]  # never sent; kept until re-placed
 
     StateStore(pr_dir).update(apply)
 
