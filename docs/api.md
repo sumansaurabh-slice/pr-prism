@@ -26,7 +26,8 @@ The SPA never handles the token. It uses relative URLs, and `fetch` sends the co
 |---|---|---|
 | `GET /api/health` | | `{ok: true, pr: number}` |
 | `GET /api/analysis` | | `Analysis`, merged fresh on every call. While `status` is not `complete`/`failed`, poll every 3 s. |
-| `GET /api/state` | | `ReviewState` |
+| `GET /api/state` | | `ReviewState`. After a restore (see `prr clean`) it has `restored: {archived_at, restored_at, archive, chats, pending_comments, need_replacing, viewed_marks, message}` until dismissed; `message` is the banner text from `prr/archive.py` `message()`, e.g. "Restored your work from Oct 23: 3 chats, 5 pending comments (2 need re-placing), 12 viewed marks." |
+| `GET /api/cost` | | `CostSummary`: `{total_usd, unknown, running, breakdown: {analysis, chat, other}, runs, threads: {<thread id>: {total_usd, turns, unknown, long}}, warn_usd, over_budget, long_thread: {turns, usd}}`, all computed from the PR's `calls.jsonl`. The app shows "$12.40 spent" ("≥" when `unknown`, "so far" while `running`) and refreshes it on each analysis poll and after each chat answer. |
 | `GET /api/diff?path=` | | `{path, patch}`: the unified diff for one file, with `diff --git` header lines, ready for `parseDiff` |
 | `GET /api/file?path=&at=head\|base` | | `{path, at, content}`: full file text at the PR head or merge-base |
 | `PUT /api/reviewed` | `{path, reviewed: bool}` | `{reviewed: Record<path, blob>}` |
@@ -47,6 +48,7 @@ The SPA never handles the token. It uses relative URLs, and `fetch` sends the co
 | `DELETE /api/chat/threads/{id}` | | `{ok: true}` |
 | `POST /api/chat/threads/{id}/messages` | `{text, context: ContextChip[]}` | `text/event-stream` (see below) |
 | `POST /api/chat/threads/{id}/stop` | | `{ok: true}` |
+| `POST /api/chat/threads/{id}/long-hint/dismiss` | | `{ok: true}`: "Keep going" on the long-thread hint. Sets `long_hint_dismissed: true` on the thread, so the hint never shows for it again. 404 for an unknown thread. |
 
 ### Review events
 
@@ -70,7 +72,7 @@ Each SSE frame looks like `data: <json>\n\n`, where the JSON is one `ChatEvent`:
 | `text` | `{text}`: append this chunk to the assistant message |
 | `thinking` | none; the model is thinking |
 | `tool` | `{name, summary}`, e.g. `{name: "Read", summary: "pkg/cmd/pr/view.go"}` |
-| `result` | `{session_id, cost_usd, duration_ms}` |
+| `result` | `{session_id, duration_ms, cost_usd, cost_unknown, includes_stopped, session_total_usd, thread: {total_usd, turns, unknown, long}}`. `cost_usd` is this answer's own cost (null when unknown). `includes_stopped` means an earlier answer's cost is counted in this one (that answer stopped, or its result had no cost). `thread.long` (15+ answers or $3+) is when the app offers a fresh thread, after the answer ends. |
 | `error` | `{message}` |
 | `done` | none; the stream closes after this |
 

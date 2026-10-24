@@ -118,8 +118,20 @@ export interface Draft {
   start_side: Side | null;   // set only when the range starts on the other side (a deleted line → RIGHT)
   source: "user" | "suggestion" | "chat"; suggestion_id: string | null;
   anchored: boolean;   // false → cannot be an inline comment; goes into the review body as a permalink
-  outdated: boolean;   // the PR moved and this line no longer maps
+  outdated: boolean;   // from an older commit (restored after `prr clean`): read-only and never sent until re-placed
   commit_id: string; created_at: string;
+  posting?: string;    // set while a post is sending it: edits and deletes get 409 "being posted"
+  posting_at?: string;
+}
+
+/** POST /api/drafts/{id}/replace: the new line for an outdated comment (same shape as a new comment's lines). */
+export interface DraftPlace { side: Side; line: number; start_line?: number | null; start_side?: Side | null }
+
+/** state.restored: the one-time "Restored your work from …" summary after `prr clean` + `prr fetch`. */
+export interface RestoredSummary {
+  archived_at: string; restored_at: string; archive: string;
+  chats: number; pending_comments: number; need_replacing: number; viewed_marks: number;
+  message: string;     // the banner text, from prr/archive.py message(); added by GET /api/state
 }
 
 export interface ContextChip { path: string; side: Side; start: number; end: number; text: string; label: string }
@@ -130,11 +142,16 @@ export interface ChatMessage {
   cost_usd: number | null;       // this answer's own cost (null: unknown, or a stopped answer)
   error: string | null; ts: string;
   cost_unknown?: boolean;        // "cost unknown"
-  includes_stopped?: boolean;    // "(includes the stopped answer)": an earlier stopped answer's cost is in this one
+  // "(includes the earlier answer's cost)": an earlier answer whose cost wasn't known (it stopped, or its result
+  // had no cost) is counted in this one
+  includes_stopped?: boolean;
   session_total_usd?: number | null;
 }
 
-export interface ChatThread { id: string; title: string; session_id: string; messages: ChatMessage[]; created_at: string }
+export interface ChatThread {
+  id: string; title: string; session_id: string; messages: ChatMessage[]; created_at: string;
+  long_hint_dismissed?: boolean; // "Keep going" on the long-thread hint
+}
 
 export interface SubmittedReview {
   review_id: number | null; html_url: string; event: ReviewEvent; comments: number; at: string;
@@ -147,6 +164,7 @@ export interface ReviewState {
   drafts: Draft[];
   threads: ChatThread[];
   submitted: SubmittedReview[];
+  restored?: RestoredSummary;
 }
 
 export interface ExistingComment {

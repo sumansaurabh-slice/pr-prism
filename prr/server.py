@@ -26,7 +26,7 @@ from fastapi import FastAPI, HTTPException
 from fastapi.responses import Response, StreamingResponse
 from pydantic import BaseModel
 
-from . import chat_tools, cost, github, merge
+from . import archive, chat_tools, cost, github, merge
 from .analyze import style_rules
 from .drafts import claim_for_post, finish_post, is_posting, new_draft, postable, release
 from .claude import ChatProcess, ClaudeError, run_structured, stream_chat
@@ -174,6 +174,15 @@ def _compose_prompt(text: str, chips: list[ChipIn]) -> str:
     return ("\n\n".join(blocks) + "\n\n" if blocks else "") + text
 
 
+def _restored_message(summary: dict) -> str:
+    """'Restored your work from Oct 23: 3 chats, …' (prr/archive.py), even when the archive date can't be read."""
+    try:
+        return archive.message(summary)
+    except (KeyError, TypeError, ValueError):
+        what = archive.describe(summary)
+        return "Restored your work" + (f": {what}." if what else ".")
+
+
 def create_app(pr_dir: Path, cfg: Config) -> FastAPI:
     app = FastAPI(docs_url=None, redoc_url=None, openapi_url=None)
     store = StateStore(pr_dir)
@@ -287,7 +296,10 @@ def create_app(pr_dir: Path, cfg: Config) -> FastAPI:
 
     @app.get("/api/state")
     def state() -> dict:
-        return store.load()
+        s = store.load()
+        if isinstance(s.get("restored"), dict):  # the banner's wording, so the app says exactly what prr/archive.py says
+            s["restored"] = {**s["restored"], "message": _restored_message(s["restored"])}
+        return s
 
     @app.get("/api/cost")
     def spend() -> dict:
@@ -602,6 +614,15 @@ def create_app(pr_dir: Path, cfg: Config) -> FastAPI:
             raise HTTPException(400, "decision must be allow, always or deny")
         settle(aid, {"decision": body.decision} if body.decision != "deny" else
                {"decision": "deny", "message": "The reviewer said no. Don't try this again; ask them what they want instead."})
+        return {"ok": True}
+
+    @app.post("/api/chat/threads/{tid}/long-hint/dismiss")
+    def dismiss_long_hint(tid: str) -> dict:
+        """'Keep going' on the long-thread hint: don't suggest a fresh thread for this one again."""
+        def apply(s: dict) -> None:
+            _thread(s, tid)["long_hint_dismissed"] = True
+
+        store.update(apply)
         return {"ok": True}
 
     @app.delete("/api/chat/threads/{tid}/always-allow")

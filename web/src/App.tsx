@@ -6,7 +6,7 @@ import { FlowView } from "./components/FlowView";
 import { Header } from "./components/Header";
 import { Impact } from "./components/Impact";
 import { Overview } from "./components/Overview";
-import { ProgressBanner } from "./components/ProgressBanner";
+import { ProgressBanner, RestoreBanner } from "./components/ProgressBanner";
 import { ReviewPath } from "./components/ReviewPath";
 import { SubmitModal } from "./components/SubmitModal";
 import { DiffStat, IconComment, IconFileDiff, IconPulse, IconWorkflow, IconX } from "./icons";
@@ -133,6 +133,13 @@ export default function App() {
     if (analysis) document.title = `${analysis.pr.title} · #${analysis.pr.number} · PR Prism`;
   }, [analysis?.pr.number, analysis?.pr.title]);
 
+  // Leaving the file of a comment being re-placed ends the pick (it only works in that file's diff).
+  const routeFile = route.view === "file" ? route.path : null;
+  useEffect(() => {
+    const { replacing, cancelReplace } = useStore.getState();
+    if (replacing && replacing.path !== routeFile) cancelReplace();
+  }, [routeFile]);
+
   // Default landing: Overview.
   useEffect(() => {
     if (!window.location.hash) navigate("#/overview");
@@ -158,6 +165,7 @@ export default function App() {
       <Header />
       <Tabs route={route} />
       <ProgressBanner />
+      <RestoreBanner />
       <div className="layout">
         <ReviewPath />
         <main className="pane center">

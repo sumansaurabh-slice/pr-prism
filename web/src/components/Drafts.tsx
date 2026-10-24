@@ -22,7 +22,7 @@ export function DraftsDrawer() {
   }, [drafts, analysis]);
 
   if (!open) return null;
-  const unanchored = drafts.filter((d) => !d.anchored).length;
+  const unanchored = drafts.filter((d) => !d.anchored && !d.outdated).length;
   const outdated = drafts.filter((d) => d.outdated).length;
   return (
     <div className="overlay" onClick={() => setOpen(false)}>
@@ -44,8 +44,9 @@ export function DraftsDrawer() {
             )}
             {outdated > 0 && (
               <p>
-                {outdated} comment{outdated > 1 ? "s are" : " is"} out of date because the PR changed. Edit or delete{" "}
-                {outdated > 1 ? "them" : "it"}.
+                {outdated > 1
+                  ? `${outdated} comments are from an older commit. Re-place or delete them; they won't be sent until you do.`
+                  : "1 comment is from an older commit. Re-place or delete it; it won't be sent until you do."}
               </p>
             )}
           </div>

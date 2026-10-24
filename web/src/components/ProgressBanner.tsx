@@ -1,4 +1,20 @@
+import { IconX } from "../icons";
 import { useStore } from "../store";
+
+/** After `prr clean` and a new fetch: "Restored your work from Oct 23: 3 chats, …" until you dismiss it. */
+export function RestoreBanner() {
+  const restored = useStore((s) => s.state.restored);
+  const dismiss = useStore((s) => s.dismissRestored);
+  if (!restored) return null;
+  return (
+    <div className="flash flash-info strip" role="status">
+      <span className="strip-text">{restored.message}</span>
+      <button className="btn-octicon" onClick={() => void dismiss()} aria-label="Dismiss" title="Dismiss">
+        <IconX />
+      </button>
+    </div>
+  );
+}
 
 export function ProgressBanner() {
   const analysis = useStore((s) => s.analysis);

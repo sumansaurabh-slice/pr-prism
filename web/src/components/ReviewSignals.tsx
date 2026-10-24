@@ -5,7 +5,7 @@ import { Markdown } from "../markdown";
 import { fileHref } from "../router";
 import { splitPath, useStore } from "../store";
 import type { CICheck, Finding, Severity } from "../types";
-import { SeverityLabel } from "./FileView";
+import { SecondLookLabel, SeverityLabel } from "./FileView";
 import { RefList } from "./Overview";
 
 const RANK: Record<Severity, number> = { blocker: 0, major: 1, minor: 2, nit: 3 };
@@ -63,6 +63,7 @@ export function FindingsBox() {
         <a key={f.id} className="Box-row finding-row" href={fileHref(f.path, f.line, f.side)}>
           <SeverityLabel severity={f.severity} />
           <span className="finding-row-title">{f.title}</span>
+          <SecondLookLabel look={f.second_look} small />
           {f.status === "still-open" && <span className="Label Label--attention Label--small">still open</span>}
           <span className="color-muted small mono">{where(f.path, f.line)}</span>
         </a>

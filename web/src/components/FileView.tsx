@@ -17,7 +17,7 @@ import { registerFileNav, stepFile } from "../keyboard";
 import { Markdown } from "../markdown";
 import { goFile, navigate, fileHref, useNavTick } from "../router";
 import { fileByPath, fmtMinutes, isStaleReview, readLS, splitPath, useStore, writeLS, type Selection } from "../store";
-import type { CIAnnotation, Draft, ExistingComment, FileEntry, Finding, Note, Severity, Side } from "../types";
+import type { CIAnnotation, Draft, ExistingComment, FileEntry, Finding, Note, SecondLook, Severity, Side } from "../types";
 import { Avatar, DiffStat, StatusIcon } from "../icons";
 import { RiskBadge } from "./Header";
 
@@ -152,6 +152,23 @@ export function SeverityLabel({ severity }: { severity: Severity }) {
   return <span className={`Label Label--${SEVERITY_VARIANT[severity]}`}>{SEVERITY_TEXT[severity]}</span>;
 }
 
+// How Claude's second look ended for a finding (R3). "judge" and "carried" need no label: their score shows.
+const SECOND_LOOK: Partial<Record<SecondLook, { text: string; variant: string; title: string }>> = {
+  none: { text: "not second-checked", variant: "attention", title: "Claude's second look failed for this one, so it is shown without it." },
+  rule: { text: "confirmed by rule", variant: "secondary", title: "A fixed code check found this, so it needs no second look." },
+  pending: { text: "second look pending", variant: "secondary", title: "Claude hasn't finished its second look at this one yet." },
+};
+
+export function SecondLookLabel({ look, small }: { look: SecondLook | undefined; small?: boolean }) {
+  const l = look ? SECOND_LOOK[look] : undefined;
+  if (!l) return null;
+  return (
+    <span className={`Label Label--${l.variant}${small ? " Label--small" : ""}`} title={l.title}>
+      {l.text}
+    </span>
+  );
+}
+
 const VERDICT_TEXT = { agree: "Claude agrees", disagree: "Claude disagrees", unsure: "Claude isn't sure" } as const;
 const VERDICT_VARIANT = { agree: "success", disagree: "danger", unsure: "secondary" } as const;
 
@@ -193,6 +210,7 @@ function FindingCard({ f }: { f: Finding }) {
         <Avatar name="Claude" kind="claude" />
         <SeverityLabel severity={f.severity} />
         <span className="Label Label--secondary">{f.category}</span>
+        <SecondLookLabel look={f.second_look} />
         {f.status === "still-open" && <span className="Label Label--attention" title="Also found in the previous review round">Still open</span>}
         {f.also_flagged_by.map((b) => (
           <span key={b} className="Label Label--accent" title="Another review tool flagged the same spot">
@@ -294,11 +312,23 @@ const SOURCE_TEXT: Record<Draft["source"], string> = {
 export function DraftCard({ d, compact }: { d: Draft; compact?: boolean }) {
   const updateDraft = useStore((s) => s.updateDraft);
   const deleteDraft = useStore((s) => s.deleteDraft);
+  const startReplace = useStore((s) => s.startReplace);
+  const setDraftsOpen = useStore((s) => s.setDraftsOpen);
+  const replaceError = useStore((s) => s.replaceErrors[d.id]);
   const [editing, setEditing] = useState(false);
   const [body, setBody] = useState(d.body);
   useEffect(() => setBody(d.body), [d.body]);
+  const where = lineText(d.side, d.start_line ?? d.line, d.line, d.start_side ?? d.side);
+  // An outdated comment's line is on an older commit: pick its new line in this file's diff.
+  const rePlace = () => {
+    startReplace(d);
+    if (compact) {
+      setDraftsOpen(false);
+      goFile(d.path);
+    }
+  };
   return (
-    <div className={`review-comment draft${d.outdated ? " outdated" : ""}`}>
+    <div className={`review-comment draft${d.outdated ? " outdated" : ""}`} data-draft={d.id}>
       <div className="rc-head">
         <Avatar name="You" kind="you" />
         <strong>You</strong>
@@ -306,24 +336,30 @@ export function DraftCard({ d, compact }: { d: Draft; compact?: boolean }) {
           Pending
         </span>
         <span className="rc-meta">
-          {lineText(d.side, d.start_line ?? d.line, d.line, d.start_side ?? d.side)}
+          {where}
+          {d.outdated && " on an older commit"}
           {SOURCE_TEXT[d.source] && ` · ${SOURCE_TEXT[d.source]}`}
         </span>
-        {!d.anchored && (
+        {!d.anchored && !d.outdated && (
           <span className="Label Label--secondary" title="This line is not part of the diff, so the comment goes into your review summary as a link">
             Goes in summary
           </span>
         )}
         {d.outdated && (
-          <span className="Label Label--danger" title="The PR changed under this comment">
+          <span className="Label Label--danger" title="Written on an older commit. It won't be sent until you re-place it.">
             Outdated
           </span>
         )}
-        {compact && (
-          <a className="rc-jump" href={fileHref(d.path, d.start_side ? d.line : (d.start_line ?? d.line), d.side)}>
-            Go to line
-          </a>
-        )}
+        {compact &&
+          (d.outdated ? (
+            <a className="rc-jump" href={fileHref(d.path)}>
+              Go to file
+            </a>
+          ) : (
+            <a className="rc-jump" href={fileHref(d.path, d.start_side ? d.line : (d.start_line ?? d.line), d.side)}>
+              Go to line
+            </a>
+          ))}
       </div>
       <div className="rc-body">
         {editing ? (
@@ -331,9 +367,23 @@ export function DraftCard({ d, compact }: { d: Draft; compact?: boolean }) {
         ) : (
           <Markdown text={d.body} />
         )}
+        {replaceError && (
+          <div className="flash flash-error rc-error" role="alert">
+            Could not move this comment: {replaceError}
+          </div>
+        )}
       </div>
       <div className="rc-actions">
-        {editing ? (
+        {d.outdated ? (
+          <>
+            <button className="btn btn-invisible btn-sm btn-danger" onClick={() => void deleteDraft(d.id)}>
+              Delete
+            </button>
+            <button className="btn btn-sm" onClick={rePlace} title={`Pick a new line for the comment that was on ${where}`}>
+              Re-place
+            </button>
+          </>
+        ) : editing ? (
           <>
             <button className="btn btn-sm" onClick={() => { setBody(d.body); setEditing(false); }}>
               Cancel
@@ -341,7 +391,7 @@ export function DraftCard({ d, compact }: { d: Draft; compact?: boolean }) {
             <button
               className="btn btn-primary btn-sm"
               disabled={!body.trim()}
-              onClick={() => void updateDraft(d.id, body).then(() => setEditing(false))}
+              onClick={() => void updateDraft(d.id, body).then((ok) => ok && setEditing(false))}
             >
               Save
             </button>
@@ -518,12 +568,44 @@ function FullFile({
 
 // ------------------------------------------------------------------ main view
 
+/** In Re-place pick mode for a comment in this file: move it to the picked lines. */
+function placeOn(path: string, s: Anchor) {
+  const st = useStore.getState();
+  const target = st.replacing;
+  if (!target || target.path !== path) return;
+  const mixed = s.startSide !== s.side;
+  void st
+    .placeDraft(target.draftId, {
+      side: s.side, line: s.end,
+      start_line: mixed || s.start < s.end ? s.start : null,
+      start_side: mixed ? s.startSide : null,
+    })
+    .then((ok) => {
+      // The error is shown on the comment's card, which may be scrolled out of view.
+      if (!ok) document.querySelector(`[data-draft="${target.draftId}"]`)?.scrollIntoView?.({ block: "center", behavior: "smooth" });
+    });
+}
+
+/** "Click a line in the diff to move this comment there · Esc to cancel", while Re-place waits for a pick. */
+function ReplaceBanner() {
+  const cancel = useStore((s) => s.cancelReplace);
+  return (
+    <div className="replace-banner" role="status">
+      <span>Click a line in the diff to move this comment there · Esc to cancel</span>
+      <button className="btn btn-sm" onClick={cancel}>
+        Cancel
+      </button>
+    </div>
+  );
+}
+
 export function FileView({ path, line, side, full }: { path: string; line: number | null; side: Side; full: boolean }) {
   const analysis = useStore((s) => s.analysis);
   const state = useStore((s) => s.state);
   const githubComments = useStore((s) => s.githubComments);
   const selection = useStore((s) => s.selection);
   const composer = useStore((s) => s.composer);
+  const replacingHere = useStore((s) => s.replacing?.path === path);
   const setSelection = useStore((s) => s.setSelection);
   const openComposer = useStore((s) => s.openComposer);
   const askClaude = useStore((s) => s.askClaude);
@@ -662,17 +744,25 @@ export function FileView({ path, line, side, full }: { path: string; line: numbe
 
   useEffect(() => {
     const stop = () => {
-      const blocked = drag.current?.blocked;
+      const picking = drag.current;
+      const blocked = picking?.blocked;
       drag.current = null;
       if (blocked) useStore.getState().toast("info", `${blocked} The pick stays at the last line that works.`);
+      // Re-place pick mode: the lines just picked (a click, or a drag) become the outdated comment's new place.
+      const s = useStore.getState().selection;
+      if (picking && s && s.path === path) placeOn(path, s);
     };
     window.addEventListener("mouseup", stop);
     return () => window.removeEventListener("mouseup", stop);
-  }, []);
+  }, [path]);
 
   const onFullSelect = useCallback(
     (l: number, shift: boolean, text: (s: number, e: number) => string) => {
       const s: Side = fullAt === "base" ? "LEFT" : "RIGHT";
+      if (useStore.getState().replacing?.path === path) {
+        placeOn(path, { startSide: s, start: l, side: s, end: l });
+        return;
+      }
       const cur = useStore.getState().selection;
       let start = l;
       let end = l;
@@ -770,7 +860,11 @@ export function FileView({ path, line, side, full }: { path: string; line: numbe
       if (root.line) put(root.side ?? "RIGHT", root.line, node);
       else floating.push(node);
     }
-    for (const d of fileDrafts) put(d.side, d.line, <DraftCard key={`d${d.id}`} d={d} />);
+    for (const d of fileDrafts) {
+      const card = <DraftCard key={`d${d.id}`} d={d} />;
+      if (d.outdated) floating.push(card); // its line is on an older commit, so it is never pinned to today's diff
+      else put(d.side, d.line, card);
+    }
     if (composer && composer.path === path && composer.start > 0 && hunks.length) {
       put(composer.side, composer.end, <Composer key="composer" />);
     }
@@ -912,7 +1006,8 @@ export function FileView({ path, line, side, full }: { path: string; line: numbe
         </div>
       )}
 
-      {sel && (
+      {replacingHere && <ReplaceBanner />}
+      {sel && !replacingHere && (
         <div className="selection-bar" role="toolbar">
           <span className="sel-label">{lineText(sel.side, sel.start, sel.end, sel.startSide)} selected</span>
           {sel.start === sel.end && sel.startSide === sel.side && sel.hunk !== -1 && (
