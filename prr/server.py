@@ -28,7 +28,7 @@ from pydantic import BaseModel
 
 from . import chat_tools, github, merge
 from .analyze import style_rules
-from .drafts import new_draft
+from .drafts import claim_for_post, finish_post, is_posting, new_draft, postable, release
 from .claude import ChatProcess, ClaudeError, run_structured, stream_chat
 from .config import PROMPTS_DIR, WEB_DIST, Config
 from .gitgh import git, viewer_login
@@ -40,6 +40,7 @@ CSP = ("default-src 'self'; script-src 'self'; style-src 'self' 'unsafe-inline';
        "connect-src 'self'; font-src 'self' data:; frame-ancestors 'none'; base-uri 'none'; form-action 'self'")
 MAX_FILE_BYTES = 2_000_000
 MAX_CONTEXT_CHARS = 20_000
+BEING_POSTED = "This comment is being posted to GitHub right now. Try again in a moment."
 
 
 class Guard:
@@ -369,6 +370,8 @@ def create_app(pr_dir: Path, cfg: Config) -> FastAPI:
         def apply(s: dict) -> dict | None:
             for d in s["drafts"]:
                 if d["id"] == draft_id:
+                    if is_posting(d):
+                        raise HTTPException(409, BEING_POSTED)
                     d["body"] = body.body
                     return d
             return None
@@ -380,7 +383,12 @@ def create_app(pr_dir: Path, cfg: Config) -> FastAPI:
 
     @app.delete("/api/drafts/{draft_id}")
     def delete_draft(draft_id: str) -> dict:
-        store.update(lambda s: s.__setitem__("drafts", [d for d in s["drafts"] if d["id"] != draft_id]))
+        def apply(s: dict) -> None:
+            if any(d["id"] == draft_id and is_posting(d) for d in s["drafts"]):
+                raise HTTPException(409, BEING_POSTED)
+            s["drafts"] = [d for d in s["drafts"] if d["id"] != draft_id]
+
+        store.update(apply)
         return {"ok": True}
 
     @app.post("/api/suggestions/{sid}/dismiss")
@@ -412,7 +420,7 @@ def create_app(pr_dir: Path, cfg: Config) -> FastAPI:
             cache["head_at"] = time.time()
         return cache["head"]
 
-    def _prepare(body: ReviewIn, fresh: bool = False) -> tuple[dict, list[dict], dict]:
+    def _prepare(body: ReviewIn, drafts: list[dict], fresh: bool = False) -> tuple[dict, list[dict], dict]:
         c = ctx()
         pr = c["pr"]
         current = _current_head(pr, fresh)
@@ -421,34 +429,40 @@ def create_app(pr_dir: Path, cfg: Config) -> FastAPI:
                 "viewer": me, "is_author": me.lower() == pr["author"].lower()}
         commit = current if body.commit == "current" else pr["head_sha"]
         try:
-            payload, unanchored = github.build_payload(c, store.load()["drafts"], body.body, body.event, commit)
+            payload, unanchored = github.build_payload(c, drafts, body.body, body.event, commit)
         except github.ReviewError as e:
             raise HTTPException(400, str(e)) from e
         return payload, unanchored, info
 
     @app.post("/api/review/preview")
     def preview(body: ReviewIn) -> dict:
-        payload, unanchored, info = _prepare(body)
+        payload, unanchored, info = _prepare(body, postable(store.load()["drafts"]))
         return {"payload": payload, "inline_count": len(payload["comments"]), "unanchored": unanchored, **info}
 
     @app.post("/api/review/submit")
     def submit(body: ReviewIn) -> dict:
-        payload, unanchored, info = _prepare(body, fresh=True)
-        if info["is_author"] and body.event in ("APPROVE", "REQUEST_CHANGES"):
-            raise HTTPException(400, "GitHub doesn't let a PR author approve or request changes on their own PR")
-        pr = ctx()["pr"]
+        # The pending comments are claimed first, so a post running at the same time (the chat's) can't send them
+        # too, and a comment added while this one posts stays pending. On any failure they are pending again.
+        post_id = uuid.uuid4().hex[:12]
+        claim = claim_for_post(store, post_id)
         try:
-            res = github.submit(pr["owner"], pr["repo"], pr["number"], payload)
-        except github.ReviewError as e:
-            raise HTTPException(422, str(e)) from e
+            if claim.busy and not claim.drafts:
+                raise HTTPException(409, "Nothing new to post: your pending comments are already being posted. "
+                                         "Try again in a moment if you still want to send this review.")
+            payload, unanchored, info = _prepare(body, claim.drafts, fresh=True)
+            if info["is_author"] and body.event in ("APPROVE", "REQUEST_CHANGES"):
+                raise HTTPException(400, "GitHub doesn't let a PR author approve or request changes on their own PR")
+            pr = ctx()["pr"]
+            try:
+                res = github.submit(pr["owner"], pr["repo"], pr["number"], payload)
+            except github.ReviewError as e:
+                raise HTTPException(422, str(e)) from e
+        except BaseException:
+            release(store, post_id)
+            raise
         record = {"review_id": res.get("id"), "html_url": res.get("html_url", ""), "event": body.event,
                   "comments": len(payload["comments"]), "at": now_iso()}
-
-        def apply(s: dict) -> None:
-            s["drafts"] = []
-            s["submitted"].append(record)
-
-        store.update(apply)
+        finish_post(store, post_id, record)
         cache.pop("threads_at", None)
         return {"ok": True, "review_id": record["review_id"], "html_url": record["html_url"]}
 

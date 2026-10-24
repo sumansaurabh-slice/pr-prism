@@ -31,15 +31,15 @@ The SPA never handles the token. It uses relative URLs, and `fetch` sends the co
 | `GET /api/file?path=&at=head\|base` | | `{path, at, content}`: full file text at the PR head or merge-base |
 | `PUT /api/reviewed` | `{path, reviewed: bool}` | `{reviewed: Record<path, blob>}` |
 | `POST /api/drafts` | `{path, side, line, start_line?, body, source, suggestion_id?}` | `Draft`. Comments outside a hunk are accepted with `anchored: false`. |
-| `PATCH /api/drafts/{id}` | `{body}` | `Draft` |
-| `DELETE /api/drafts/{id}` | | `{ok: true}` |
+| `PATCH /api/drafts/{id}` | `{body}` | `Draft`, or 409 `{detail}` ("…being posted…") while a post is sending this draft |
+| `DELETE /api/drafts/{id}` | | `{ok: true}`, or 409 `{detail}` ("…being posted…") while a post is sending this draft |
 | `POST /api/suggestions/{id}/dismiss` | | `{dismissed_suggestions}` |
 | `POST /api/suggestions/{id}/restore` | | `{dismissed_suggestions}` |
 | `GET /api/github/threads` | | `{comments: ExistingComment[]}`: review comments already on the PR |
 | `POST /api/ci/refresh` | | `CIInfo`: reads the CI checks again and explains new failures; the next `/api/analysis` includes them |
-| `POST /api/review/preview` | `{body, event}` | `ReviewPreview` |
+| `POST /api/review/preview` | `{body, event}` | `ReviewPreview`, built from the drafts Submit would send now (not outdated, not being posted) |
 | `POST /api/review/draft-summary` | | `{body}`: Claude drafts the overall review body from the drafts and the analysis |
-| `POST /api/review/submit` | `{body, event, commit: "analyzed"\|"current"}` | `{ok, review_id, html_url}`, or 4xx `{detail}`. Submitted drafts are removed. |
+| `POST /api/review/submit` | `{body, event, commit: "analyzed"\|"current"}` | `{ok, review_id, html_url}`, or 4xx `{detail}`. Only the drafts this post sent are removed; outdated drafts aren't sent and stay. 409 "Nothing new to post: …" when every draft is already being posted by another post (the chat's). |
 | `GET /api/chat/threads` | | `ChatThread[]` |
 | `POST /api/chat/threads` | `{title?}` | `ChatThread` |
 | `DELETE /api/chat/threads/{id}` | | `{ok: true}` |
