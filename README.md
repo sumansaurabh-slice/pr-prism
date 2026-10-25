@@ -4,6 +4,7 @@ A Claude Code skill that turns a large GitHub pull request (5–10k lines) into 
 
 - **Reading order**: files grouped into chapters and ordered so each one only depends on what you've already read. Each file says why to read it now. Checkboxes hide viewed files, **test files** and **docs files**; `j`/`k` and "Mark viewed & next" skip hidden files too.
 - **Overview**: a short summary, why the change was made, how it works, what could go wrong, and questions to ask the author.
+- **Understand this PR**: a step-by-step walk for when you don't know the repo: what each changed file did before, what changes, why, and where it connects. See [Understand this PR](#understand-this-pr).
 - **Files changed**: the diff with Claude's notes (explains / possible problem / data flow / missing test) right under the lines they refer to, shown like GitHub review comments. Claude's suggested comments sit next to them; you add, edit or dismiss each one. Mark files as **Viewed**, like on GitHub.
 - **Problems found**: each finding has:
   - a severity: **Blocks merge**, **Must fix**, **Should fix** or **Could improve**;
@@ -116,6 +117,19 @@ Rerunning after the PR changes only re-annotates the files that changed, and dra
 | `r` | Mark reviewed |
 | `/` | Chat |
 | `?` | Help |
+
+## Understand this PR
+
+When you don't know the repo, walk through the PR with **Understand** before you start the review. The walk follows the reading order, one step per changed file. A big file is split into parts, and past 40 steps a chapter's small low-risk files share one "Other changes in this chapter" step. Each step says, in plain words:
+- **Before**: what this code did before the PR, read from the PR's base;
+- **What changes**: the behavior before and after;
+- **Why**: the reason the PR gives, and where it says so (description, commit, code comment or test). When nothing says why, the step shows "Not explained in the PR": Claude never makes up a reason;
+- **Where it connects**: code that calls this code or reads its output, as links;
+- **Terms** a newcomer needs, the diff lines to look at, and the tests that cover the code.
+
+It explains; it doesn't judge. Problems stay in the review. "I'm new to this area" (the default) or "I know this area" sets how much background each step gives, and is remembered per PR, like the steps you mark "Got it".
+
+A step's text is made only when you open it (the app fetches the next one ahead), never during the analysis, and it is cached, so you pay only for the steps you read: about $0.03 to $0.15 per step with Sonnet (`[models] understand`). A small step took 10 to 15 seconds and cost about $0.03 with "I know this area" and $0.05 with "I'm new to this area"; a big step reads more and costs more. Generated, lock, vendored and binary files are only listed, to skim.
 
 ## Use it in another repo (example: ai-banker)
 
@@ -247,7 +261,7 @@ Some example rules you might add:
 - `prr/prompts/*.md` holds the detailed instructions for annotation, synthesis and chat.
 - `prr/prompts/rubrics/*.md` are the per-language checklists. Edit them, or add a file for a new language and map it in `prr/rubrics.py`.
 - `config.toml` sets:
-  - the models for each step (`annotate`, `synthesize`, `chat`, `blockers`, `judge`, `ci`, `deepcheck`);
+  - the models for each step (`annotate`, `synthesize`, `chat`, `blockers`, `judge`, `ci`, `deepcheck`, `understand`);
   - the deep check under `[analysis]`: on or off, how many areas, and its time limits;
   - concurrency, batch size and cache location;
   - the chat's switches under `[chat]`;
