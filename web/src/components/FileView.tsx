@@ -278,6 +278,7 @@ export function openComment(d: Draft) {
 function FindingCard({ f }: { f: Finding }) {
   const addDraft = useStore((st) => st.addDraft);
   const dismiss = useStore((st) => st.dismissSuggestion);
+  const answerStop = useStore((st) => st.answerStop);
   const answer = useFindingAnswer(f);
   const mine = answer.draft; // already in your review: open that comment instead of adding a second one
   const [editing, setEditing] = useState(false);
@@ -291,7 +292,12 @@ function FindingCard({ f }: { f: Finding }) {
         path: f.path, side: f.side, line: f.line, start_line: f.start_line, body: text,
         source: "suggestion", suggestion_id: f.id,
       });
-      if (d) setEditing(false);
+      if (!d) return;
+      setEditing(false);
+      // Adding it to your review is the same answer as "Real problem" on its stop, so the place counts as checked
+      // (and the server reuses this comment instead of making a second one).
+      const stop = useStore.getState().analysis?.stops?.find((s) => s.finding_id === f.id);
+      if (stop && !answer.verdict) await answerStop(stop, "real");
     } finally {
       adding.current = false;
     }

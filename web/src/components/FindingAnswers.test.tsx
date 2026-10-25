@@ -73,6 +73,9 @@ describe("your answer on finding cards", () => {
     setup();
     let resolve!: (d: Draft) => void;
     const create = vi.spyOn(api, "createDraft").mockReturnValue(new Promise<Draft>((r) => (resolve = r)));
+    vi.spyOn(api, "answerStop").mockResolvedValue({
+      verdict: makeVerdict(stop, "real"), draft: null, dismissed: null, review_body_draft: null,
+    });
     renderFile();
     const c = await card();
     const add = within(c).getByRole("button", { name: "Add to my review" });
@@ -87,6 +90,21 @@ describe("your answer on finding cards", () => {
     fireEvent.click(within(after).getByRole("button", { name: "Open your comment" }));
     expect(create).toHaveBeenCalledTimes(1);
     expect(useStore.getState().state.drafts).toEqual([made]);
+  });
+
+  it("Add to my review answers Real problem on the finding's stop, so it counts as checked", async () => {
+    setup();
+    const made = makeDraft({ id: "d1", line: 3, body: finding.comment_body, source: "suggestion", suggestion_id: "f1" });
+    vi.spyOn(api, "createDraft").mockResolvedValue(made);
+    const answer = vi.spyOn(api, "answerStop").mockResolvedValue({
+      verdict: makeVerdict(stop, "real"), draft: { ...made, origin_id: stop.id }, dismissed: null, review_body_draft: null,
+    });
+    renderFile();
+    fireEvent.click(within(await card()).getByRole("button", { name: "Add to my review" }));
+    await act(async () => {});
+    expect(answer).toHaveBeenCalledWith(stop.id, "real", undefined);
+    expect(useStore.getState().state.stop_verdicts[stop.id].verdict).toBe("real");
+    expect(useStore.getState().state.drafts).toHaveLength(1);
   });
 
   it("You said: not a problem, on the dismissed finding", async () => {
