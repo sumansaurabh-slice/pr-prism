@@ -320,6 +320,45 @@ def cmd_labels(args: argparse.Namespace, cfg: Config) -> int:
     return 1 if failed else 0
 
 
+def cmd_eval(args: argparse.Namespace, cfg: Config) -> int:
+    """`prr eval`: replay the analysis on the PRs you labelled and score it. It costs money, so it says how much first
+    and asks (or needs --yes when no one is at a terminal)."""
+    from . import evalrun
+    from .gitgh import default_repo
+
+    if args.runs < 1:
+        _err("--runs must be 1 or more")
+        return 2
+    root = repo_root(args.repo or ".")
+    owner, repo = default_repo(root)
+    prs = None
+    if args.prs:
+        prs = []
+        for arg in args.prs:
+            num = arg.strip().lstrip("#")
+            ref = PRRef(owner, repo, int(num)) if num.isdigit() else parse_pr_arg(arg, root)
+            if (ref.owner.lower(), ref.repo.lower()) != (owner.lower(), repo.lower()):
+                _err(f"{arg} is not a PR of {owner}/{repo}, the repo you are in")
+                return 2
+            prs.append(ref.number)
+
+    def confirm(text: str) -> bool:
+        print(text, flush=True)
+        if args.yes:
+            return True
+        if not _has_terminal():
+            print("`prr eval` spends money, so without a terminal it runs only with --yes.")
+            return False
+        try:
+            return input("Run it? [y/N] ").strip().lower() in ("y", "yes")
+        except EOFError:
+            return False
+
+    report = evalrun.run_eval(cfg, root, owner, repo, prs=prs, runs=args.runs, split=args.split,
+                              max_usd=args.max_usd, keep=args.keep, confirm=confirm)
+    return 0 if report and report["status"] == "complete" else 1
+
+
 def cmd_supervise(args: argparse.Namespace, cfg: Config) -> int:
     supervise.supervise(Path(args.pr_dir))
     return 0
@@ -378,6 +417,14 @@ def main(argv: list[str] | None = None) -> None:
                    help="whose root comments: yours (default) or every human reviewer's (never bots)")
     s.add_argument("--split", choices=["train", "holdout"], default="train",
                    help="holdout: PRs kept out of prompt work and reported on their own by `prr eval`")
+    s = sub.add_parser("eval", help="replay the analysis on the PRs you labelled and score it (costs money; asks first)")
+    s.add_argument("--prs", nargs="+", metavar="pr", help="only these PRs (default: every labelled PR of this repo)")
+    s.add_argument("--runs", type=int, default=3, help="analyses per labelled PR commit (default 3)")
+    s.add_argument("--split", choices=["train", "holdout", "all"], default="all",
+                   help="which labelled PRs: train, holdout (the gate's PRs) or all (default)")
+    s.add_argument("--max-usd", type=float, default=None, help="start no new run once this much has been spent")
+    s.add_argument("--yes", action="store_true", help="don't ask before spending (needed without a terminal)")
+    s.add_argument("--keep", action="store_true", help="keep the eval folders (worktrees and each run's files)")
     s = sub.add_parser("_serve", help=argparse.SUPPRESS)  # the supervisor
     s.add_argument("pr_dir")
     s = sub.add_parser("_mcp", help=argparse.SUPPRESS)  # the chat's comment tools (an MCP server on stdio)
@@ -389,8 +436,8 @@ def main(argv: list[str] | None = None) -> None:
     args = p.parse_args(argv)
     cfg = load_config()
     handlers = {"doctor": cmd_doctor, "fetch": cmd_fetch, "serve": cmd_serve, "analyze": cmd_analyze,
-                "status": cmd_status, "stop": cmd_stop, "clean": cmd_clean, "labels": cmd_labels, "_serve": cmd_supervise,
-                "_serve-child": cmd_serve_child, "_mcp": cmd_mcp}
+                "status": cmd_status, "stop": cmd_stop, "clean": cmd_clean, "labels": cmd_labels, "eval": cmd_eval,
+                "_serve": cmd_supervise, "_serve-child": cmd_serve_child, "_mcp": cmd_mcp}
     try:
         code = handlers[args.cmd](args, cfg)
     except (CommandError, ValueError, FileNotFoundError) as e:
