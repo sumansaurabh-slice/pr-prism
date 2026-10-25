@@ -15,7 +15,7 @@
 Files in the PR folder:
 - deepcheck.json: `cache` (area results by prompt version, focus, model and the area's file blobs) and `run`, this
   analysis run's areas. An area's status is waiting | running | checked | nothing-found | failed | stopped |
-  skipped; checked and nothing-found both count as checked.
+  skipped; checked and nothing-found both count as checked, and an area past the cap is skipped with `capped`.
 - placed_pre_deepcheck.json: the findings just before the deep check merged, shaped like analysis.json findings.
   Eval's "deep check off" view comes from it.
 """
@@ -31,8 +31,7 @@ from dataclasses import dataclass
 from pathlib import Path
 from typing import Any
 
-from . import findings as findings_mod
-from . import judge, ledger, rubrics
+from . import findings, judge, ledger, rubrics
 from .claude import ClaudeError, run_structured
 from .cluster import CHARS_PER_TOKEN
 from .config import Config
@@ -357,10 +356,11 @@ class _Run:
         self.run["warnings"].append(text)
 
     def start(self, chosen: list[Target], skipped: list[Target]) -> None:
-        for t, status in [(t, "waiting") for t in chosen] + [(t, "skipped") for t in skipped]:
-            rec = {"id": t.id, "title": t.title, "files": t.files, "score": t.score, "status": status,
-                   "reason": None if status == "waiting" else "over the area limit", "attempts": 0,
-                   "duration_ms": None, "cost_usd": 0.0, "findings": 0, "key": None, "cached": False}
+        for t, capped in [(t, False) for t in chosen] + [(t, True) for t in skipped]:
+            rec = {"id": t.id, "title": t.title, "files": t.files, "score": t.score, "high": t.high,
+                   "status": "skipped" if capped else "waiting", "reason": "over the area limit" if capped else None,
+                   "capped": capped, "attempts": 0, "duration_ms": None, "cost_usd": 0.0, "findings": 0, "key": None,
+                   "cached": False}
             self.recs[t.id] = rec
             self.run["targets"].append(rec)
         cap = self.cfg.analysis.deepcheck_max_targets
@@ -382,7 +382,7 @@ class _Run:
         with self.lock:
             for rec in self.recs.values():
                 rec["cost_usd"] = round(sum(x.get("cost_usd") or 0.0 for x in lines if x.get("target") == rec["id"]), 4)
-            chosen = [r for r in self.recs.values() if r["reason"] != "over the area limit"]
+            chosen = [r for r in self.recs.values() if not r["capped"]]
             done = sum(1 for r in chosen if r["status"] in DONE)
             per_area = [{k: r[k] for k in ("id", "title", "status", "cost_usd")} for r in chosen]
         self.progress.update(msg, deepcheck_done=done,
@@ -465,7 +465,7 @@ class _Run:
         resolve = PathResolver([f["path"] for f in self.ctx["files"]])
         kept = [{**f, "path": p} for f in result for p in [resolve(f.get("path"))] if p]
         fls = file_lines(self.pr_dir)
-        mine = {findings_mod.place({**f, "sources": [SOURCE]}, f["path"], fls.get(f["path"]))["id"] for f in kept}
+        mine = {findings.place({**f, "sources": [SOURCE]}, f["path"], fls.get(f["path"]))["id"] for f in kept}
         with self.lock:
             if self.closed:
                 return
