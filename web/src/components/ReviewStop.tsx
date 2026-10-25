@@ -618,7 +618,7 @@ export function ReviewStop({
             Ask in chat (c)
           </button>
           {how && (
-            <a className="small" href={understandHref(how.step.id)}>
+            <a href={understandHref(how.step.id)}>
               How this code works (step {how.number})
             </a>
           )}

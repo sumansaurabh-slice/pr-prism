@@ -214,7 +214,7 @@ export function UnderstandStepView({
   const go = (s: UnderstandStep | null) => navigate(s ? understandHref(s.id) : UNDERSTAND_END);
   const gotIt = () => {
     const st = useStore.getState();
-    void st.setUnderstood(step.id, true);
+    if (!st.understand?.understood[step.id]) void st.setUnderstood(step.id, true);
     go(nextToRead(model.steps, model.index, { ...model.understood, [step.id]: "now" }));
   };
   const move = (delta: 1 | -1) => {
