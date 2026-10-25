@@ -1,8 +1,9 @@
+import { useMemo } from "react";
 import { create } from "zustand";
-import { api, type NewDraft } from "./api";
+import { api, ApiError, type NewDraft } from "./api";
 import type {
-  Analysis, ChatThread, ContextChip, CostSummary, Draft, DraftPlace, ExistingComment, FileEntry, ReviewState, Side,
-  Trust,
+  Analysis, ChatThread, ContextChip, CostSummary, Draft, DraftPlace, ExistingComment, FileEntry, HeadStatus,
+  ReviewState, Side, SinceReview, Trust,
 } from "./types";
 
 /** Picked lines. `start` is on `startSide`, `end` is on `side`; they differ only for a range that starts on a
@@ -50,6 +51,15 @@ interface Store {
   composer: { path: string; startSide: Side; side: Side; start: number; end: number; body: string } | null;
   toasts: Toast[];
   prefs: ViewPrefs;
+
+  // ---- since your review (E4) and new commits (design D12)
+  sinceReview: SinceReview | null;      // GET /api/since-review; guided review's "Only new stops" reads its new_stop_ids
+  sinceChoice: Record<string, boolean>; // head → "Changes since your review" on/off as you left it (localStorage)
+  head: HeadStatus | null;              // GET /api/head: "New commits since you opened this", and whether a run is going
+  loadSinceReview: () => Promise<void>;
+  loadHead: () => Promise<void>;
+  setSinceOn: (on: boolean) => void;
+  reanalyze: () => Promise<void>;
 
   loadAnalysis: () => Promise<void>;
   loadState: () => Promise<void>;
@@ -138,11 +148,67 @@ export const useStore = create<Store>((set, get) => ({
     hideDocs: readLS(PREF_KEYS.hideDocs) === "1",
   },
 
+  sinceReview: null,
+  sinceChoice: {},
+  head: null,
+  loadSinceReview: async () => {
+    try {
+      const sr = await api.sinceReview();
+      const saved = readLS(sinceKey(sr.head));
+      set((s) => ({
+        sinceReview: sr,
+        sinceChoice:
+          saved === null || sr.head in s.sinceChoice ? s.sinceChoice : { ...s.sinceChoice, [sr.head]: saved === "1" },
+      }));
+    } catch {
+      /* optional data: no toggle */
+    }
+  },
+  loadHead: async () => {
+    try {
+      const wasRunning = get().head?.running;
+      const head = await api.head();
+      set({ head });
+      if (wasRunning && !head.running) void get().loadAnalysis(); // the run ended: show what it found
+    } catch {
+      /* optional data: no "New commits" banner */
+    }
+  },
+  setSinceOn: (on) => {
+    const head = get().sinceReview?.head;
+    if (!head) return;
+    writeLS(sinceKey(head), on ? "1" : "0");
+    set((s) => ({ sinceChoice: { ...s.sinceChoice, [head]: on } }));
+  },
+  // "Re-read the PR": the server fetches and analyzes in the background. The polls follow the run (the progress
+  // banner) and the page keeps its view. A 409 means a run is already going: show its words and follow that one.
+  reanalyze: async () => {
+    try {
+      await api.reanalyze();
+    } catch (e) {
+      const busy = e instanceof ApiError && e.status === 409;
+      get().toast(busy ? "info" : "error", (e as Error).message);
+      if (!busy) return;
+    }
+    set((s) => ({ head: s.head && { ...s.head, running: true } }));
+    void get().loadAnalysis();
+  },
+
   loadAnalysis: async () => {
     void get().loadCost(); // the header total moves with the analysis ("so far" while it runs)
     try {
-      const analysis = await api.analysis();
+      const prev = get().analysis;
+      const next = await api.analysis();
+      // While a re-read runs, the page keeps the analysis you are working with until the run ends (design D12);
+      // only the progress banner follows the run.
+      const keep = prev?.status === "complete" && !!get().head?.running;
+      const analysis = keep ? { ...prev, progress: next.progress } : next;
       set({ analysis, analysisError: null });
+      if (prev && prev.pr.head_sha !== analysis.pr.head_sha) {
+        // A re-read brought new commits: drafts may be outdated now, and GitHub's threads moved with the code.
+        void get().loadState();
+        void get().loadGithubComments();
+      }
     } catch (e) {
       set({ analysisError: (e as Error).message });
     }
@@ -335,6 +401,35 @@ export const useStore = create<Store>((set, get) => ({
 
 // ---------- derived helpers ----------
 
+const sinceKey = (head: string) => `prr.sinceReview.${head}`;
+
+/** The "Changes since your review" toggle (E4, design issue 24).
+ * - `shown`: you submitted a review on an older head;
+ * - `ok`: false when git failed (the toggle is disabled, with the note as its tooltip);
+ * - `on`: on by default, else as you left it for this head;
+ * - `files`: the paths changed since your review. */
+export interface SinceView { shown: boolean; ok: boolean; on: boolean; files: Set<string>; review: SinceReview | null }
+
+const sinceFiles = new WeakMap<SinceReview, Set<string>>();
+
+export function sinceView(sr: SinceReview | null, choice: Record<string, boolean>): SinceView {
+  if (!sr || !sr.reviewed_head || sr.reviewed_head === sr.head) {
+    return { shown: false, ok: false, on: false, files: new Set(), review: sr };
+  }
+  let files = sinceFiles.get(sr);
+  if (!files) {
+    files = new Set(sr.files.map((f) => f.path));
+    sinceFiles.set(sr, files);
+  }
+  return { shown: true, ok: sr.ok, on: sr.ok && (choice[sr.head] ?? true), files, review: sr };
+}
+
+export function useSinceView(): SinceView {
+  const sr = useStore((s) => s.sinceReview);
+  const choice = useStore((s) => s.sinceChoice);
+  return useMemo(() => sinceView(sr, choice), [sr, choice]);
+}
+
 function withoutKey<T>(rec: Record<string, T>, key: string): Record<string, T> {
   if (!(key in rec)) return rec;
   const rest = { ...rec };
@@ -382,7 +477,7 @@ export function reviewOrder(analysis: Analysis | null): string[] {
   return order;
 }
 
-/** Hidden by the "Hide …" checkboxes? A file that changed after you viewed it is never hidden as "viewed". */
+/** Hidden by the "Hide …" checkboxes? A file changed since you viewed it is never hidden as "viewed". */
 export function hiddenByPrefs(f: FileEntry, prefs: ViewPrefs, reviewed: Record<string, string>): boolean {
   if (prefs.hideTests && f.is_test) return true;
   if (prefs.hideDocs && f.is_docs) return true;

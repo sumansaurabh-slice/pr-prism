@@ -551,6 +551,20 @@ button {
   padding: 8px 12px;
   font-size: 13px;
 }
+/* "New commits since you opened this · [Re-read the PR] (about 6 min and $2, …)" */
+.new-commits {
+  display: flex;
+  flex-wrap: wrap;
+  align-items: center;
+  gap: 4px 8px;
+}
+.since-note,
+.since-comment-note {
+  color: var(--text-muted);
+}
+.since-comment-note {
+  flex-basis: 100%;
+}
 /* the outside-author notice: full width under the chat header */
 .chat-trust {
   flex: none;
@@ -886,6 +900,15 @@ textarea.input {
   display: inline-flex;
   align-items: center;
   gap: 6px;
+}
+/* the "Changes since your review" toggle (btn-sm with aria-pressed) */
+.btn[aria-pressed="true"] {
+  color: var(--accent);
+  background: var(--accent-bg);
+  border-color: var(--accent-border);
+}
+.btn[aria-pressed="true"]:hover:not(:disabled) {
+  background: var(--accent-bg);
 }
 .viewed-ring {
   width: 16px;
@@ -1666,6 +1689,19 @@ textarea.input {
   white-space: nowrap;
   overflow: hidden;
   text-overflow: ellipsis;
+}
+/* "Changes since your review": interdiff lines outside the PR's own diff can't take a line comment */
+.diff-gutter:has(> .gutter-no-comment),
+.diff-gutter:has(> .gutter-no-comment):hover {
+  color: var(--text-muted);
+  background: var(--bg-muted);
+  cursor: not-allowed;
+}
+.gutter-no-comment {
+  display: block;
+  margin: 0 -10px;
+  padding: 0 10px;
+  min-height: 20px;
 }
 .diff-widget-content {
   font-family: var(--font);

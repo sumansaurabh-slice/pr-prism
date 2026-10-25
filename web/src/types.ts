@@ -99,7 +99,7 @@ export interface CICheck {
 export interface CIAnnotation { check: string; path: string; line: number; end_line: number | null; level: string; message: string }
 export interface CIInfo { fetched_at: string | null; head_sha: string | null; checks: CICheck[]; annotations: CIAnnotation[] }
 
-/** An earlier finding or comment, re-checked after new commits. */
+/** An earlier finding or comment, re-checked on the latest commit. */
 export interface Rechecked {
   kind: "finding" | "comment"; title: string; path: string; line: number | null;
   status: "fixed" | "still-open"; how: string; author: string | null; html_url: string | null;

@@ -187,10 +187,10 @@ export function SubmitModal() {
                   {preview.head_changed && (
                     <div className="flash flash-warn">
                       <p>
-                        The PR got new commits after Claude read it (
+                        <strong>New commits since you opened this</strong> (
                         <code>{preview.analyzed_head.slice(0, 7)}</code> → <code>{preview.current_head.slice(0, 7)}</code>).
-                        Comments on lines that changed may show as outdated. Run <code>/pr-prism</code> again to update
-                        the review and move your comments to the right lines.
+                        Comments on lines that changed may show as outdated. Re-read the PR (or run{" "}
+                        <code>/pr-prism</code> again) to update the review and move your comments to the right lines.
                       </p>
                       <label>
                         <input type="radio" checked={commit === "analyzed"} onChange={() => setCommit("analyzed")} /> Post
