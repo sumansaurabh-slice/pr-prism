@@ -1,4 +1,8 @@
-"""`prr fetch`: PR metadata, refs, merge-base, an isolated worktree at the PR head, the diff and context.json."""
+"""`prr fetch`: PR metadata, refs, merge-base, an isolated worktree at the PR head, the diff and context.json.
+
+fetch() reads the PR from GitHub and fetches its head and base; prepare() then builds the review inputs (worktree,
+diff.patch, context.json) for one commit from local git objects. `prr eval` uses prepare() too, on a pinned commit.
+"""
 
 from __future__ import annotations
 
@@ -81,6 +85,11 @@ def _author_association(ref: PRRef) -> str | None:
     return value if isinstance(value, str) and value else None
 
 
+def read_meta(ref: PRRef) -> dict:
+    """The PR as `gh pr view --json` gives it (read-only)."""
+    return gh_json("pr", "view", str(ref.number), "--repo", ref.slug, "--json", _PR_FIELDS)
+
+
 def fetch(ref: PRRef, root: Path, cfg: Config) -> Path:
     d = pr_dir(cfg, ref.owner, ref.repo, ref.number)
     fresh = not (d / "state.json").exists()  # e.g. after `prr clean`: the saved work is restored below
@@ -88,7 +97,7 @@ def fetch(ref: PRRef, root: Path, cfg: Config) -> Path:
     previous = read_json(d / "context.json")
 
     _log(f"Reading PR {ref.slug}#{ref.number} from GitHub")
-    meta = gh_json("pr", "view", str(ref.number), "--repo", ref.slug, "--json", _PR_FIELDS)
+    meta = read_meta(ref)
     association = _author_association(ref)  # an outsider's PR: connector lookups ask first (prr/policy.py)
     remote = find_remote(root, ref)
     head_ref = f"refs/pr-prism/{ref.number}/head"
@@ -108,16 +117,39 @@ def fetch(ref: PRRef, root: Path, cfg: Config) -> Path:
             git("fetch", "--no-tags", "--quiet", remote, base_point, cwd=root)
     merge_base = _merge_base(root, remote, ref, base_point, head_sha)
 
+    _, files = prepare(ref, head_sha, merge_base, meta, root=root, d=d, association=association, warnings=warnings)
+    if previous and previous["pr"]["head_sha"] != head_sha:
+        moved = anchors.remap_state(d, root, previous["pr"]["head_sha"], head_sha, files)
+        if moved:
+            _log(f"PR moved since last fetch: remapped {moved['remapped']} drafts, {moved['outdated']} now outdated")
+    if fresh:
+        restored = archive.restore(cfg, ref.owner, ref.repo, ref.number, d, head_sha)
+        if restored:
+            _log(archive.message(restored))
+    for w in warnings:
+        _log(f"warning: {w}")
+    return d
+
+
+def prepare(ref: PRRef, head_sha: str, merge_base_sha: str, meta: dict, *, root: Path, d: Path,
+            association: str | None = None, warnings: list[str] | None = None) -> tuple[dict, list[diffparse.FileDiff]]:
+    """The review inputs for one commit of a PR, all in folder `d`: an isolated worktree at `head_sha`, diff.patch
+    (from `merge_base_sha`) and context.json. Both commits must already be in the repo at `root`. `meta` is the PR as
+    `gh pr view --json` gives it; GitHub's +/- counts are compared only when it has them (eval drops them for an older
+    commit). Appends to `warnings`. Shared by fetch() (the PR's head) and `prr eval` (a pinned commit).
+    Returns (the context, the parsed diff)."""
+    warnings = warnings if warnings is not None else []
     wt = d / "worktree"
     _log(f"Checking out PR head {head_sha[:10]} into an isolated worktree")
     _ensure_worktree(root, wt, head_sha)
 
-    diff_text = git(*DIFF_ARGS, merge_base, head_sha, cwd=root)
+    diff_text = git(*DIFF_ARGS, merge_base_sha, head_sha, cwd=root)
     write_text(d / "diff.patch", diff_text)
     files = diffparse.parse(diff_text)
 
     adds, dels = sum(f.additions for f in files), sum(f.deletions for f in files)
-    if (adds, dels, len(files)) != (meta["additions"], meta["deletions"], meta["changedFiles"]):
+    github_counts = (meta.get("additions"), meta.get("deletions"), meta.get("changedFiles"))
+    if all(isinstance(n, int) for n in github_counts) and (adds, dels, len(files)) != github_counts:
         warnings.append(
             f"Local diff (+{adds}/-{dels}, {len(files)} files) differs from GitHub "
             f"(+{meta['additions']}/-{meta['deletions']}, {meta['changedFiles']} files); "
@@ -145,7 +177,7 @@ def fetch(ref: PRRef, root: Path, cfg: Config) -> Path:
             "author_association": association,
             "body": meta.get("body") or "", "state": meta["state"], "is_draft": meta["isDraft"],
             "base_ref": meta["baseRefName"], "head_ref": meta["headRefName"],
-            "base_sha": meta["baseRefOid"], "merge_base_sha": merge_base, "head_sha": head_sha,
+            "base_sha": meta["baseRefOid"], "merge_base_sha": merge_base_sha, "head_sha": head_sha,
             "additions": adds, "deletions": dels, "changed_files": len(files),
             "labels": [lb["name"] for lb in meta.get("labels") or []],
             "commits": [
@@ -172,17 +204,7 @@ def fetch(ref: PRRef, root: Path, cfg: Config) -> Path:
         "warnings": warnings,
     }
     write_json(d / "context.json", ctx)
-    if previous and previous["pr"]["head_sha"] != head_sha:
-        moved = anchors.remap_state(d, root, previous["pr"]["head_sha"], head_sha, files)
-        if moved:
-            _log(f"PR moved since last fetch: remapped {moved['remapped']} drafts, {moved['outdated']} now outdated")
-    if fresh:
-        restored = archive.restore(cfg, ref.owner, ref.repo, ref.number, d, head_sha)
-        if restored:
-            _log(archive.message(restored))
-    for w in warnings:
-        _log(f"warning: {w}")
-    return d
+    return ctx, files
 
 
 def remove_worktree(root: Path, d: Path, number: int) -> None:
