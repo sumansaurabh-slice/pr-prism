@@ -16,8 +16,8 @@ from concurrent.futures import ThreadPoolExecutor, as_completed
 from pathlib import Path
 from typing import Any, Callable
 
-from . import (blockers, bots, ci, cluster, cost, deepcheck, diffparse, filekinds, github, impact, judge, ledger,
-               merge, recheck, rubrics, since)
+from . import (blockers, bots, ci, cluster, cost, deepcheck, diffparse, filekinds, findings, github, impact, judge,
+               ledger, merge, recheck, rubrics, since)
 from .claude import ClaudeError, run_structured
 from .config import GUIDELINES_FILE, PROMPTS_DIR, Config
 from .models import AnnotateOut, SynthesisOut, llm_schema
@@ -29,9 +29,12 @@ problems. Do not invent findings: if the files are clean, return no findings aga
 """
 from .util import now_iso, read_json, write_json
 
-PROMPT_VERSION = "4"  # bump when prompts change: cached file notes are keyed on it
+PROMPT_VERSION = "5"  # bump when prompts change: cached file notes are keyed on it
 MAX_BODY_CHARS = 8000
 MAX_FILE_MAP_LINES = 300
+MAX_COMMITS = 60          # commit messages in the summary's prompt
+MAX_BATCH_COMMITS = 30    # … and in each batch's prompt
+MAX_QUESTIONS = 3         # questions for the author (category intent) kept per batch, the surest first
 
 
 class AnalyzeError(RuntimeError):
@@ -88,6 +91,15 @@ def _pr_header(ctx: dict) -> str:
             f"in {pr['changed_files']} files\n\n## Description\n{body}\n")
 
 
+def _commits(ctx: dict, limit: int) -> str:
+    """The PR's commit messages (first lines), oldest first, or "" when there are none."""
+    commits = ctx["pr"].get("commits") or []
+    if not commits:
+        return ""
+    more = f"- … and {len(commits) - limit} more\n" if len(commits) > limit else ""
+    return "\n## Commits\n" + "".join(f"- {c['headline']}\n" for c in commits[:limit]) + more
+
+
 def _file_map(ctx: dict, highlight: set[str]) -> str:
     lines = []
     for f in ctx["files"]:
@@ -106,9 +118,9 @@ def annotate_prompt(ctx: dict, c: cluster.Cluster, idx: int, total: int, focus: 
 
 
 def cluster_files(ctx: dict, c: cluster.Cluster, idx: int, total: int) -> str:
-    """The PR header, the whole-PR file map and this batch's diffs (with R/L line tags)."""
+    """The PR header and commit messages, the whole-PR file map and this batch's diffs (with R/L line tags)."""
     files = {f["path"]: f for f in ctx["files"]}
-    parts = ["\n---\n", _pr_header(ctx),
+    parts = ["\n---\n", _pr_header(ctx), _commits(ctx, MAX_BATCH_COMMITS),
              "\n## All changed files (→ marks this batch; others are context only)\n", _file_map(ctx, set(c.paths)),
              f"\n\n## Batch {idx} of {total}: review exactly these {len(c.items)} file(s)\n"]
     for it in c.items:
@@ -124,11 +136,19 @@ def cluster_files(ctx: dict, c: cluster.Cluster, idx: int, total: int) -> str:
     return "".join(parts)
 
 
+def keep_questions(files: list[dict], limit: int = MAX_QUESTIONS) -> int:
+    """At most `limit` questions for the author (category intent) in one batch's notes, the surest first. Returns how
+    many were left out."""
+    asks = sorted((f for a in files for f in a["findings"] if f["category"] == findings.INTENT),
+                  key=lambda f: -(f.get("confidence") or 0))
+    cut = {id(f) for f in asks[limit:]}
+    for a in files:
+        a["findings"] = [f for f in a["findings"] if id(f) not in cut]
+    return len(cut)
+
+
 def synthesis_prompt(ctx: dict, analysis: dict, impact_data: dict, edges: list[dict], focus: str | None) -> str:
-    pr = ctx["pr"]
-    out = [_template("synthesize.md", focus, ctx), "\n---\n", _pr_header(ctx)]
-    if pr["commits"]:
-        out.append("\n## Commits\n" + "\n".join(f"- {c['headline']}" for c in pr["commits"][:60]) + "\n")
+    out =[_template("synthesize.md", focus, ctx), "\n---\n", _pr_header(ctx), _commits(ctx, MAX_COMMITS)]
     out.append("\n## Files (dependency-first default order) with their annotations\n")
     generated = []
     by_path = {f["path"]: f for f in analysis["files"]}
@@ -171,13 +191,18 @@ def synthesis_prompt(ctx: dict, analysis: dict, impact_data: dict, edges: list[d
                 continue
             refs = ", ".join(f"{r['path']}:{r['line']}" for r in s["outside_refs"][:4])
             out.append(f"- `{s['symbol']}` (defined in {s['defined_in']}): used in {s['count']} places, e.g. {refs}\n")
-    found = analysis.get("findings", [])
+    shown = [f for f in analysis.get("findings", []) if not f["low_confidence"]]
+    found = [f for f in shown if f["category"] != findings.INTENT]
     if found:
-        counts = {s: sum(1 for f in found if f["severity"] == s and not f["low_confidence"]) for s in ("blocker", "major", "minor", "nit")}
+        counts = {s: sum(1 for f in found if f["severity"] == s) for s in ("blocker", "major", "minor", "nit")}
         out.append(f"\n## Findings so far\nBlockers: {counts['blocker']}, must fix: {counts['major']}, should fix: "
                    f"{counts['minor']}, could improve: {counts['nit']}\n")
-        for f in [f for f in found if f["severity"] in ("blocker", "major") and not f["low_confidence"]][:15]:
+        for f in [f for f in found if f["severity"] in ("blocker", "major")][:15]:
             out.append(f"- [{f['severity']}] {f['path']}:{f['line']} {f['title']}\n")
+    asks = [f for f in shown if f["category"] == findings.INTENT]
+    if asks:
+        out.append("\n## Questions already asked of the author (don't repeat them in `questions`)\n")
+        out += [f"- {f['path']}:{f['line']} {f['title']}\n" for f in asks[:15]]
     ci_info = analysis.get("ci") or {}
     failing = [c for c in ci_info.get("checks", []) if c["state"] == "fail"]
     if failing:
@@ -303,17 +328,21 @@ def _analyze(pr_dir: Path, ctx: dict, cfg: Config, focus: str | None, force: boo
         code_files = [p for p in c.paths if filekinds.kind(p, roots)[0] is None
                       and files_ctx[p]["category"] not in ("docs", "test", "generated")]
         second_pass = False
-        if code_files and not any(a["findings"] for a in out["files"]):
-            # Zero findings is also what a review that didn't read closely looks like: read once more.
+        if code_files and not any(f["category"] != findings.INTENT for a in out["files"] for f in a["findings"]):
+            # Zero findings is also what a review that didn't read closely looks like: read once more. Questions for
+            # the author don't count as findings here.
             try:
                 again = structured(SECOND_LOOK + prompt, AnnotateOut, model, purpose="annotate",
                                    target=f"group {idx} (closer second read)")
                 found = {a["path"]: a["findings"] for a in again["files"]}
+                asked_again = any(f["category"] == findings.INTENT for fs in found.values() for f in fs)
                 for a in out["files"]:
-                    a["findings"] = found.get(a["path"], [])
+                    asked = [] if asked_again else [f for f in a["findings"] if f["category"] == findings.INTENT]
+                    a["findings"] = found.get(a["path"], []) + asked
                 second_pass = True
             except ClaudeError as e:
                 progress.update(f"Group {idx}: the closer second read failed: {str(e)[:150]}")
+        keep_questions(out["files"])
         proposed: list[dict] = []
         if code_files:
             try:
@@ -363,7 +392,7 @@ def _analyze(pr_dir: Path, ctx: dict, cfg: Config, focus: str | None, force: boo
     progress.update("Taking a second look at every finding")
     placed = merge.placed_findings(pr_dir, ctx)
     verdicts = judge.run(placed, diffs, cfg, worktree, read_json(pr_dir / "judge.json") or {}, progress.update,
-                         ledger=progress.ledger)
+                         ledger=progress.ledger, pr=ctx["pr"])
     write_json(pr_dir / "judge.json", verdicts)
 
     # CI results, other review tools' comments, and re-checking earlier problems run side by side.
@@ -462,11 +491,12 @@ def _analyze(pr_dir: Path, ctx: dict, cfg: Config, focus: str | None, force: boo
 
 
 def _save_history(pr_dir: Path, ctx: dict, analysis: dict) -> None:
-    """What the next review round re-checks: this round's open findings, with the code around them."""
+    """What the next review round re-checks: this round's open findings, with the code around them. Questions for the
+    author are left out: the author's answer settles them, not a code change."""
     worktree = Path(ctx["worktree"])
     items = []
     for f in analysis["findings"]:
-        if f["low_confidence"] or f["severity"] == "nit":
+        if f["low_confidence"] or f["severity"] == "nit" or f["category"] == findings.INTENT:
             continue
         try:
             lines = (worktree / f["path"]).read_text(errors="replace").splitlines()

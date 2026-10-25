@@ -516,10 +516,10 @@ def test_parallel_second_looks_never_lose_each_others_scores(tmp_path, tricky_re
     snapshots: dict[str, set[str]] = {}
     real_run, real_merge = judge.run, deepcheck.JudgeStore.merge
 
-    def judge_run(found, diffs, cfg, cwd, cache, echo, ledger=None):
+    def judge_run(found, diffs, cfg, cwd, cache, echo, ledger=None, pr=None):
         who = "A" if found[0]["title"] == "A problem" else "B"
         snapshots[who] = set(cache)
-        out = real_run(found, diffs, cfg, cwd, cache, echo, ledger=ledger)
+        out = real_run(found, diffs, cfg, cwd, cache, echo, ledger=ledger, pr=pr)
         if who == "A":
             a_judged.set()
         return out

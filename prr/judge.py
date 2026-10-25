@@ -7,10 +7,15 @@ look must never silently remove a real problem.
 
 The judge has no tools. For a deep-check finding it also gets the scenario and the code around each spot the finding
 cites, which Python reads from the worktree; a spot that doesn't exist is shown as "evidence not found".
+
+A question for the author (category `intent`) is scored on another question: is the change real, and do the PR's
+title, description, commit messages and code leave it unexplained? Those findings go in their own batches, which
+also get the PR's text. Their verdict keeps a hash of that text (`pr`), so an edited description scores them again.
 """
 
 from __future__ import annotations
 
+import hashlib
 import os
 from concurrent.futures import ThreadPoolExecutor, as_completed
 from pathlib import Path
@@ -21,6 +26,7 @@ from pydantic import BaseModel
 from .claude import ClaudeError, run_structured
 from .config import PROMPTS_DIR, Config
 from .diffparse import FileDiff, render_for_llm
+from .findings import INTENT
 from .ledger import Ledger
 from .models import llm_schema
 from .util import now_iso
@@ -30,6 +36,8 @@ BATCH = 12
 MAX_CODE_CHARS = 4000
 WINDOW = 8              # lines either side of a spot a deep-check finding cites
 MAX_WINDOW_LINE = 300   # characters kept per line in those windows
+MAX_PR_BODY = 6000      # characters of the PR description shown with questions for the author
+MAX_COMMITS = 40        # commit messages shown with them
 
 
 class Score(BaseModel):
@@ -88,10 +96,28 @@ def _evidence(f: dict, cwd: Path | None) -> str:
     return "\n".join(out)
 
 
+def pr_text(pr: dict | None) -> str:
+    """The PR's title, description and commit messages: what a question for the author is checked against."""
+    if not pr:
+        return "(The PR's title and description are not available.)"
+    body = (pr.get("body") or "").strip() or "(no description)"
+    if len(body) > MAX_PR_BODY:
+        body = body[:MAX_PR_BODY] + "\n…[description cut]"
+    commits = "\n".join(f"- {c.get('headline', '')}" for c in (pr.get("commits") or [])[:MAX_COMMITS]) or "(none)"
+    return f"Title: {pr.get('title') or ''}\n\nDescription:\n{body}\n\nCommit messages:\n{commits}"
+
+
+def pr_key(pr: dict | None) -> str | None:
+    """A short hash of pr_text: a question's verdict is stale once the PR's text changes."""
+    return hashlib.sha1(pr_text(pr).encode()).hexdigest()[:12] if pr else None
+
+
 def _render(f: dict, diffs: dict[str, FileDiff], cwd: Path | None = None) -> str:
     parts = [f"### {f['id']}", f"File: {f['path']}, line {f['line']} ({f['side']})",
              f"Severity: {f['severity']} · {f['category']}", f"Title: {f['title']}", f"Impact: {f['impact']}",
              f"Fix: {f['fix']}"]
+    if f.get("category") == INTENT:
+        parts.insert(1, 'Kind: a question for the author, not a problem report (see "Questions for the author")')
     if f.get("suggestion"):
         parts.append(f"Suggested code:\n```\n{f['suggestion']}\n```")
     parts += [f"Why: {f['why']}", f"Evidence: {f['evidence'] or 'none given'}",
@@ -105,23 +131,35 @@ def _render(f: dict, diffs: dict[str, FileDiff], cwd: Path | None = None) -> str
     return "\n".join(parts)
 
 
+def _stale(f: dict, verdict: dict, key: str | None) -> bool:
+    """A question for the author that was scored against an older title, description or commit list."""
+    return f.get("category") == INTENT and key is not None and verdict.get("pr") != key
+
+
 def run(findings: list[dict], diffs: dict[str, FileDiff], cfg: Config, cwd: Path, cache: dict,
-        echo: Callable[[str], None], ledger: Ledger | None = None) -> dict:
+        echo: Callable[[str], None], ledger: Ledger | None = None, pr: dict | None = None) -> dict:
     """Score findings not yet in `cache` ({id: {score, verdict, reason}}). Returns the updated cache.
 
     A finding the judge could not score gets a failure marker, {id: {failed: true, reason, at}}, so the app can
     tell "not second-checked" from "waiting for its second look". Marked findings are tried again next run.
+    `pr` (context.json's pr) is what questions for the author are checked against; their verdicts keep its hash.
     """
     from .analyze import style_rules
 
-    todo = [f for f in findings if f["severity"] != "blocker" and (f["id"] not in cache or failed(cache[f["id"]]))]
+    key = pr_key(pr)
+    todo = [f for f in findings if f["severity"] != "blocker"
+            and (f["id"] not in cache or failed(cache[f["id"]]) or _stale(f, cache[f["id"]], key))]
     if not todo:
         return cache
     head = (PROMPTS_DIR / "judge.md").read_text().replace("{{STYLE}}", style_rules())
-    batches = [todo[i:i + BATCH] for i in range(0, len(todo), BATCH)]
+    asks = [f for f in todo if f.get("category") == INTENT]
+    rest = [f for f in todo if f.get("category") != INTENT]
+    batches = [group[i:i + BATCH] for group in (rest, asks) for i in range(0, len(group), BATCH)]
 
     def one(batch: list[dict]) -> list[Score]:
-        prompt = head + "\n---\n\n" + "\n\n".join(_render(f, diffs, cwd) for f in batch)
+        about_pr = ("## The pull request (for the questions to the author)\n\n" + pr_text(pr) + "\n\n---\n\n"
+                    if any(f.get("category") == INTENT for f in batch) else "")
+        prompt = head + "\n---\n\n" + about_pr + "\n\n".join(_render(f, diffs, cwd) for f in batch)
         raw, _ = run_structured(prompt, llm_schema(JudgeOut), cwd=cwd, model=cfg.models.judge, tools=[],
                                 max_turns=3, timeout=300, ledger=ledger, purpose="judge",
                                 target=",".join(f["id"] for f in batch))
@@ -132,11 +170,14 @@ def run(findings: list[dict], diffs: dict[str, FileDiff], cfg: Config, cwd: Path
         for fut in as_completed(futures):
             batch = futures[fut]
             wanted = {f["id"] for f in batch}
+            asked = {f["id"] for f in batch if f.get("category") == INTENT}
             reason = "the second look gave no score for it"
             try:
                 for s in fut.result():
                     if s.id in wanted:
                         cache[s.id] = {"score": max(1, min(10, s.score)), "verdict": s.verdict, "reason": s.reason}
+                        if s.id in asked and key:
+                            cache[s.id]["pr"] = key
                         wanted.discard(s.id)
             except (ClaudeError, ValueError) as e:
                 reason = str(e)[:300]

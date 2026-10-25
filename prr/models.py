@@ -18,8 +18,9 @@ Category = Literal["schema", "types", "core", "api", "ui", "config", "infra", "t
 NoteKind = Literal["explain", "risk", "flow", "test-gap"]
 # blocker = blocks merge (only from the rule pass, confirmed in code); major = must fix; minor = should fix; nit = could improve
 Severity = Literal["blocker", "major", "minor", "nit"]
+# intent = a question for the author ("Why was this removed?"), not a problem report; always minor (findings.INTENT)
 FindingCategory = Literal["security", "correctness", "performance", "concurrency", "reliability", "data",
-                          "observability", "design", "testing", "maintainability"]
+                          "observability", "design", "testing", "maintainability", "intent"]
 FindingStatus = Literal["new", "still-open"]
 # judge = scored by the second look; rule = a blocker the code check confirmed; carried = an earlier round's finding,
 # keeping its earlier verdict; pending = waiting for its second look; none = the second look failed ("not second-checked")
@@ -48,14 +49,15 @@ class NoteOut(BaseModel):
 
 
 class FindingOut(BaseModel):
-    title: str = Field(description="The problem in 70 characters or fewer, plain words")
+    title: str = Field(description="The problem in 70 characters or fewer, plain words (for intent: the question)")
     category: FindingCategory
     severity: Literal["major", "minor", "nit"] = Field(description="major = must fix, minor = should fix, nit = could improve")
     side: Side = Field(description="RIGHT for added or unchanged lines (new numbers), LEFT for deleted lines (old numbers)")
     anchor: str = Field(description="ONE line copied exactly from the diff (without the R/L tag and +/-): the line the comment belongs on")
     line: int = Field(description="That line's number, as shown in the diff")
     start_line: int | None = Field(default=None, description="First line, only when the comment covers several lines")
-    impact: str = Field(description="One sentence: who or what is affected, and how")
+    impact: str = Field(description="One sentence: who or what is affected, and how (for intent: the question to "
+                                    "the author, 1-3 short polite sentences)")
     fix: str = Field(description="One clear instruction: the better option, not a list of options")
     suggestion: str | None = Field(default=None, description="Drop-in replacement code for exactly the commented line(s), or null")
     why: str = Field(description="Short reasoning in Markdown, 1-4 sentences")

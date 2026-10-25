@@ -22,6 +22,17 @@ Check each step against that code:
 - The cited code supports every step: score it 8-10.
 - A step contradicts the cited code, or the spots the scenario depends on were not found: score it 1-3, unless the hunk alone shows the problem.
 
+## Questions for the author
+
+Findings in category `intent` are not bug reports. Each one asks the author why something was removed (a call, a check, a branch, a setting, a prompt rule) or why something new was added (a special case, a magic number, a new limit). Don't ask "is this a bug?". Ask two things instead:
+- **Is the change real?** The code shown really removes or adds what the title says.
+- **Is it unexplained?** The PR's title, description and commit messages (shown above the findings) and the code shown, including its comments, don't already say why.
+
+Score them like this:
+- The change is real and nothing explains it: score it 8-10.
+- The change is real, but you can't tell whether it is explained: score it 6-7.
+- The change isn't in the code shown, it is trivial (a typo, a rename, dead code), or the description, a commit message or a nearby comment already explains it: score it 1-3.
+
 ## Output
 
 For every finding, return:

@@ -503,7 +503,7 @@ class _Run:
                     + (f"; left out {dropped} that pointed outside the changed files" if dropped else ""))
         if pending:
             scores = judge.run(pending, self.diffs, self.cfg, self.worktree, self.judged.snapshot(),
-                               self.progress.update, ledger=self.progress.ledger)
+                               self.progress.update, ledger=self.progress.ledger, pr=self.ctx["pr"])
             self.judged.merge({f["id"]: scores[f["id"]] for f in pending if f["id"] in scores})
         with self.lock:
             if self.closed:

@@ -166,6 +166,25 @@ export function SeverityLabel({ severity }: { severity: Severity }) {
   return <span className={`Label Label--${SEVERITY_VARIANT[severity]}`}>{SEVERITY_TEXT[severity]}</span>;
 }
 
+/** A finding asking the author why something was removed or added (prr/findings.py INTENT). */
+export const INTENT = "intent";
+export const INTENT_TEXT = "Question for the author";
+
+/** The label a finding leads with: "Question for the author" for a question, else its severity. */
+export function FindingLabel({ severity, category }: { severity: Severity; category: string | null }) {
+  if (category === INTENT) {
+    return (
+      <span
+        className="Label Label--accent"
+        title="Claude asks the author why this was removed or added. Nothing in the PR explains it. It is a question, not a bug report."
+      >
+        {INTENT_TEXT}
+      </span>
+    );
+  }
+  return <SeverityLabel severity={severity} />;
+}
+
 // How Claude's second look ended for a finding (R3). "judge" and "carried" need no label: their score shows.
 const SECOND_LOOK: Partial<Record<SecondLook, { text: string; variant: string; title: string }>> = {
   none: { text: "not second-checked", variant: "attention", title: "Claude's second look failed for this one, so it is shown without it." },
@@ -319,8 +338,8 @@ function FindingCard({ f }: { f: Finding }) {
     <div className={`review-comment finding sev-${f.severity}${f.low_confidence ? " low" : ""}`} data-finding={f.id}>
       <div className="rc-head">
         <Avatar name="Claude" kind="claude" />
-        <SeverityLabel severity={f.severity} />
-        <span className="Label Label--secondary">{f.category}</span>
+        <FindingLabel severity={f.severity} category={f.category} />
+        {f.category !== INTENT && <span className="Label Label--secondary">{f.category}</span>}
         <DeepCheckLabel f={f} />
         <SecondLookLabel look={f.second_look} />
         {f.status === "still-open" && <span className="Label Label--attention" title="Also found in the previous review round">Still open</span>}
@@ -1162,7 +1181,7 @@ export function FileView({ path, line, side, full }: { path: string; line: numbe
             {showDismissed &&
               dismissedSuggestions.map((s) => (
                 <div key={s.id} className="dismissed-item">
-                  <SeverityLabel severity={s.severity} />
+                  <FindingLabel severity={s.severity} category={s.category} />
                   <span className="dismissed-text">{s.title}</span>
                   <AnswerLabel
                     answer={findingAnswer(s, analysis?.stops ?? [], state.stop_verdicts ?? {}, state.drafts)}
