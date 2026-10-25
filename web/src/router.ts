@@ -7,7 +7,10 @@ export type Route =
   | { view: "flow"; id: string | null }
   | { view: "impact" }
   // Guided review: #/review (resume: the first open stop, or the end screen), #/review/<stopId>, #/review/end
-  | { view: "review"; stopId: string | null; end: boolean };
+  | { view: "review"; stopId: string | null; end: boolean }
+  // Understand this PR: #/understand (the first step not understood yet, or the end screen), #/understand/<stepId>,
+  // #/understand/end
+  | { view: "understand"; stepId: string | null; end: boolean };
 
 export function parseHash(hash: string): Route {
   const raw = hash.replace(/^#\/?/, "");
@@ -36,6 +39,11 @@ export function parseHash(hash: string): Route {
       if (id === "end") return { view: "review", stopId: null, end: true };
       return { view: "review", stopId: id || null, end: false };
     }
+    case "understand": {
+      const id = rest.length ? decodeURIComponent(rest.join("/")) : "";
+      if (id === "end") return { view: "understand", stepId: null, end: true };
+      return { view: "understand", stepId: id || null, end: false };
+    }
     default:
       return { view: "overview" };
   }
@@ -55,6 +63,12 @@ export function reviewHref(stopId?: string | null): string {
   return stopId ? `#/review/${encodeURIComponent(stopId)}` : "#/review";
 }
 export const REVIEW_END = "#/review/end";
+
+/** `#/understand/<stepId>`; `#/understand` resumes at the first step not understood yet; `#/understand/end`. */
+export function understandHref(stepId?: string | null): string {
+  return stepId ? `#/understand/${encodeURIComponent(stepId)}` : "#/understand";
+}
+export const UNDERSTAND_END = "#/understand/end";
 
 export function navigate(href: string) {
   if (window.location.hash === href) {

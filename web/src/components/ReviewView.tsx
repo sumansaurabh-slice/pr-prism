@@ -3,8 +3,9 @@
 import { useEffect, useRef, useState } from "react";
 import { registerReviewNav, type ReviewNav } from "../keyboard";
 import { analysisRunning, nextOpen, useReviewCounts, useReviewModel } from "../review";
-import { REVIEW_END, fileHref, navigate, replaceRoute, reviewHref, type Route } from "../router";
+import { REVIEW_END, fileHref, navigate, replaceRoute, reviewHref, understandHref, type Route } from "../router";
 import { fmtMinutes, reviewOrder, useStore } from "../store";
+import { readMinutes, useSteps } from "../understand";
 import { ReviewEnd } from "./ReviewEnd";
 import { ReviewStop, undoLast } from "./ReviewStop";
 import { StopList } from "./StopList";
@@ -116,10 +117,12 @@ export function ReviewView({ route }: { route: ReviewRoute }) {
   );
 }
 
-/** The Overview's plan box (design D4): the size of the job, and Start review / Resume review (3 left). */
+/** The Overview's plan box (design D4): the size of the job, Understand the PR (~N min to read), and Start review /
+ * Resume review (3 left). */
 export function PlanBox() {
   const analysis = useStore((s) => s.analysis);
   const counts = useReviewCounts();
+  const steps = useSteps();
   if (!analysis) return null;
   const { places, quiet, left, minutes, started } = counts;
   let line: string;
@@ -143,12 +146,23 @@ export function PlanBox() {
       <div className="Box-row ci-line">
         <strong>{line}</strong>
         {more > 0 && counts.total > 0 && <span className="color-muted small">and {more} more past the list</span>}
-        {label && (
-          <span className="tc-head-right">
+        {(label || steps.length > 0) && (
+          <span className="tc-head-right plan-actions">
+            {steps.length > 0 && (
+              <>
+                {/* #/understand opens the first step not understood yet */}
+                <button className="btn" onClick={() => navigate(understandHref())}>
+                  Understand the PR
+                </button>
+                <span className="color-muted small">{fmtMinutes(readMinutes(steps))} to read</span>
+              </>
+            )}
             {/* #/review opens the first stop not answered yet */}
-            <button className="btn btn-primary" onClick={() => navigate(left ? reviewHref() : REVIEW_END)}>
-              {label}
-            </button>
+            {label && (
+              <button className="btn btn-primary" onClick={() => navigate(left ? reviewHref() : REVIEW_END)}>
+                {label}
+              </button>
+            )}
           </span>
         )}
       </div>

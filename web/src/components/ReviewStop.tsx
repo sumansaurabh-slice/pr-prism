@@ -13,9 +13,10 @@ import {
   KIND_TEXT, VERDICT_TEXT, analysisRunning, moreComing, nextOpen, reviewCounts, stopChip, stopDraft, stopDone,
   stopPrompt, sureText, whereText, type ReviewModel,
 } from "../review";
-import { REVIEW_END, fileHref, navigate, reviewHref } from "../router";
+import { REVIEW_END, fileHref, navigate, reviewHref, understandHref } from "../router";
 import { fmtMinutes, splitPath, useStore, type ToastAction } from "../store";
 import type { Draft, Severity, Side, Stop, Verdict } from "../types";
+import { stepForStop, useSteps } from "../understand";
 import { DraftCard, FindingLabel, INTENT, SEVERITY_TEXT, diffCache, diffKey, languageOf, refractorAdapter } from "./FileView";
 
 // ------------------------------------------------------------------ shared actions (keys, toasts, the end screen)
@@ -66,7 +67,8 @@ function answeredToast(stop: Stop, verdict: Verdict, number: number | null) {
 
 // ------------------------------------------------------------------ the code
 
-function lineOn(c: ChangeData, side: Side): number | null {
+/** The change's line number on `side` (null: the change isn't on that side). */
+export function lineOn(c: ChangeData, side: Side): number | null {
   if (isInsert(c)) return side === "RIGHT" ? c.lineNumber : null;
   if (isDelete(c)) return side === "LEFT" ? c.lineNumber : null;
   return side === "RIGHT" ? c.newLineNumber : c.oldLineNumber;
@@ -120,14 +122,11 @@ function codeFor(stop: Stop): string {
   return (patch && pickHunk(patch, stop)?.code) || "";
 }
 
-/** The hunk with the stop's lines marked, unified only. `widget` (the comment editor, or your comment) goes
- * under the stop's last line. */
-function StopHunk({ stop, widget }: { stop: Stop; widget: ReactNode }) {
-  const path = stop.path!;
+/** The file's diff (GET /api/diff), shared with Files changed through diffCache. */
+export function usePatch(path: string): { patch: string | null; error: string | null } {
   const key = diffKey(path);
   const [patch, setPatch] = useState<string | null>(diffCache.get(key) ?? null);
   const [error, setError] = useState<string | null>(null);
-  const [whole, setWhole] = useState(false);
   useEffect(() => {
     if (diffCache.has(key)) {
       setPatch(diffCache.get(key)!);
@@ -145,6 +144,15 @@ function StopHunk({ stop, widget }: { stop: Stop; widget: ReactNode }) {
       cancelled = true;
     };
   }, [path, key]);
+  return { patch, error };
+}
+
+/** The hunk with the stop's lines marked, unified only. `widget` (the comment editor, or your comment) goes
+ * under the stop's last line. */
+function StopHunk({ stop, widget }: { stop: Stop; widget: ReactNode }) {
+  const path = stop.path!;
+  const { patch, error } = usePatch(path);
+  const [whole, setWhole] = useState(false);
   const picked = useMemo(() => (patch ? pickHunk(patch, stop) : null), [patch, stop]);
   const shown = picked ? (whole ? picked.hunk : picked.short) : null;
   const tokens: HunkTokens | null = useMemo(() => {
@@ -330,6 +338,8 @@ export function ReviewStop({
   const verdict = state.stop_verdicts[stop.id] ?? null;
   const draft = stopDraft(stop, state.drafts);
   const headingRef = useRef<HTMLHeadingElement>(null);
+  const steps = useSteps();
+  const how = stepForStop(steps, stop); // "How this code works (step 4)": the Understand step that holds its line
   const [editing, setEditing] = useState<{ draft: Draft | null } | null>(null);
   const [changing, setChanging] = useState(false);
   const [ciAdded, setCiAdded] = useState(false);
@@ -607,6 +617,11 @@ export function ReviewStop({
           <button className="btn-link small" onClick={chat}>
             Ask in chat (c)
           </button>
+          {how && (
+            <a className="small" href={understandHref(how.step.id)}>
+              How this code works (step {how.number})
+            </a>
+          )}
         </div>
       </header>
 

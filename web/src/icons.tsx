@@ -148,6 +148,13 @@ export const IconChecklist = (p: IconProps) => (
   </Svg>
 );
 
+/** Understand this PR: an open book. */
+export const IconBook = (p: IconProps) => (
+  <Svg {...p}>
+    <path d="M8 3.75C6.6 2.85 4.6 2.25 1.75 2.25v10c2.85 0 4.85.6 6.25 1.5 1.4-.9 3.4-1.5 6.25-1.5v-10c-2.85 0-4.85.6-6.25 1.5zM8 3.75v10" />
+  </Svg>
+);
+
 /** Real problem. */
 export const IconAlert = (p: IconProps) => (
   <Svg {...p}>

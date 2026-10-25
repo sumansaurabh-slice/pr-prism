@@ -2833,6 +2833,111 @@ tr.line-flash > td,
   bottom: 96px;
 }
 
+/* ------------------------------------------------------------------ Understand this PR (the Understand view)
+   The Review view's layout, list rows, action bar and rails; new here: the chapter headings in the list, the step's
+   sections, the terms, the level switch and the ▶ on the lines to look at. */
+.plan-actions {
+  flex-wrap: wrap;
+  gap: 8px;
+}
+.und-chapter + .und-chapter {
+  margin-top: 6px;
+  padding-top: 6px;
+  border-top: 1px solid var(--border-muted);
+}
+.und-chapter-title {
+  margin: 0;
+  padding: 6px 8px 4px;
+  font-size: 12px;
+  font-weight: 600;
+  color: var(--text-muted);
+}
+.und-role {
+  display: block;
+  overflow: hidden;
+  font-size: 12px;
+  color: var(--text-muted);
+  white-space: nowrap;
+  text-overflow: ellipsis;
+}
+.und-title {
+  font-family: var(--mono);
+  font-size: 16px;
+  overflow-wrap: anywhere;
+}
+.und-role-line {
+  margin: 4px 0 0;
+}
+.und-goal {
+  margin: 8px 0 0;
+}
+.und-section-title {
+  margin: 0 0 4px;
+  font-size: 14px;
+  font-weight: 600;
+}
+.und-section .md {
+  font-size: 14px;
+}
+.und-section > p {
+  margin: 0;
+}
+.und-source {
+  margin: 4px 0 0;
+}
+.und-list {
+  margin: 0;
+  padding-left: 1.2em;
+  font-size: 14px;
+}
+.und-list li + li {
+  margin-top: 4px;
+}
+.und-terms {
+  display: grid;
+  gap: 6px;
+  margin: 0;
+  font-size: 14px;
+}
+.und-terms dt {
+  display: inline;
+  font-weight: 600;
+}
+.und-terms dt::after {
+  content: ": ";
+}
+.und-terms dd {
+  display: inline;
+  margin: 0;
+}
+.und-meta {
+  margin: 0;
+  font-size: 13px;
+  color: var(--text-muted);
+}
+/* the background level: two joined buttons; the chosen one is pressed and has a ✓ */
+.und-level {
+  display: inline-flex;
+}
+.und-level .btn {
+  gap: 4px;
+}
+.und-level .btn:first-child {
+  border-top-right-radius: 0;
+  border-bottom-right-radius: 0;
+}
+.und-level .btn:last-child {
+  margin-left: -1px;
+  border-top-left-radius: 0;
+  border-bottom-left-radius: 0;
+}
+.look-mark {
+  float: left;
+  margin-left: -6px;
+  font-size: 10px;
+  color: var(--attention);
+}
+
 /* ------------------------------------------------------------------ smaller screens */
 @media (max-width: 1280px) {
   .layout {
