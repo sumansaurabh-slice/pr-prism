@@ -18,7 +18,7 @@ from prr.claude import ClaudeError, run_structured
 from prr.config import Config
 from prr.ledger import Ledger
 from prr.state import STATE_VERSION, StateStore
-from prr.util import read_json, write_json
+from prr.util import read_json, write_json, session_cookie
 from tests.test_merge import make_pr_dir
 
 ROOT = Path(__file__).resolve().parents[1]
@@ -131,7 +131,7 @@ def app_dir(tmp_path, tricky_repo):
 
 def client_for(pr_dir: Path, cfg: Config | None = None) -> TestClient:
     c = TestClient(server.Guard(server.create_app(pr_dir, cfg or Config()), TOKEN, PORT), base_url=f"http://127.0.0.1:{PORT}")
-    c.cookies.set("prr_session", TOKEN)
+    c.cookies.set(session_cookie(PORT), TOKEN)
     return c
 
 
