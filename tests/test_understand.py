@@ -415,7 +415,7 @@ def test_two_requests_for_the_same_step_and_level_make_one_call(pr):
     threads = [threading.Thread(target=lambda: results.append(explain(pr, sid).json())) for _ in range(2)]
     for t in threads:
         t.start()
-    wait_for(lambda: len(pr.fake.calls) == 1)
+    wait_for(lambda: len(pr.fake.calls) >= 1)
     time.sleep(0.3)                                  # the second request is waiting for the first, not calling
     assert len(pr.fake.calls) == 1
     pr.fake.gate.set()

@@ -21,14 +21,18 @@ You are inside a copy of the PR's new code. File paths are relative to the curre
 
 ## What to write
 
-- `before`: what this code did before the PR, in at most 3 sentences. Name the repo idea the reader needs to follow it, such as what a main name stands for and the job this code does. For a new file, say what it adds and where that job was done before, if you can tell.
-- `change`: what behaves differently after the PR, in at most 3 sentences. Compare before and after in plain words, with an example value when it helps. Don't retell the diff line by line.
+Keep to the limits below: the reader reads many steps. Put background words in `terms`, not in more sentences.
+
+- `before`: what this code did before the PR, in at most 3 sentences and about 50 words. Name the repo idea the reader needs to follow it, such as what a main name stands for and the job this code does. For a new file, say what it adds and where that job was done before, if you can tell.
+- `change`: what behaves differently after the PR, in at most 3 sentences and about 50 words. Compare before and after in plain words, with an example value when it helps. Say what the reader would notice, not each step the code takes. Don't retell the diff line by line. The diff is shown right under your text.
 - `why`: why the PR makes this change, in 1 or 2 sentences, from what the PR says (rule 2). Null when nothing says.
 - `why_source`: where `why` comes from (rule 3). Null when `why` is null.
 - `why_missing`: true when nothing in the PR says why; false when `why` is set.
 - `connects`: at most 4 places that call this code or read what it returns or writes. Each has the file's `path`, the `line`, and `text`: one short sentence on how it connects. Use only places you read. An empty list is fine.
 - `terms`: at most 4 repo or domain words the reader needs, each with its `term` and a one-sentence `meaning` in plain words. Follow "The reader" above.
 - `look_at`: the 1 to 3 lines in the diff below that matter most to see the change. Each is a `side` and a `line`, read from the diff's line tags: `R12` is side RIGHT, line 12; `L9` is side LEFT, line 9.
+
+Before you answer, count the sentences in `before` and in `change`. If either has more than 3, drop the least important ones. A short text that keeps the main point is better than a full one.
 
 ## How the diff is shown
 

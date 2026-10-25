@@ -77,7 +77,7 @@ _KIND_TEXT = {
 LEVEL_TEXT = {
     "new": ("The reader is new to this area of the repo. Explain the repo's ideas this code relies on: what its main "
             "names stand for, and the job this code does for the rest of the app. Fill `terms` with up to 4 words "
-            "they need."),
+            "they need there, so `before` and `change` still stay within 3 sentences each."),
     "familiar": ("The reader knows this area of the repo. Skip background and be brief: one or two short sentences "
                  "for `before` and for `change`. Leave `terms` empty."),
 }
