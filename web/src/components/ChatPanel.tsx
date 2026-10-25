@@ -3,7 +3,7 @@ import { api, streamChat } from "../api";
 import { atLeast, threadSoFar, threadTotalText, usd, type SoFar } from "../cost";
 import { Avatar, IconSparkle, IconX } from "../icons";
 import { Markdown } from "../markdown";
-import { goFile, useRoute } from "../router";
+import { goFile, navigate, reviewHref, useRoute } from "../router";
 import { chipLabel, fileByPath, splitPath, useStore } from "../store";
 import type { ApprovalDecision, ChatEvent, ChatMessage, ChatThread, ContextChip, ToolEvent } from "../types";
 import { announceText, ApprovalCard, ApprovalRecords, toRecord, type LiveApproval } from "./ApprovalCard";
@@ -46,8 +46,8 @@ function ChipView({ chip, auto, onRemove }: { chip: ContextChip; auto?: boolean;
     <span className={`chip${auto ? " chip-auto" : ""}`} title={`${chip.path}${chip.start ? `:${chip.start}-${chip.end}` : " (whole file)"}`}>
       <button
         className="chip-label"
-        onClick={() => goFile(chip.path, chip.start || null, chip.side)}
-        title="Open this code"
+        onClick={() => (chip.stop_id ? navigate(reviewHref(chip.stop_id)) : goFile(chip.path, chip.start || null, chip.side))}
+        title={chip.stop_id ? "Go back to this stop in the Review" : "Open this code"}
       >
         {auto && <span className="chip-auto-tag">file</span>}
         {chip.label || chipLabel(chip)}

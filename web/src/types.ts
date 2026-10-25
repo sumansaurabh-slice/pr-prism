@@ -193,7 +193,10 @@ export interface RestoredSummary {
   message: string;     // the banner text, from prr/archive.py message(); added by GET /api/state
 }
 
-export interface ContextChip { path: string; side: Side; start: number; end: number; text: string; label: string }
+export interface ContextChip {
+  path: string; side: Side; start: number; end: number; text: string; label: string;
+  stop_id?: string;  // a guided-review stop ("Ask in chat"): clicking the chip goes back to #/review/<id>
+}
 export interface ToolEvent { name: string; summary: string }
 
 export interface ChatMessage {
