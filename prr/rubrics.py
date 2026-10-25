@@ -1,11 +1,12 @@
-"""Which review checklists apply to a batch of files, and the repo's own conventions.
+"""Which review checklists apply to a batch of files, and the repo's own conventions and shared checklist.
 
-The repo's CLAUDE.md / AGENTS.md is read from the merge-base, not from the PR: a PR must not be able to
-change the rules it is reviewed against.
+The repo's CLAUDE.md / AGENTS.md and .pr-prism/guidelines.md are read from the merge-base, not from the PR: a PR
+must not be able to change the rules it is reviewed against.
 """
 
 from __future__ import annotations
 
+import functools
 import posixpath
 import re
 from pathlib import Path
@@ -15,6 +16,7 @@ from .gitgh import git
 
 RUBRICS_DIR = PROMPTS_DIR / "rubrics"
 MAX_CONVENTIONS = 20_000
+TEAM_CHECKLIST = ".pr-prism/guidelines.md"  # optional, in the reviewed repo: the team's shared review checklist
 
 _BY_EXT = {
     ".py": "python", ".go": "go", ".java": "java", ".kt": "java", ".kts": "java", ".scala": "java", ".groovy": "java",
@@ -71,3 +73,14 @@ def repo_conventions(repo_root: Path, merge_base: str) -> str:
     if len(text) > MAX_CONVENTIONS:
         text = text[:MAX_CONVENTIONS] + "\n…[cut]"
     return text.strip()
+
+
+@functools.lru_cache(maxsize=16)
+def team_checklist(repo_root: str, merge_base: str) -> str:
+    """The reviewed repo's shared checklist (.pr-prism/guidelines.md) at the merge-base, without HTML comments.
+    Empty when the repo has none. Cached: every batch of a review asks for the same commit."""
+    text = git("show", f"{merge_base}:{TEAM_CHECKLIST}", cwd=Path(repo_root), check=False)
+    text = re.sub(r"<!--.*?-->", "", text, flags=re.S).strip()
+    if len(text) > MAX_CONVENTIONS:
+        text = text[:MAX_CONVENTIONS] + "\n…[cut]"
+    return text
