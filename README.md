@@ -323,13 +323,24 @@ Every comment you post, from Submit review or from the chat, is saved as a label
 prr labels import 101 102 103                  # your comments already on past PRs (only reads GitHub)
 prr labels import 104 105 --split holdout      # PRs kept out of prompt work; the Wave 2 gate is measured on them
 prr labels import 106 --reviewers all          # every human reviewer's comments, not only yours (never bots)
+prr labels import 102 103 --split holdout2 --written-by human   # reviewed before PR Prism existed: all yours
+prr labels tag                                 # fill in who wrote the labels saved before that was recorded
+prr labels tag --prs 101 --written-by human    # re-tag a PR's labels: you wrote these comments
+prr labels tag --prs 105 --split holdout2      # move a PR to another split
 prr eval                                       # shows the estimated cost and asks before it starts
 prr eval --prs 101 104 --runs 1 --max-usd 10 --yes
+prr eval --split holdout2                      # only that split's PRs
 ```
 
+- **Who wrote each label** (`written_by`: `human`, `tool` or `unknown`). A comment PR Prism wrote and you only clicked through is one the analysis "finds" by itself, so eval also reports recall on your own comments alone.
+  - Posted from the app or the chat: `human` when you typed it. A finding's ready-made comment or the chat's text is `tool`, unless you typed more than 30% of the posted words (the words that don't line up, in order, with the text PR Prism generated; cutting text out doesn't count). A "Real problem" answer on a finding or risk note is `tool`.
+  - Imported: `tool` when the comment is in PR Prism's finding format (a bold title line, then an italic "Must fix · category" line), else `unknown`; the writing style is never taken as proof. `--written-by` sets it for every comment imported.
+  - `prr labels tag` re-tags saved labels by appending a copy of each one: `--written-by` and `--split` need `--prs`; with neither, it fills in who wrote the labels saved before this was recorded. What you set wins over what the app knew, which wins over a guess from the format.
+- **Splits:** `train` is the default; any other name (`holdout`, `holdout2`, …) is a set of PRs kept out of prompt work and reported on its own. A PR is in one split as a whole.
 - Each labelled PR commit is analyzed 3 times (`--runs`) in a temporary folder under `~/.cache/pr-prism/_eval/`, removed at the end unless `--keep`. A commit that can't be fetched any more (force-pushed away) is skipped and listed.
-- The report shows four views: deep check off or on, and a 50% confidence floor on or off ("deep check off, floor on" is the old behavior). For each: how many of your problems were found, found but hidden by the second look, findings you said aren't problems, findings no label covers (listed, not counted as wrong), cost and time, as the mean and the min-max of the runs.
-- On held-out PRs it checks the Wave 2 gate: deep check on finds 25+ points more than off, at least 40% overall, adds at most $6 per PR, and shows at most 10 unlabelled findings per PR.
+- The report shows four views: deep check off or on, and a 50% confidence floor on or off ("deep check off, floor on" is the old behavior). For each: how many of your problems were found (overall, and of the human-written ones), found but hidden by the second look, findings you said aren't problems, findings no label covers (listed, not counted as wrong), cost and time, as the mean and the min-max of the runs.
+- For each problem a run missed with the deep check on, the report says whether its file was inside an area the deep check checked (`in_deepcheck_area`; null when the deep check didn't run) and names those areas. The summary prints "missed: N (M were inside a deep-check area)": a miss inside an area is one the deep check looked at and still missed.
+- On every split except `train` it checks the Wave 2 gate, named by its split: deep check on finds 25+ points more than off, at least 40% overall, adds at most $6 per PR, and shows at most 10 unlabelled findings per PR. Human-only recall is shown next to the two recall bars; the gate is judged on all labels.
 - It costs real money: about the price of one full analysis per PR commit per run (the estimate uses each PR's most expensive earlier analysis). `--max-usd` starts no new run once that much is spent, and Ctrl-C stops the run in progress at once and still saves the report so far. The report is saved as `eval-<date>.json` next to `labels.jsonl`.
 - A PR that changes a prompt should include before and after `prr eval` numbers.
 
