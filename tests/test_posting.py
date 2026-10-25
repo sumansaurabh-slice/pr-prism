@@ -13,6 +13,7 @@ from prr import chat_tools, drafts, github, server
 from prr.config import Config
 from prr.server import Guard, create_app
 from prr.state import StateStore
+from prr.util import session_cookie
 from tests.test_merge import make_pr_dir
 
 PORT = 40124
@@ -29,7 +30,7 @@ def app(tmp_path, tricky_repo, monkeypatch):
     make_pr_dir(tmp_path, tricky_repo["diff"])
     (tmp_path / "diff.patch").write_text(tricky_repo["diff"])
     client = TestClient(Guard(create_app(tmp_path, Config()), TOKEN, PORT), base_url=f"http://127.0.0.1:{PORT}")
-    client.cookies.set("prr_session", TOKEN)
+    client.cookies.set(session_cookie(PORT), TOKEN)
     sent: list[dict] = []
     real_submit = github.submit
 

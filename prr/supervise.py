@@ -23,7 +23,7 @@ import urllib.request
 import zlib
 from pathlib import Path
 
-from .util import now_iso, read_json, write_json
+from .util import now_iso, read_json, session_cookie, write_json
 
 PORT_BASE, PORT_SPAN = 47100, 800  # each PR gets a preferred port from its name, in 47100-47899
 MAX_BACKOFF_S = 30
@@ -112,7 +112,7 @@ def healthy(pr_dir: Path, timeout: float = 2) -> bool:
     if not info or not alive:
         return False
     req = urllib.request.Request(f"http://127.0.0.1:{info['port']}/api/health",
-                                 headers={"Cookie": f"prr_session={info['token']}"})
+                                 headers={"Cookie": f"{session_cookie(info['port'])}={info['token']}"})
     try:
         with urllib.request.urlopen(req, timeout=timeout) as resp:
             return resp.status == 200

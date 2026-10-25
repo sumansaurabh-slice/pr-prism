@@ -15,7 +15,7 @@ from prr.config import Config
 from prr.gitgh import CommandError, PRRef
 from prr.server import Guard, create_app
 from prr.state import StateStore
-from prr.util import write_json
+from prr.util import write_json, session_cookie
 from tests.conftest import _git
 from tests.test_merge import make_pr_dir
 
@@ -282,7 +282,7 @@ def pr(tmp_path, tricky_repo, monkeypatch):
     make_pr_dir(pr_dir, tricky_repo["diff"])
     (pr_dir / "diff.patch").write_text(tricky_repo["diff"])
     client = TestClient(Guard(create_app(pr_dir, Config()), TOKEN, PORT), base_url=f"http://127.0.0.1:{PORT}")
-    client.cookies.set("prr_session", TOKEN)
+    client.cookies.set(session_cookie(PORT), TOKEN)
     return SimpleNamespace(client=client, dir=pr_dir, repo=tmp_path / "o__r", cfg=Config())
 
 

@@ -14,7 +14,7 @@ import pytest
 from prr import archive, cli, fetch, gitgh
 from prr.config import SKILL_DIR, Config
 from prr.state import STATE_VERSION, StateStore, empty_state
-from prr.util import read_json, write_json
+from prr.util import read_json, write_json, session_cookie
 from tests.conftest import _git
 
 
@@ -447,7 +447,7 @@ def app_client(tmp_path, tricky_repo):
                 "chats": 0, "pending_comments": 2, "need_replacing": 1, "viewed_marks": 0}
     write_json(tmp_path / "state.json", {**empty_state(), "drafts": restored_drafts(), "restored": restored})
     client = TestClient(Guard(create_app(tmp_path, Config()), TOKEN, PORT), base_url=f"http://127.0.0.1:{PORT}")
-    client.cookies.set("prr_session", TOKEN)
+    client.cookies.set(session_cookie(PORT), TOKEN)
     return client
 
 
@@ -496,7 +496,7 @@ def test_an_unreadable_archive_date_still_gets_a_banner(tmp_path, tricky_repo):
     restored = {"archived_at": "yesterday", "chats": 3, "pending_comments": 0, "need_replacing": 0, "viewed_marks": 12}
     write_json(tmp_path / "state.json", {**empty_state(), "restored": restored})
     client = TestClient(Guard(create_app(tmp_path, Config()), TOKEN, PORT), base_url=f"http://127.0.0.1:{PORT}")
-    client.cookies.set("prr_session", TOKEN)
+    client.cookies.set(session_cookie(PORT), TOKEN)
     assert client.get("/api/state").json()["restored"]["message"] == "Restored your work: 3 chats, 12 viewed marks."
 
 

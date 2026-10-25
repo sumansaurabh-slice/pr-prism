@@ -10,7 +10,7 @@ from prr import diffparse, github, labels, merge, server, stops
 from prr.config import Config
 from prr.server import BEING_POSTED, STOP_CHANGED, Guard, create_app
 from prr.state import StateStore
-from prr.util import write_json
+from prr.util import write_json, session_cookie
 from tests.test_merge import make_pr_dir
 
 # ---- small analyses for the pure function --------------------------------------------------------
@@ -369,7 +369,7 @@ def pr(tmp_path, tricky_repo, monkeypatch):
     pr_dir.mkdir(parents=True)
     write_pr(pr_dir, tricky_repo["diff"], bots=BOTS, ci=CI)
     client = TestClient(Guard(create_app(pr_dir, Config()), TOKEN, PORT), base_url=f"http://127.0.0.1:{PORT}")
-    client.cookies.set("prr_session", TOKEN)
+    client.cookies.set(session_cookie(PORT), TOKEN)
     return SimpleNamespace(client=client, dir=pr_dir, repo=tmp_path / "o__r", diff=tricky_repo["diff"])
 
 
@@ -587,7 +587,7 @@ def test_the_server_uses_its_cap_and_pins_answers_past_it(pr):
     cfg = Config()
     cfg.review.max_stops = 1
     client = TestClient(Guard(create_app(pr.dir, cfg), TOKEN, PORT), base_url=f"http://127.0.0.1:{PORT}")
-    client.cookies.set("prr_session", TOKEN)
+    client.cookies.set(session_cookie(PORT), TOKEN)
     a = client.get("/api/analysis").json()
     assert a["review_summary"]["places"] == 1 and a["review_summary"]["more_places"] == 4
     look = next(s for s in a["stops"] if s["kind"] == "look_for")

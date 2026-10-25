@@ -10,7 +10,7 @@
 ## Auth
 
 The browser opens `http://127.0.0.1:<port>/?t=<token>`. The server then:
-1. sets the `prr_session` cookie (`HttpOnly; SameSite=Strict`);
+1. sets the `prr_session_<port>` cookie (`HttpOnly; SameSite=Strict`). The name includes the port because browsers keep cookies per host, not per port: each PR's server has its own, so opening a second PR never logs the first one's tab out;
 2. redirects to `/`.
 
 **Every request is checked:**

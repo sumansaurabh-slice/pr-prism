@@ -37,9 +37,8 @@ from .config import PROMPTS_DIR, WEB_DIST, Config
 from .gitgh import CommandError, git, viewer_login
 from .ledger import Ledger
 from .state import StateStore
-from .util import now_iso, read_json, write_text
+from .util import now_iso, read_json, session_cookie, write_text
 
-COOKIE = "prr_session"
 CSP = ("default-src 'self'; script-src 'self'; style-src 'self' 'unsafe-inline'; img-src 'self' data:; "
        "connect-src 'self'; font-src 'self' data:; frame-ancestors 'none'; base-uri 'none'; form-action 'self'")
 MAX_FILE_BYTES = 2_000_000
@@ -52,7 +51,7 @@ class Guard:
     """Pure-ASGI auth + security headers (pure ASGI so streamed chat responses aren't buffered)."""
 
     def __init__(self, app: Any, token: str, port: int):
-        self.app, self.token = app, token
+        self.app, self.token, self.cookie = app, token, session_cookie(port)
         self.hosts = {f"127.0.0.1:{port}", f"localhost:{port}"}
         self.origins = {f"http://{h}" for h in self.hosts}
 
@@ -71,11 +70,11 @@ class Guard:
             return await self._reply(send, 403, "Forbidden: cross-origin request")
         jar = SimpleCookie()
         jar.load(headers.get("cookie", ""))
-        cookie = jar[COOKIE].value if COOKIE in jar else ""
+        cookie = jar[self.cookie].value if self.cookie in jar else ""
         if scope["path"] == "/" and scope["method"] == "GET":
             t = parse_qs(scope.get("query_string", b"").decode()).get("t", [""])[0]
             if t and hmac.compare_digest(t, self.token):
-                cookie_hdr = f"{COOKIE}={self.token}; HttpOnly; SameSite=Strict; Path=/"
+                cookie_hdr = f"{self.cookie}={self.token}; HttpOnly; SameSite=Strict; Path=/"
                 return await self._reply(send, 303, "", [(b"location", b"/"), (b"set-cookie", cookie_hdr.encode())])
         if not hmac.compare_digest(cookie, self.token):
             return await self._reply(send, 401, "Unauthorized: open the link printed by /pr-prism (prr serve).")

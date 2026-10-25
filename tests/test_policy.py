@@ -11,6 +11,7 @@ import pytest
 
 from prr import chat_tools, policy
 from prr.util import write_json
+from prr.util import session_cookie
 
 LOOKUP = "mcp__claude_ai_Atlassian__getJiraIssue"
 SLACK_SEND = "mcp__claude_ai_Slack__slack_send_message"
@@ -506,7 +507,7 @@ def test_the_saved_answer_keeps_one_line_per_card(pr, monkeypatch, tricky_repo):
 
     monkeypatch.setattr(server, "stream_chat", fake_stream)
     client = TestClient(server.Guard(app, "tok", 40123), base_url="http://127.0.0.1:40123")
-    client.cookies.set("prr_session", "tok")
+    client.cookies.set(session_cookie(40123), "tok")
     h = {"origin": "http://127.0.0.1:40123"}
     tid = client.post("/api/chat/threads", json={}, headers=h).json()["id"]
     stream = client.post(f"/api/chat/threads/{tid}/messages", json={"text": "hi"}, headers=h).text
@@ -543,7 +544,7 @@ def test_a_new_turn_starts_unmarked(pr, monkeypatch, tricky_repo):
     monkeypatch.setattr(server, "stream_chat", fake_stream)
     app = server.create_app(pr, Config())
     client = TestClient(server.Guard(app, "tok", 40123), base_url="http://127.0.0.1:40123")
-    client.cookies.set("prr_session", "tok")
+    client.cookies.set(session_cookie(40123), "tok")
     h = {"origin": "http://127.0.0.1:40123"}
     tid = client.post("/api/chat/threads", json={}, headers=h).json()["id"]
     app.state.marks[tid] = [{"kind": "lookup", "text": "Jira ABC-1"}]

@@ -3,6 +3,7 @@ from fastapi.testclient import TestClient
 
 from prr.config import Config
 from prr.server import Guard, create_app
+from prr.util import session_cookie
 from tests.test_merge import make_pr_dir
 
 PORT = 40123
@@ -28,17 +29,36 @@ def test_token_login_sets_cookie_and_redirects(client):
     assert client.get("/api/health").json()["ok"] is True
 
 
+def test_two_open_prs_keep_their_own_login(tmp_path, tricky_repo):
+    """Browsers keep cookies per host, not per port: logging in to a second PR's server must not log the first out."""
+    apps = {}
+    for port, token in ((40123, "token-a"), (40124, "token-b")):
+        d = tmp_path / str(port)
+        make_pr_dir(d, tricky_repo["diff"])
+        apps[port] = (Guard(create_app(d, Config()), token, port), token)
+    one_browser = {}                                          # 127.0.0.1's cookie jar, shared by both tabs
+    for port, (app, token) in apps.items():
+        login = TestClient(app, base_url=f"http://127.0.0.1:{port}").get(f"/?t={token}", follow_redirects=False)
+        name, value = login.headers["set-cookie"].split(";")[0].split("=", 1)
+        assert name == session_cookie(port)
+        one_browser[name] = value
+    for port, (app, _) in apps.items():                       # both tabs send every 127.0.0.1 cookie
+        tab = TestClient(app, base_url=f"http://127.0.0.1:{port}")
+        header = "; ".join(f"{k}={v}" for k, v in one_browser.items())
+        assert tab.get("/api/health", headers={"cookie": header}).status_code == 200
+
+
 def test_wrong_token_rejected(client):
     assert client.get("/?t=nope", follow_redirects=False).status_code == 401
 
 
 def test_bad_host_rejected(client):
-    client.cookies.set("prr_session", TOKEN)
+    client.cookies.set(session_cookie(PORT), TOKEN)
     assert client.get("/api/health", headers={"host": "evil.example:80"}).status_code == 403
 
 
 def test_post_needs_same_origin(client):
-    client.cookies.set("prr_session", TOKEN)
+    client.cookies.set(session_cookie(PORT), TOKEN)
     body = {"path": "src/core.py", "reviewed": True}
     assert client.put("/api/reviewed", json=body).status_code == 403
     assert client.put("/api/reviewed", json=body, headers={"origin": "http://evil.example"}).status_code == 403
@@ -47,7 +67,7 @@ def test_post_needs_same_origin(client):
 
 
 def test_security_headers_and_diff(client):
-    client.cookies.set("prr_session", TOKEN)
+    client.cookies.set(session_cookie(PORT), TOKEN)
     r = client.get("/api/diff", params={"path": "src/core.py"})
     assert r.status_code == 200 and r.json()["patch"].startswith("diff --git a/src/core.py")
     assert "default-src 'self'" in r.headers["content-security-policy"]
@@ -55,7 +75,7 @@ def test_security_headers_and_diff(client):
 
 
 def test_drafts_anchor_validation(client):
-    client.cookies.set("prr_session", TOKEN)
+    client.cookies.set(session_cookie(PORT), TOKEN)
     h = {"origin": f"http://127.0.0.1:{PORT}"}
     ok = client.post("/api/drafts", json={"path": "src/core.py", "side": "RIGHT", "line": 22, "start_line": 21, "body": "x"}, headers=h).json()
     out = client.post("/api/drafts", json={"path": "src/core.py", "side": "RIGHT", "line": 15, "body": "y"}, headers=h).json()
@@ -65,7 +85,7 @@ def test_drafts_anchor_validation(client):
 
 
 def test_multi_line_drafts(client):
-    client.cookies.set("prr_session", TOKEN)
+    client.cookies.set(session_cookie(PORT), TOKEN)
     h = {"origin": f"http://127.0.0.1:{PORT}"}
     same = client.post("/api/drafts", json={"path": "src/core.py", "side": "RIGHT", "line": 8, "start_line": 6, "body": "range"}, headers=h).json()
     assert (same["start_line"], same["line"], same["start_side"], same["anchored"]) == (6, 8, None, True)
@@ -77,7 +97,7 @@ def test_multi_line_drafts(client):
 
 
 def test_approval_request_without_an_open_chat_is_denied(client):
-    client.cookies.set("prr_session", TOKEN)
+    client.cookies.set(session_cookie(PORT), TOKEN)
     h = {"origin": f"http://127.0.0.1:{PORT}"}
     r = client.post("/api/internal/approvals", json={"thread_id": "nope", "tool_name": "Bash", "input": {"command": "ls"}}, headers=h)
     assert r.status_code == 200 and r.json()["decision"] == "deny"

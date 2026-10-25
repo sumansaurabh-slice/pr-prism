@@ -13,7 +13,7 @@ from prr.config import Config
 from prr.fetch import DIFF_ARGS
 from prr.gitgh import PRRef
 from prr.state import StateStore
-from prr.util import read_json, write_json
+from prr.util import read_json, write_json, session_cookie
 from tests.conftest import _git
 from tests.test_cost import FakeClaude
 from tests.test_merge import make_pr_dir
@@ -321,7 +321,7 @@ def app(pushed, monkeypatch):
     monkeypatch.setattr(github, "current_head", lambda owner, repo, number: pushed.head)
     client = TestClient(server.Guard(server.create_app(pushed.pr_dir, Config()), TOKEN, PORT),
                         base_url=f"http://127.0.0.1:{PORT}")
-    client.cookies.set("prr_session", TOKEN)
+    client.cookies.set(session_cookie(PORT), TOKEN)
     return SimpleNamespace(client=client, p=pushed)
 
 
@@ -479,7 +479,7 @@ def posting(tmp_path, tricky_repo, monkeypatch):
                         lambda d, **kw: {**real_build(d, **kw), "stops": [{"id": "stop-a"}, {"id": "stop-b"}]})
     client = TestClient(server.Guard(server.create_app(pr_dir, Config()), TOKEN, PORT),
                         base_url=f"http://127.0.0.1:{PORT}")
-    client.cookies.set("prr_session", TOKEN)
+    client.cookies.set(session_cookie(PORT), TOKEN)
     return SimpleNamespace(client=client, pr_dir=pr_dir, ctx=ctx, root=tricky_repo["root"], head=tricky_repo["head"],
                            base=tricky_repo["base"])
 

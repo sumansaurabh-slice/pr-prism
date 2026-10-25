@@ -20,7 +20,7 @@ from prr import archive, diffparse, ledger, understand
 from prr.config import Config
 from prr.server import Guard, create_app
 from prr.state import StateStore, empty_state
-from prr.util import read_json, write_json
+from prr.util import read_json, write_json, session_cookie
 from tests.test_stops import write_pr
 
 # --------------------------------------------------------------------------------------
@@ -238,7 +238,7 @@ def pr(tmp_path, tricky_repo, monkeypatch):
          "outside_refs": [{"path": "billing/invoice.py", "line": 42, "text": "total += late_fee(loan)"}]}]})
     fake = FakeClaude(monkeypatch)
     client = TestClient(Guard(create_app(pr_dir, Config()), TOKEN, PORT), base_url=f"http://127.0.0.1:{PORT}")
-    client.cookies.set("prr_session", TOKEN)
+    client.cookies.set(session_cookie(PORT), TOKEN)
     return SimpleNamespace(client=client, dir=pr_dir, ctx=ctx, fake=fake, repo=tricky_repo)
 
 

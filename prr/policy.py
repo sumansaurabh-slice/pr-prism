@@ -42,6 +42,7 @@ from pathlib import Path
 from typing import Any
 
 from . import ledger, shellsafe
+from .util import session_cookie
 
 PACKAGE_ROOT = str(Path(__file__).resolve().parent.parent)  # the folder holding this copy of the prr package
 READ_TOOLS = ("Read", "Grep", "Glob", "LS", "NotebookRead")
@@ -289,7 +290,7 @@ def _server(pr_dir: Path, method: str, path: str, body: dict | None = None, time
     if not info.get("port"):
         return None
     base = f"http://127.0.0.1:{info['port']}"
-    headers = {"Cookie": f"prr_session={info.get('token', '')}", "Origin": base}
+    headers = {"Cookie": f"{session_cookie(info['port'])}={info.get('token', '')}", "Origin": base}
     data = None
     if body is not None:
         data, headers["Content-Type"] = json.dumps(body).encode(), "application/json"
@@ -323,7 +324,8 @@ def _ask_reviewer(pr_dir: Path, tool: str, inp: dict, *, reason: dict | None = N
     tid = os.environ.get("PRR_THREAD_ID", "") if thread_id is None else thread_id
     data = json.dumps({"thread_id": tid, "tool_name": tool, "input": inp, "reason": reason, "cwd": cwd}).encode()
     req = urllib.request.Request(f"{base}/api/internal/approvals", data=data, method="POST", headers={
-        "Content-Type": "application/json", "Cookie": f"prr_session={info.get('token', '')}", "Origin": base})
+        "Content-Type": "application/json", "Cookie": f"{session_cookie(info['port'])}={info.get('token', '')}",
+        "Origin": base})
     try:
         with urllib.request.urlopen(req, timeout=APPROVAL_WAIT_S + 30) as resp:
             return json.loads(resp.read())

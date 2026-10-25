@@ -40,3 +40,9 @@ def write_text(path: Path, text: str) -> None:
     with os.fdopen(fd, "wb") as fh:
         fh.write(text.encode("utf-8", errors="replace"))
     os.replace(tmp, path)
+
+
+def session_cookie(port: int | str) -> str:
+    """The review server's session cookie name. Browsers keep cookies per host, not per port, so every PR's server
+    (one per port on 127.0.0.1) needs its own name, or opening a second PR logs the first one's tab out."""
+    return f"prr_session_{port}"
