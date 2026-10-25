@@ -1,4 +1,4 @@
-"""`prr` command line: doctor | fetch | serve | analyze | status | stop | clean.
+"""`prr` command line: doctor | fetch | serve | analyze | status | stop | clean | labels import | eval.
 
 Logs go to stderr; the machine-readable result of each command goes to stdout.
 """
@@ -294,6 +294,32 @@ def cmd_clean(args: argparse.Namespace, cfg: Config) -> int:
     return 1 if failed else 0
 
 
+def cmd_labels(args: argparse.Namespace, cfg: Config) -> int:
+    """`prr labels import <pr…>`: the review comments already on past PRs become eval labels. Only reads GitHub."""
+    from . import labels
+    from .gitgh import viewer_login
+
+    root = repo_root(args.repo or ".")
+    viewer = viewer_login() if args.reviewers == "me" else None
+    rows, failed = [], False
+    for arg in args.prs:
+        try:
+            ref = parse_pr_arg(arg, root)
+            row = labels.import_comments(ref, root, labels.repo_dir(cfg.cache_dir, ref.owner, ref.repo),
+                                         reviewers=args.reviewers, viewer=viewer, split=args.split)
+        except (CommandError, ValueError, OSError, TimeoutError) as e:
+            _err(f"PR {arg}: not imported: {e}")
+            failed = True
+            continue
+        whose = "your" if args.reviewers == "me" else "reviewers'"
+        _err(f"#{row['pr']}: {row['imported']} of {whose} comments added as {row['split']} labels"
+             + (f", {row['already_imported']} already there" if row["already_imported"] else "")
+             + (f" ({row['outdated']} on code that changed later)" if row["outdated"] else ""))
+        rows.append(row)
+    print(json.dumps(rows, indent=1))
+    return 1 if failed else 0
+
+
 def cmd_supervise(args: argparse.Namespace, cfg: Config) -> int:
     supervise.supervise(Path(args.pr_dir))
     return 0
@@ -344,6 +370,14 @@ def main(argv: list[str] | None = None) -> None:
                    help="also delete the kept review work (chats, pending comments, viewed marks) and the PR's refs")
     s.add_argument("--force", action="store_true", help="also clean PRs whose review page is running")
     s.add_argument("--yes", action="store_true", help="run --all without a terminal (scripts)")
+    s = sub.add_parser("labels", help="eval labels: the problems you found on past PRs")
+    labels_sub = s.add_subparsers(dest="labels_cmd", required=True)
+    s = labels_sub.add_parser("import", help="add the review comments already on PRs as labels (only reads GitHub)")
+    s.add_argument("prs", nargs="+", metavar="pr", help="PR numbers or URLs")
+    s.add_argument("--reviewers", choices=["me", "all"], default="me",
+                   help="whose root comments: yours (default) or every human reviewer's (never bots)")
+    s.add_argument("--split", choices=["train", "holdout"], default="train",
+                   help="holdout: PRs kept out of prompt work and reported on their own by `prr eval`")
     s = sub.add_parser("_serve", help=argparse.SUPPRESS)  # the supervisor
     s.add_argument("pr_dir")
     s = sub.add_parser("_mcp", help=argparse.SUPPRESS)  # the chat's comment tools (an MCP server on stdio)
@@ -355,7 +389,7 @@ def main(argv: list[str] | None = None) -> None:
     args = p.parse_args(argv)
     cfg = load_config()
     handlers = {"doctor": cmd_doctor, "fetch": cmd_fetch, "serve": cmd_serve, "analyze": cmd_analyze,
-                "status": cmd_status, "stop": cmd_stop, "clean": cmd_clean, "_serve": cmd_supervise,
+                "status": cmd_status, "stop": cmd_stop, "clean": cmd_clean, "labels": cmd_labels, "_serve": cmd_supervise,
                 "_serve-child": cmd_serve_child, "_mcp": cmd_mcp}
     try:
         code = handlers[args.cmd](args, cfg)

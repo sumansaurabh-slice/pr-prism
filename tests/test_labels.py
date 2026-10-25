@@ -2,6 +2,7 @@
 from posting and from deleting a pending comment. Nothing here reaches GitHub (PRR_GITHUB_DRY_RUN=1 and fakes)."""
 
 import fcntl
+import json
 import os
 import stat
 from types import SimpleNamespace
@@ -11,8 +12,10 @@ from fastapi.testclient import TestClient
 
 from prr import chat_tools, github, labels, server
 from prr.config import Config
+from prr.gitgh import CommandError, PRRef
 from prr.server import Guard, create_app
 from prr.state import StateStore
+from tests.conftest import _git
 from tests.test_merge import make_pr_dir
 
 
@@ -321,3 +324,126 @@ def test_a_failed_retraction_still_deletes_and_warns(pr, monkeypatch):
     r = pr.client.delete(f"/api/drafts/{answered['id']}", headers=ORIGIN)
     assert r.json() == {"ok": True, "warning": "Couldn't save this answer for eval"}
     assert StateStore(pr.dir).load()["drafts"] == []
+
+
+# ---- prr labels import --------------------------------------------------------------------------
+
+
+def gh_comment(cid: int, login: str, kind: str = "User", **kw) -> dict:
+    """One review comment as GitHub's REST API returns it."""
+    base = {"id": cid, "user": {"login": login, "type": kind}, "path": "src/core.py", "line": 22, "side": "RIGHT",
+            "original_line": 22, "commit_id": "c-now", "original_commit_id": "c-then", "body": f"comment {cid}",
+            "in_reply_to_id": None, "created_at": "2026-10-01T10:00:00Z", "html_url": "u"}
+    return {**base, **kw}
+
+
+class FakeGitHub:
+    """Stands in for `gh`: answers the read-only calls the import makes and records every call."""
+
+    def __init__(self, monkeypatch, comments: list[dict], meta: dict):
+        self.calls: list[tuple] = []
+        self.comments, self.meta = comments, meta
+
+        def fake_gh(*args, **kwargs):
+            self.calls.append(args)
+            return "".join(json.dumps(c) + "\n" for c in self.comments)
+
+        def fake_gh_json(*args, **kwargs):
+            self.calls.append(args)
+            if args[:2] == ("pr", "view"):
+                return self.meta
+            raise CommandError(["gh", *args], 1, "", "offline in tests")
+
+        monkeypatch.setattr(github, "gh", fake_gh)
+        monkeypatch.setattr(labels, "gh_json", fake_gh_json)
+
+    def writes(self) -> list[tuple]:
+        return [c for c in self.calls if {"-X", "--method", "-f", "-F", "--field", "--raw-field", "--input"} & set(c)]
+
+
+def import_into(tmp_path, tricky_repo, monkeypatch, comments, meta, **kw):
+    monkeypatch.setattr(labels, "find_remote", lambda root, ref: str(root))
+    fake = FakeGitHub(monkeypatch, comments, meta)
+    folder = tmp_path / "o__r"
+    out = labels.import_comments(PRRef("o", "r", 1), tricky_repo["root"], folder, **kw)
+    assert fake.writes() == []                                              # only reads GitHub
+    return out, labels.read(folder), fake
+
+
+def test_import_keeps_your_root_comments_where_you_wrote_them(tmp_path, tricky_repo, monkeypatch):
+    head, base = tricky_repo["head"], tricky_repo["base"]
+    comments = [
+        gh_comment(1, "me", original_commit_id=head, commit_id=head),
+        gh_comment(2, "me", line=None, original_line=30, original_commit_id=head, commit_id="c-later"),  # outdated
+        gh_comment(3, "me", in_reply_to_id=1),                                    # a reply: not a new issue
+        gh_comment(4, "alice", original_commit_id=head),                          # someone else's
+        gh_comment(5, "Me", original_line=None, line=7, commit_id=head, original_commit_id="c-old"),  # no original
+    ]
+    merged = {"number": 1, "state": "MERGED", "baseRefName": "main", "baseRefOid": base}
+    out, rows, fake = import_into(tmp_path, tricky_repo, monkeypatch, comments, merged, reviewers="me", viewer="me")
+    assert [(r["gh_comment_id"], r["commit_id"], r["line"], r["author"]) for r in rows] == [
+        (1, head, 22, "me"), (2, head, 30, "me"), (5, head, 7, "Me")]
+    assert {(r["kind"], r["source"], r["split"], r["merge_base_sha"]) for r in rows} == {
+        ("problem", "imported", "train", base)}                                # merged PR: GitHub's recorded base
+    assert (out["imported"], out["outdated"]) == (3, 1)
+    assert ("pr", "view", "1", "--repo", "o/r", "--json", "number,state,baseRefName,baseRefOid") in fake.calls
+    assert ("api", "--paginate", "repos/o/r/pulls/1/comments?per_page=100", "--jq", ".[]") in fake.calls
+
+
+def test_import_of_an_open_pr_uses_git_merge_base(tmp_path, tricky_repo, monkeypatch):
+    head, base = tricky_repo["head"], tricky_repo["base"]
+    _git(tricky_repo["root"], "branch", "trunk", base)                         # the PR's base branch
+    open_pr = {"number": 1, "state": "OPEN", "baseRefName": "trunk", "baseRefOid": "not-used-for-open-prs"}
+    _, rows, _ = import_into(tmp_path, tricky_repo, monkeypatch, [gh_comment(1, "me", original_commit_id=head)],
+                             open_pr, viewer="me")
+    assert rows[0]["merge_base_sha"] == base
+
+
+def test_import_all_reviewers_leaves_out_bots(tmp_path, tricky_repo, monkeypatch):
+    head = tricky_repo["head"]
+    comments = [gh_comment(1, "me", original_commit_id=head), gh_comment(2, "alice", original_commit_id=head),
+                gh_comment(3, "review-tool[bot]", original_commit_id=head),
+                gh_comment(4, "helper", kind="Bot", original_commit_id=head)]
+    merged = {"number": 1, "state": "MERGED", "baseRefName": "main", "baseRefOid": tricky_repo["base"]}
+    _, rows, _ = import_into(tmp_path, tricky_repo, monkeypatch, comments, merged, reviewers="all")
+    assert [r["author"] for r in rows] == ["me", "alice"]
+
+
+def test_import_again_adds_nothing_new_and_a_holdout_split_wins(tmp_path, tricky_repo, monkeypatch):
+    head = tricky_repo["head"]
+    comments = [gh_comment(1, "me", original_commit_id=head), gh_comment(2, "me", original_commit_id=head, line=40,
+                                                                          original_line=40)]
+    merged = {"number": 1, "state": "MERGED", "baseRefName": "main", "baseRefOid": tricky_repo["base"]}
+    import_into(tmp_path, tricky_repo, monkeypatch, comments, merged, viewer="me")
+    out, rows, _ = import_into(tmp_path, tricky_repo, monkeypatch, comments, merged, viewer="me")
+    assert (out["imported"], out["already_imported"], len(rows)) == (0, 2, 2)
+    out, rows, _ = import_into(tmp_path, tricky_repo, monkeypatch, comments, merged, viewer="me", split="holdout")
+    assert out["imported"] == 2
+    assert [x["split"] for x in labels.load(tmp_path / "o__r")] == ["holdout", "holdout"]
+
+
+def test_import_needs_your_login_for_your_comments(tmp_path, tricky_repo):
+    with pytest.raises(ValueError, match="login"):
+        labels.import_comments(PRRef("o", "r", 1), tricky_repo["root"], tmp_path, reviewers="me", viewer=None)
+    with pytest.raises(ValueError, match="me or all"):
+        labels.import_comments(PRRef("o", "r", 1), tricky_repo["root"], tmp_path, reviewers="bots")
+
+
+def test_prr_labels_import_command(tmp_path, tricky_repo, monkeypatch, capsys):
+    from prr import cli, config, gitgh
+
+    head = tricky_repo["head"]
+    monkeypatch.setattr(labels, "find_remote", lambda root, ref: str(root))
+    FakeGitHub(monkeypatch, [gh_comment(1, "me", original_commit_id=head)],
+               {"number": 1, "state": "MERGED", "baseRefName": "main", "baseRefOid": tricky_repo["base"]})
+    monkeypatch.setattr(gitgh, "viewer_login", lambda: "me")
+    monkeypatch.setattr(cli, "parse_pr_arg", lambda arg, root: PRRef("o", "r", int(arg)))
+    monkeypatch.setattr(cli, "load_config", lambda: Config(cache_dir=tmp_path / "cache"))
+    monkeypatch.setattr(config, "REPO_DIR", tmp_path)                    # no config.toml: nothing real is read
+    with pytest.raises(SystemExit) as done:
+        cli.main(["--repo", str(tricky_repo["root"]), "labels", "import", "1", "--split", "holdout"])
+    assert done.value.code == 0
+    out = capsys.readouterr()
+    assert json.loads(out.out)[0]["imported"] == 1 and "#1: 1 of your comments added as holdout labels" in out.err
+    [row] = labels.load(tmp_path / "cache" / "o__r")
+    assert row["split"] == "holdout" and row["gh_comment_id"] == 1

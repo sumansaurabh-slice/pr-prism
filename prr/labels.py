@@ -39,7 +39,8 @@ from contextlib import contextmanager
 from pathlib import Path
 from typing import Any, Iterator
 
-from . import findings
+from . import findings, github
+from .gitgh import CommandError, PRRef, find_remote, gh_json, git, git_ok
 from .util import now_iso
 
 VERSION = 1
@@ -270,3 +271,83 @@ def match_label(label: dict, finding: dict) -> bool:
     finding's title and impact with the label's text."""
     return findings.near_same(finding["path"], finding["line"], f"{finding['title']} {finding.get('impact') or ''}",
                               label.get("path") or "", label.get("line"), label.get("text") or "")
+
+
+# --------------------------------------------------------------------------------------
+# `prr labels import`: comments already on past PRs (read-only on GitHub)
+# --------------------------------------------------------------------------------------
+
+REVIEWERS = ("me", "all")
+_META_FIELDS = "number,state,baseRefName,baseRefOid"
+
+
+def _have_commit(root: Path, sha: str) -> bool:
+    return git_ok("cat-file", "-e", f"{sha}^{{commit}}", cwd=root)
+
+
+def merge_base_for(root: Path, remote: str, ref: PRRef, meta: dict, commit: str) -> str | None:
+    """Where the PR's diff starts for `commit` (the fetch.py rule): the PR's recorded base commit (baseRefOid) for a
+    merged or closed PR, whose head is already in the base branch; `git merge-base <commit> <base>` for an open one,
+    asking GitHub's compare API when git can't tell. Fetches the commits it needs (fetching only reads from GitHub).
+    None when nothing works."""
+    if meta.get("state") != "OPEN":
+        return meta.get("baseRefOid")
+    base_ref = f"refs/pr-prism/{ref.number}/base"
+    try:
+        if not _have_commit(root, commit):
+            git("fetch", "--no-tags", "--quiet", remote, commit, cwd=root)
+        git("fetch", "--no-tags", "--quiet", "--force", remote, f"+refs/heads/{meta['baseRefName']}:{base_ref}", cwd=root)
+        return git("merge-base", commit, base_ref, cwd=root).strip()
+    except CommandError:
+        pass
+    try:
+        data = gh_json("api", f"repos/{ref.slug}/compare/{meta['baseRefName']}...{commit}",
+                       "--jq", "{sha: .merge_base_commit.sha}")
+        return (data or {}).get("sha") or None
+    except CommandError:
+        return None
+
+
+def _where(c: dict) -> tuple[str | None, int | None]:
+    """(commit, line) the comment was written on: GitHub's original_commit_id / original_line, which stay put when the
+    PR moves on (an outdated comment has line null). A comment without an original line uses its current one."""
+    if isinstance(c.get("original_line"), int):
+        return c.get("original_commit_id") or c.get("commit_id"), c["original_line"]
+    return c.get("commit_id") or c.get("original_commit_id"), c.get("line") if isinstance(c.get("line"), int) else None
+
+
+def import_comments(ref: PRRef, root: Path, folder: Path, *, reviewers: str = "me", viewer: str | None = None,
+                    split: str = "train") -> dict[str, Any]:
+    """The root review comments already on a PR, as problem labels in `folder`'s labels.jsonl: yours
+    (`reviewers="me"`, with `viewer` your GitHub login) or every human reviewer's (`"all"`; bot accounts never).
+    Only reads from GitHub. A comment imported before with the same place, text and split is not added again.
+    Returns a summary for the command's output."""
+    if reviewers not in REVIEWERS:
+        raise ValueError("--reviewers must be me or all")
+    if reviewers == "me" and not viewer:
+        raise ValueError("importing your own comments needs your GitHub login")
+    me = (viewer or "").lower()
+    meta = gh_json("pr", "view", str(ref.number), "--repo", ref.slug, "--json", _META_FIELDS)
+    comments = [c for c in github.existing_comments(ref.owner, ref.repo, ref.number)
+                if not c.get("in_reply_to_id") and not c.get("is_bot")
+                and (reviewers == "all" or (c.get("user") or "").lower() == me)]
+    remote = find_remote(root, ref)
+    bases: dict[str, str | None] = {}
+    seen = {(x.get("gh_comment_id"), x.get("commit_id"), x.get("line"), x.get("text"), x.get("split"))
+            for x in read(folder) if x.get("source") == "imported"}
+    rows, again = [], 0
+    for c in comments:
+        commit, line = _where(c)
+        if commit and commit not in bases:
+            bases[commit] = merge_base_for(root, remote, ref, meta, commit)
+        if (c["id"], commit, line, c.get("body") or "", split) in seen:
+            again += 1
+            continue
+        rows.append(new_label(pr=ref.number, kind="problem", source="imported", commit_id=commit,
+                              merge_base_sha=bases.get(commit) if commit else None, path=c.get("path"),
+                              side=c.get("side") or "RIGHT", line=line, text=c.get("body") or "", author=c.get("user"),
+                              gh_comment_id=c["id"], split=split))
+    write(folder, rows)
+    return {"pr": ref.number, "imported": len(rows), "already_imported": again,
+            "outdated": sum(1 for c in comments if c.get("line") is None), "commits": len(bases),
+            "no_merge_base": sum(1 for b in bases.values() if b is None), "reviewers": reviewers, "split": split}
