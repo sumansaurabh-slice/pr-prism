@@ -25,7 +25,83 @@ const ghComments = [
     body: "Do we version this endpoint anywhere?", created_at: "2026-10-20T09:00:00Z",
     html_url: "https://github.com/acme/hooks/pull/482#discussion_r9001", in_reply_to_id: null,
   },
+  // Your comments from the review you submitted on an older commit (see /api/since-review below).
+  {
+    id: 9002, path: "app/delivery/sender.py", line: 20, side: "RIGHT", start_line: null, user: "you",
+    body: "If this fails, should we keep the last exception? Right now the failure reason is lost.",
+    created_at: "2026-10-19T15:00:00Z", html_url: "https://github.com/acme/hooks/pull/482#discussion_r9002",
+    in_reply_to_id: null, review_id: 700,
+  },
+  {
+    id: 9003, path: "app/delivery/retry.py", line: 14, side: "RIGHT", start_line: null, user: "you",
+    body: "Nit: name the backoff constant.", created_at: "2026-10-19T15:00:00Z",
+    html_url: "https://github.com/acme/hooks/pull/482#discussion_r9003", in_reply_to_id: null, review_id: 700,
+  },
+  {
+    id: 9004, path: "app/api/webhooks.py", line: null, side: "RIGHT", start_line: null, user: "you",
+    body: "This drops `delivered` from the response, which breaks old clients.", created_at: "2026-10-19T15:00:00Z",
+    html_url: "https://github.com/acme/hooks/pull/482#discussion_r9004", in_reply_to_id: null, review_id: 700,
+  },
 ];
+
+// Since your review (prr/since.py). The mock pretends you reviewed an older commit; PRR_MOCK_SINCE=0 starts with no
+// reviewed commit, and submitting a review here moves it to the current head (both hide the toggle).
+// PRR_MOCK_NEW_COMMITS=1 makes GitHub's head differ from the analyzed one ("New commits since you opened this").
+state.reviewed_head ??= process.env.PRR_MOCK_SINCE === "0" ? null : "b".repeat(40);
+const githubHead = process.env.PRR_MOCK_NEW_COMMITS === "1" ? "e".repeat(40) : analysis.pr.head_sha;
+const estimate = { minutes: 6, usd: 2.1 };
+let rereadUntil = 0;
+const interdiff = [
+  { path: "app/delivery/sender.py", hunks: [{ old_start: 16, old_lines: 6, new_start: 16, new_lines: 7 }] },
+];
+const interdiffPatch = {
+  "app/delivery/sender.py": [
+    "diff --git a/app/delivery/sender.py b/app/delivery/sender.py",
+    "index 5555550..5555555 100644",
+    "--- a/app/delivery/sender.py",
+    "+++ b/app/delivery/sender.py",
+    "@@ -16,6 +16,7 @@ def send(delivery: WebhookDelivery, client: httpx.Client) -> WebhookDelivery:",
+    "     try:",
+    "         with_retry(attempt, retry_on=(httpx.TransportError, httpx.HTTPStatusError))",
+    "         delivery.status = DeliveryStatus.DELIVERED",
+    "-    except httpx.HTTPError:",
+    "+    except httpx.HTTPError as exc:",
+    "         delivery.status = DeliveryStatus.FAILED",
+    "+        delivery.last_error = str(exc)",
+    "     return delivery",
+    "",
+  ].join("\n"),
+};
+const earlierComments = [
+  { id: 9002, path: "app/delivery/sender.py", line: 20, status: "fixed",
+    note: "The failure reason is now kept in last_error (app/delivery/sender.py:21)." },
+  { id: 9003, path: "app/delivery/retry.py", line: 14, status: "line-unchanged", note: null },
+  { id: 9004, path: "app/api/webhooks.py", line: null, status: "still-open",
+    note: "The response still leaves out `delivered`, so older clients break." },
+];
+
+// A stop is new when its lines meet an interdiff hunk (same path, new-side lines): prr/since.py is_new_stop.
+function isNewStop(stop) {
+  if (!stop.path || (stop.side ?? "RIGHT") !== "RIGHT") return false;
+  const lo = stop.start_line ?? stop.start ?? stop.line;
+  const hi = stop.end_line ?? stop.end ?? stop.line;
+  if (lo == null && hi == null) return false;
+  return interdiff.some((f) => f.path === stop.path && f.hunks.some((h) =>
+    h.new_start <= (hi ?? lo) && (lo ?? hi) <= h.new_start + Math.max(h.new_lines, 1) - 1));
+}
+
+function sinceReview() {
+  const head = analysis.pr.head_sha;
+  const base = { reviewed_head: state.reviewed_head, head, files: [], patch: {}, note: null, ok: true, full_pr: false,
+                 comments: [], comments_error: null, new_stop_ids: [] };
+  if (!state.reviewed_head || state.reviewed_head === head) return base;
+  const running = Date.now() < rereadUntil;
+  return {
+    ...base, files: interdiff, patch: interdiffPatch,
+    comments: earlierComments.map((c) => (running && c.status !== "line-unchanged" ? { ...c, status: "checking", note: null } : c)),
+    new_stop_ids: (analysis.stops ?? []).filter(isNewStop).map((s) => s.id),
+  };
+}
 
 const MIME = { ".html": "text/html", ".js": "text/javascript", ".css": "text/css", ".svg": "image/svg+xml", ".json": "application/json" };
 let seq = 100;
@@ -137,10 +213,25 @@ async function api(req, res, url) {
     await sleep(600);
     return send(res, 200, { body: "Thanks! The retry helper looks solid. The main concerns are the breaking API response and retrying 4xx. See inline comments." });
   }
+  if (p === "/api/since-review") return send(res, 200, sinceReview());
+  if (p === "/api/head") {
+    return send(res, 200, {
+      analyzed_head: analysis.pr.head_sha, current_head: githubHead, head_changed: githubHead !== analysis.pr.head_sha,
+      running: Date.now() < rereadUntil, estimate, error: null,
+    });
+  }
+  if (p === "/api/reanalyze" && m === "POST") {
+    if (Date.now() < rereadUntil) return send(res, 409, { detail: "The PR is already being read. Wait for it to finish." });
+    rereadUntil = Date.now() + 8000;
+    return send(res, 200, { started: true, estimate });
+  }
   if (p === "/api/review/submit") {
     const b = await readBody(req);
     state.submitted.push({ review_id: ++seq, html_url: `${analysis.pr.url}#pullrequestreview-${seq}`, event: b.event, comments: state.drafts.length, at: now() });
     state.drafts = [];
+    state.reviewed_head = analysis.pr.head_sha;
+    state.reviewed_base = analysis.pr.merge_base_sha;
+    state.reviewed_stop_ids = (analysis.stops ?? []).map((s) => s.id);
     return send(res, 200, { ok: true, review_id: seq, html_url: `${analysis.pr.url}#pullrequestreview-${seq}` });
   }
   if (p === "/api/chat/threads" && m === "GET") return send(res, 200, state.threads);

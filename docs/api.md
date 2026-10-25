@@ -38,11 +38,14 @@ The SPA never handles the token. It uses relative URLs, and `fetch` sends the co
 | `POST /api/restored/dismiss` | | `{ok: true}`: removes `restored` (the one-time "Restored your work" summary) from the state |
 | `POST /api/suggestions/{id}/dismiss` | | `{dismissed_suggestions}` |
 | `POST /api/suggestions/{id}/restore` | | `{dismissed_suggestions}` |
-| `GET /api/github/threads` | | `{comments: ExistingComment[]}`: review comments already on the PR |
+| `GET /api/github/threads` | | `{comments: ExistingComment[]}`: review comments already on the PR (cached for 60 s); `review_id` is the GitHub review each belongs to |
+| `GET /api/since-review` | | `SinceReview`: what changed since your last submitted review (see [Since your review](#since-your-review)) |
+| `GET /api/head` | | `HeadStatus`: `{analyzed_head, current_head, head_changed, running, estimate: {minutes, usd} \| null, error}`. GitHub's head is read at most once a minute (Submit's own check refreshes it). `head_changed` shows "New commits since you opened this"; `estimate` is the last complete run's time and cost for the "Re-read the PR" button; `error` (with `current_head: null`) when GitHub couldn't be reached. |
+| `POST /api/reanalyze` | | `{started: true, estimate: {minutes, usd} \| null}`: "Re-read the PR". Starts `prr _reanalyze` in the background: `prr fetch`, then `prr analyze` with the last run's focus (output in the PR folder's `analyze.log`). The page keeps its view; the progress banner follows the run through `GET /api/analysis`. 409 `{detail: "The PR is already being read. Wait for it to finish."}` while any analysis of this PR runs. |
 | `POST /api/ci/refresh` | | `CIInfo`: reads the CI checks again and explains new failures; the next `/api/analysis` includes them |
 | `POST /api/review/preview` | `{body, event}` | `ReviewPreview`, built from the drafts Submit would send now (not outdated, not being posted) |
 | `POST /api/review/draft-summary` | | `{body}`: Claude drafts the overall review body from the drafts and the analysis |
-| `POST /api/review/submit` | `{body, event, commit: "analyzed"\|"current"}` | `{ok, review_id, html_url}`, or 4xx `{detail}`. Only the drafts this post sent are removed; outdated drafts aren't sent and stay. 409 "Nothing new to post: …" when every draft is already being posted by another post (the chat's). Each posted comment is saved as a problem label for `prr eval`; if that write fails the review still counts and the reply adds `warning: "Couldn't save this answer for eval"` (shown as a toast). |
+| `POST /api/review/submit` | `{body, event, commit: "analyzed"\|"current"}` | `{ok, review_id, html_url}`, or 4xx `{detail}`. Only the drafts this post sent are removed; outdated drafts aren't sent and stay. 409 "Nothing new to post: …" when every draft is already being posted by another post (the chat's). Each posted comment is saved as a problem label for `prr eval`; if that write fails the review still counts and the reply adds `warning: "Couldn't save this answer for eval"` (shown as a toast). The state then has `reviewed_head` (the analyzed head), `reviewed_base` and `reviewed_stop_ids`, for `GET /api/since-review`. |
 | `GET /api/chat/threads` | | `ChatThread[]` |
 | `POST /api/chat/threads` | `{title?}` | `ChatThread` |
 | `DELETE /api/chat/threads/{id}` | | `{ok: true}` |
@@ -51,6 +54,35 @@ The SPA never handles the token. It uses relative URLs, and `fetch` sends the co
 | `POST /api/chat/threads/{id}/long-hint/dismiss` | | `{ok: true}`: "Keep going" on the long-thread hint. Sets `long_hint_dismissed: true` on the thread, so the hint never shows for it again. 404 for an unknown thread. |
 | `POST /api/chat/approvals/{id}` | `{decision: "allow"\|"always"\|"deny"}` | `{ok: true}`: the answer to an approval card. `always` on a card that can't be remembered (`always: false`, e.g. a guard card) counts as `allow`. 404 when the card no longer waits (it timed out, or another card's "Always allow" covered it). |
 | `GET /api/trust` | | `{author, association, trusted, state: "trusted"\|"outside"\|"unknown"}`: is the PR's author an owner, member or collaborator? `unknown` means the check failed (treated as outside). On `outside` the chat shows "Outside author: @user isn't a member or collaborator of this repo. Jira, Slack and other-repo lookups ask first." and the header an "outside author" label; on `unknown`, "Couldn't check the author; lookups ask first." |
+
+### Since your review
+
+When you submit a review (Submit, or the chat's `post_review`; a single chat `post_comment` doesn't count), the server saves in `state.json`:
+- `reviewed_head`: the analyzed head you reviewed, also kept as `refs/pr-prism/<n>/reviewed` in your repo (fetched by sha if needed; `prr clean` keeps it);
+- `reviewed_base`: its merge base;
+- `reviewed_stop_ids`: the guided-review stops present then.
+
+`GET /api/since-review` returns `SinceReview`:
+
+| Field | Meaning |
+|---|---|
+| `reviewed_head`, `head` | the commit you reviewed (null: no review yet) and the analyzed head |
+| `files` | `[{path, hunks: [{old_start, old_lines, new_start, new_lines}]}]`: `git diff <reviewed_head> <head> -- <the PR's current files>`. Empty with no reviewed head or the same head: the app hides its toggle. |
+| `patch` | `{path: unified diff}`, one entry per file in `files`, in the same form as `GET /api/diff`'s `patch` |
+| `note` | "main moved; some changes may come from main" (named after the PR's base branch) when the merge base moved; "The commit you reviewed (abc1234) is no longer on GitHub, likely after a force-push, so this shows the whole PR." when it is gone; "Couldn't compute changes since your review: <reason>" when git fails |
+| `ok` | false when git failed: no files; the app shows the note and disables the toggle |
+| `full_pr` | true when the reviewed commit is gone: `files` and `patch` are the whole PR |
+| `comments` | your earlier comments: `[{id, path, line, status, note}]`, `id` being the GitHub comment id and `line` null when outdated |
+| `comments_error` | why the comments couldn't be read from GitHub, else null |
+| `new_stop_ids` | guided-review stops whose lines meet an interdiff hunk (same path, new-side lines, with git's 3 lines of context). Ids don't count: a re-run can re-anchor a stop without a code change. |
+
+A comment's `status`:
+- `fixed` / `still-open`: the re-check on the new head (outdated comments, and comments whose lines the new commits touched); `note` says why;
+- `line-unchanged`: the new commits didn't touch its lines;
+- `checking`: an analysis or re-read is running ("Checking…");
+- `not-checked`: over `[analysis] recheck_max` (note "N not checked (limit; raise `recheck_max`)"), or not re-checked on this commit yet (note "Not checked on this commit yet. Re-read the PR to check it.").
+
+The re-check runs in the analysis of the new head, your own comments first, at most `recheck_max` (default 20) per run.
 
 ### Review events
 
