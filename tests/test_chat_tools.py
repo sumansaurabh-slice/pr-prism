@@ -113,6 +113,7 @@ def test_approval_rules(tmp_path, tricky_repo, monkeypatch):
     from prr.util import write_json
     write_json(tmp_path / "state.json", {"threads": [{"id": "t1", "always_allow": ["Bash:touch x"]}]})
     monkeypatch.setenv("PRR_THREAD_ID", "t1")
+    monkeypatch.setattr(policy, "turn_causes", lambda pr_dir, tid: [])     # nothing marked this turn
     assert chat_tools.approve(tmp_path, run)["behavior"] == "allow"
     # …but only for that command, not every shell command
     assert chat_tools.approve(tmp_path, {"tool_name": "Bash", "input": {"command": "rm -rf build"}})["behavior"] == "deny"

@@ -13,7 +13,8 @@ Permission flow, for each chat turn:
    │                                     server: any approval marks the turn
    ├─ mcp__* (every MCP tool), WebFetch, WebSearch ─► the same hook
    │        a connector lookup, or codegraph on another repo ─► marks the turn (POST /api/internal/taint)
-   │        in a marked turn: GitHub posts, WebFetch, WebSearch, connector writes ─► card, never "Always allow"
+   │        in a marked turn: GitHub posts, WebFetch, WebSearch, connector writes, shell commands ─► card,
+   │        never "Always allow" (a remembered shell command asks again too)
    │        otherwise ─► no say (Claude Code's rules, then the approval tool)
    ├─ mcp__<connector>__get/search/read…, codegraph ─► --permission-prompt-tool ─► chat_tools.approve() ─► decide
    │        trusted author (context.json) ─► allow │ outside author ─► card
@@ -188,7 +189,7 @@ def guard_card(tool: str, marked: bool) -> bool:
     """Cards that stand between outside data and a way out. They never offer (or remember) "Always allow"."""
     if not marked:
         return False
-    if tool in POST_TOOLS or tool in EGRESS_TOOLS:
+    if tool in POST_TOOLS or tool in EGRESS_TOOLS or tool == "Bash":
         return True
     return _connector(tool) and not _lookup(tool)
 
@@ -403,6 +404,10 @@ def decide(tool: str, inp: dict, *, pr_dir: Path, thread_id: str = "", cwd: str 
         if cwd is not None and shellsafe.is_read_only(cmd, sc, where):
             return {"decision": "allow"}
         if covered(approval_keys(tool, inp, sc=sc, cwd=where), allowed):
+            # A remembered program (curl, python, …) could send out what this turn read, so it asks again.
+            causes = turn_causes(pr_dir, thread_id)
+            if causes:
+                return {"decision": "ask", "reason": guard_reason(tool, causes)}
             return {"decision": "allow", "mark": {"kind": "approved", "text": cmd[:200]}}
         if rep.env:
             return _ask("env", "Reads environment variables, which can hold secrets", "; ".join(rep.env))

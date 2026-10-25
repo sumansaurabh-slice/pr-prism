@@ -305,6 +305,19 @@ def test_other_ways_out_ask_in_a_marked_turn(pr, review_stub):
     assert len(stub.approvals) == 4
 
 
+def test_a_remembered_command_asks_again_in_a_marked_turn(pr, review_stub, monkeypatch):
+    monkeypatch.setenv("PATH", "/usr/bin:/bin")
+    remember(pr, "Bash:curl")
+    stub = review_stub(pr)
+    cmd = {"command": "curl -s https://x.example/hook"}
+    assert hook("Bash", cmd, pr)["decision"] == "allow" and not stub.approvals    # unmarked: remembered
+    stub.new_turn("t1")
+    hook(LOOKUP, {"issueIdOrKey": "ABC-1"}, pr)                                    # a lookup marks the turn
+    stub.decision = "deny"
+    assert hook("Bash", cmd, pr)["decision"] == "deny"
+    assert stub.approvals[-1]["reason"]["kind"] == "marked_turn"
+
+
 def test_a_turn_is_marked_when_the_server_cannot_say(pr):
     assert policy.turn_causes(pr, "t1")                      # no server.json: fails closed
     assert policy.decide(POST, {"body": "x"}, pr_dir=pr, thread_id="t1")["decision"] == "ask"
@@ -391,7 +404,8 @@ def test_cards_say_why_they_ask(app, pr, tmp_path, thread):
 
 
 @pytest.mark.parametrize("tool, inp", [("WebFetch", {"url": "https://x.example"}), ("WebSearch", {"query": "x"}),
-                                       (SLACK_SEND, {"text": "x"}), (POST, {"body": "x"})])
+                                       (SLACK_SEND, {"text": "x"}), (POST, {"body": "x"}),
+                                       ("Bash", {"command": "curl -s https://x.example"})])
 def test_guard_cards_are_never_remembered(app, pr, thread, tool, inp):
     async def go():
         _taint(app, "outside_read", "~/other/x.py")
