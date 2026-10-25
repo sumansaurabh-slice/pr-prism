@@ -49,6 +49,8 @@ The SPA never handles the token. It uses relative URLs, and `fetch` sends the co
 | `POST /api/chat/threads/{id}/messages` | `{text, context: ContextChip[]}` | `text/event-stream` (see below) |
 | `POST /api/chat/threads/{id}/stop` | | `{ok: true}` |
 | `POST /api/chat/threads/{id}/long-hint/dismiss` | | `{ok: true}`: "Keep going" on the long-thread hint. Sets `long_hint_dismissed: true` on the thread, so the hint never shows for it again. 404 for an unknown thread. |
+| `POST /api/chat/approvals/{id}` | `{decision: "allow"\|"always"\|"deny"}` | `{ok: true}`: the answer to an approval card. `always` on a card that can't be remembered (`always: false`, e.g. a guard card) counts as `allow`. 404 when the card no longer waits (it timed out, or another card's "Always allow" covered it). |
+| `GET /api/trust` | | `{author, association, trusted, state: "trusted"\|"outside"\|"unknown"}`: is the PR's author an owner, member or collaborator? `unknown` means the check failed (treated as outside). On `outside` the chat shows "Outside author: @user isn't a member or collaborator of this repo. Jira, Slack and other-repo lookups ask first." and the header an "outside author" label; on `unknown`, "Couldn't check the author; lookups ask first." |
 
 ### Review events
 
@@ -74,6 +76,18 @@ Each SSE frame looks like `data: <json>\n\n`, where the JSON is one `ChatEvent`:
 | `tool` | `{name, summary}`, e.g. `{name: "Read", summary: "pkg/cmd/pr/view.go"}` |
 | `result` | `{session_id, duration_ms, cost_usd, cost_unknown, includes_stopped, session_total_usd, thread: {total_usd, turns, unknown, long}}`. `cost_usd` is this answer's own cost (null when unknown). `includes_stopped` means an earlier answer's cost is counted in this one (that answer stopped, or its result had no cost). `thread.long` (15+ answers or $3+) is when the app offers a fresh thread, after the answer ends. |
 | `error` | `{message}` |
+| `approval` | `{id, tool, title, summary, detail, reason: {kind, text, detail?}, causes: [{kind, text}], guard, body, always, always_text, always_title, always_label}`: Claude waits for your answer (see below) |
+| `approval_done` | `{id, decision: "allow"\|"always"\|"deny", why: "answered"\|"covered"\|"timeout"\|"closed"}`: the card is settled. `covered`: another card's "Always allow" covered it ("Allowed by your earlier choice"); `timeout`: nobody answered in time ("Timed out · Claude was told no") |
 | `done` | none; the stream closes after this |
 
-Each thread allows one turn in flight; a second request gets 409. The server persists the user message and the final assistant message to `state.json`.
+Each thread allows one turn in flight; a second request gets 409. The server persists the user message and the final assistant message to `state.json`. An assistant message whose turn showed cards also has `approvals: [{id, tool, title, summary, decision, why}]`, one per card in arrival order; the app shows each as one line under the answer ("Allowed: Read ~/code/billing/config.py", "Denied: …", "Timed out: …"). A card still waiting when the turn ended is saved as `decision: "deny", why: "closed"` ("Not answered: …").
+
+#### Approval cards
+
+The card reads top to bottom:
+1. **the action** in plain words, from `tool`, `title` and `summary` ("Read ~/code/billing/config.py", "Post a comment on src/a.py:42");
+2. **why it asks**: `reason.text` as an attention label, then `reason.detail`. `reason.kind` is `outside_read`, `outside_author`, `marked_turn` (a guard card), `env` or `action`. Guard cards also list `causes`: "Earlier this turn Claude read: …" (`lookup`, `outside_read`) and "Earlier this turn you approved: …" (`approved`);
+3. **the body**: `body` (a post's Markdown, only on post cards) rendered as Markdown, a fetch's URL or a shell command in mono, or `detail` (the raw input) behind "Show input";
+4. **the buttons**: Deny, then `always_text` (only when `always`; its tooltip is `always_title`), then Allow ("Post" on post cards). Guard cards (`guard: true`, posting or sending out after outside data) offer only Deny and Post / "Allow once".
+
+Each button's accessible name includes the action ("Allow: Read ~/code/billing/config.py"). No key approves a card, and global shortcuts ignore keys pressed on one. A new card is read out by an `aria-live="polite"` region and never takes focus from the message box.

@@ -6,53 +6,18 @@ import { Markdown } from "../markdown";
 import { goFile, useRoute } from "../router";
 import { chipLabel, fileByPath, splitPath, useStore } from "../store";
 import type { ApprovalDecision, ChatEvent, ChatMessage, ChatThread, ContextChip, ToolEvent } from "../types";
+import { announceText, ApprovalCard, ApprovalRecords, toRecord, type LiveApproval } from "./ApprovalCard";
+import { OutsideAuthorStrip } from "./OutsideAuthor";
 
 type ResultEvent = Extract<ChatEvent, { type: "result" }>;
-
-interface Approval {
-  id: string; title: string; summary: string; detail: string; tool: string; always_label: string;
-  decision: ApprovalDecision | null;
-}
 
 interface Live {
   threadId: string;
   text: string;
   tools: ToolEvent[];
-  approvals: Approval[];
+  approvals: LiveApproval[]; // in arrival order
   thinking: boolean;
   error: string | null;
-}
-
-const DECISION_TEXT: Record<ApprovalDecision, string> = { allow: "Allowed", always: "Allowed for this chat", deny: "Denied" };
-
-/** "Claude wants to run a command" with Allow / Always allow / Deny, shown in the stream while Claude waits. */
-function ApprovalCard({ a, onDecide }: { a: Approval; onDecide: (decision: ApprovalDecision) => void }) {
-  return (
-    <div className={`approval${a.decision ? " decided" : ""}`}>
-      <div className="approval-head">
-        <strong>Claude wants to: {a.title}</strong>
-        {a.decision && <span className={`Label Label--${a.decision === "deny" ? "danger" : "success"}`}>{DECISION_TEXT[a.decision]}</span>}
-      </div>
-      <pre className="approval-detail">{a.tool === "Bash" ? `$ ${a.detail}` : a.detail}</pre>
-      {!a.decision && (
-        <div className="approval-actions">
-          <button className="btn btn-sm" onClick={() => onDecide("deny")}>
-            Deny
-          </button>
-          <button
-            className="btn btn-sm"
-            onClick={() => onDecide("always")}
-            title={`Don't ask again in this chat for ${a.tool === "Bash" ? `commands that use only: ${a.always_label}` : "this tool"}`}
-          >
-            {a.tool === "Bash" && a.always_label.length <= 24 ? `Always allow ${a.always_label}` : "Always allow"}
-          </button>
-          <button className="btn btn-sm btn-primary" onClick={() => onDecide("allow")}>
-            Allow
-          </button>
-        </div>
-      )}
-    </div>
-  );
 }
 
 const QUICK_PROMPTS: { label: string; prompt: string }[] = [
@@ -158,6 +123,7 @@ function MessageView({
         <strong>Claude</strong>
       </div>
       <ToolList tools={m.tools} />
+      <ApprovalRecords records={m.approvals} />
       {m.text && <Markdown text={m.text} />}
       {m.error && <div className="msg-error">{m.error}</div>}
       <div className="msg-actions">
@@ -205,6 +171,9 @@ export function ChatPanel() {
   } = useStore.getState();
   const route = useRoute();
   const [live, setLive] = useState<Live | null>(null);
+  const liveRef = useRef<Live | null>(null); // the streaming answer, so a card's decision survives the next event
+  // Read out (aria-live="polite") when a card arrives; a card never takes focus from the message box.
+  const [announce, setAnnounce] = useState("");
   // The long-thread hint, set after the answer that makes a thread long (15 answers or $3). Never mid-stream.
   const [longHint, setLongHint] = useState<{ threadId: string; cost: number | null } | null>(null);
   const abortRef = useRef<AbortController | null>(null);
@@ -229,7 +198,7 @@ export function ChatPanel() {
   useEffect(() => {
     const el = scrollRef.current;
     if (el && stickToBottom.current) el.scrollTop = el.scrollHeight;
-  }, [thread?.messages.length, live?.text, live?.tools.length, thread?.id]);
+  }, [thread?.messages.length, live?.text, live?.tools.length, live?.approvals.length, thread?.id]);
 
   useEffect(() => {
     const el = inputRef.current;
@@ -263,6 +232,7 @@ export function ChatPanel() {
     stickToBottom.current = true;
     const acc: Live = { threadId: base.id, text: "", tools: [], approvals: [], thinking: false, error: null };
     let result = null as ResultEvent | null;
+    liveRef.current = acc;
     setLive({ ...acc });
     const ctrl = new AbortController();
     abortRef.current = ctrl;
@@ -291,12 +261,16 @@ export function ChatPanel() {
             case "error":
               acc.error = ev.message;
               break;
-            case "approval":
-              acc.approvals = [...acc.approvals, { ...ev, decision: null }];
+            case "approval": {
+              const { type: _type, ...card } = ev;
+              acc.approvals = [...acc.approvals, { ...card, decision: null, why: null }];
               acc.thinking = false;
+              setAnnounce(announceText(card));
               break;
+            }
             case "approval_done":
-              acc.approvals = acc.approvals.map((a) => (a.id === ev.id ? { ...a, decision: ev.decision } : a));
+              // answered, covered ("Allowed by your earlier choice"), timeout (read-only) or closed
+              acc.approvals = acc.approvals.map((a) => (a.id === ev.id ? { ...a, decision: ev.decision, why: ev.why } : a));
               break;
             case "done":
               break;
@@ -313,9 +287,12 @@ export function ChatPanel() {
       role: "assistant", text: acc.text, context: [], tools: acc.tools, error: acc.error, ts: now(),
       cost_usd: result?.cost_usd ?? null, cost_unknown: result ? result.cost_unknown : true,
       includes_stopped: result?.includes_stopped ?? false, session_total_usd: result?.session_total_usd ?? null,
+      ...(acc.approvals.length ? { approvals: acc.approvals.map(toRecord) } : {}), // each card becomes one line
     };
     upsertThread({ ...base, messages: [...base.messages, userMsg, assistant] });
+    liveRef.current = null;
     setLive(null);
+    setAnnounce("");
     abortRef.current = null;
     if (result?.thread?.long && !base.long_hint_dismissed) setLongHint({ threadId: base.id, cost: result.cost_usd });
     // The server persists the turn — reconcile with its copy. Claude may also have added pending comments or
@@ -326,6 +303,18 @@ export function ChatPanel() {
     );
     void useStore.getState().loadState();
     void useStore.getState().loadGithubComments();
+  };
+
+  // A card's button: show the choice at once, tell the server, and give focus back to the message box (the button
+  // goes away). The server's approval_done confirms it, or says it had already timed out.
+  const decide = (id: string, decision: ApprovalDecision) => {
+    const acc = liveRef.current;
+    if (acc) {
+      acc.approvals = acc.approvals.map((x) => (x.id === id && !x.decision ? { ...x, decision, why: "answered" } : x));
+      setLive({ ...acc });
+    }
+    inputRef.current?.focus();
+    api.decideApproval(id, decision).catch((e) => toast("error", (e as Error).message));
   };
 
   const stop = () => {
@@ -464,6 +453,10 @@ export function ChatPanel() {
           <IconX />
         </button>
       </div>
+      <OutsideAuthorStrip />
+      <div className="sr-only" aria-live="polite">
+        {announce}
+      </div>
 
       <div
         className="chat-scroll"
@@ -504,14 +497,7 @@ export function ChatPanel() {
             </div>
             <ToolList tools={live.tools} live />
             {live.approvals.map((a) => (
-              <ApprovalCard
-                key={a.id}
-                a={a}
-                onDecide={(decision) => {
-                  setLive((cur) => cur && { ...cur, approvals: cur.approvals.map((x) => (x.id === a.id ? { ...x, decision } : x)) });
-                  api.decideApproval(a.id, decision).catch((e) => toast("error", (e as Error).message));
-                }}
-              />
+              <ApprovalCard key={a.id} a={a} onDecide={(decision) => decide(a.id, decision)} />
             ))}
             {live.text ? <Markdown text={live.text} /> : null}
             {(live.thinking || (!live.text && !live.error)) && (

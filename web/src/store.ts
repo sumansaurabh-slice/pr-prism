@@ -2,6 +2,7 @@ import { create } from "zustand";
 import { api, type NewDraft } from "./api";
 import type {
   Analysis, ChatThread, ContextChip, CostSummary, Draft, DraftPlace, ExistingComment, FileEntry, ReviewState, Side,
+  Trust,
 } from "./types";
 
 /** Picked lines. `start` is on `startSide`, `end` is on `side`; they differ only for a range that starts on a
@@ -31,6 +32,7 @@ interface Store {
   state: ReviewState;
   githubComments: ExistingComment[];
   cost: CostSummary | null;      // GET /api/cost: the header total and each chat thread's total
+  trust: Trust | null;           // GET /api/trust: the outside-author notice in the chat and the header
 
   selection: Selection | null;
   // Re-place pick mode for an outdated comment: the next line picked in this file's diff becomes its new line.
@@ -53,6 +55,7 @@ interface Store {
   loadState: () => Promise<void>;
   loadGithubComments: () => Promise<void>;
   loadCost: () => Promise<void>;
+  loadTrust: () => Promise<void>;
   setReviewed: (path: string, reviewed: boolean) => Promise<void>;
   addDraft: (d: NewDraft) => Promise<Draft | null>;
   updateDraft: (id: string, body: string) => Promise<boolean>;
@@ -113,6 +116,7 @@ export const useStore = create<Store>((set, get) => ({
   state: emptyState,
   githubComments: [],
   cost: null,
+  trust: null,
 
   selection: null,
   replacing: null,
@@ -148,6 +152,13 @@ export const useStore = create<Store>((set, get) => ({
       set({ cost: await api.cost() });
     } catch {
       /* optional data: the header just shows no total */
+    }
+  },
+  loadTrust: async () => {
+    try {
+      set({ trust: await api.getTrust() });
+    } catch {
+      /* optional data: no notice (the server still asks before outsider lookups) */
     }
   },
   loadState: async () => {

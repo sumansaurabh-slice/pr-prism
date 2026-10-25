@@ -5,7 +5,14 @@ import { useStore } from "./store";
 
 function Keys() {
   useGlobalKeys();
-  return <textarea aria-label="message" />;
+  return (
+    <>
+      <textarea aria-label="message" />
+      <div className="approval">
+        <button>Allow</button>
+      </div>
+    </>
+  );
 }
 
 describe("global keys", () => {
@@ -20,6 +27,12 @@ describe("global keys", () => {
   it("ignores keys typed into a text box", () => {
     const { getByLabelText } = render(<Keys />);
     fireEvent.keyDown(getByLabelText("message"), { key: "?" });
+    expect(useStore.getState().helpOpen).toBe(false);
+  });
+
+  it("ignores keys pressed on a chat approval card", () => {
+    const { getByRole } = render(<Keys />);
+    fireEvent.keyDown(getByRole("button", { name: "Allow" }), { key: "?" });
     expect(useStore.getState().helpOpen).toBe(false);
   });
 });

@@ -114,10 +114,11 @@ export default function App() {
   useGlobalKeys();
 
   useEffect(() => {
-    const { loadAnalysis, loadState, loadGithubComments } = useStore.getState();
+    const { loadAnalysis, loadState, loadGithubComments, loadTrust } = useStore.getState();
     void loadAnalysis();
     void loadState();
     void loadGithubComments();
+    void loadTrust();
   }, []);
 
   // Poll while Claude is still analyzing; deterministic data is already on screen.

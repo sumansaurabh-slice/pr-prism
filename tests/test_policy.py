@@ -464,6 +464,49 @@ def test_always_allow_settles_the_cards_it_covers(app, pr, tmp_path, thread):
     assert _always(pr) == [f"Read:{os.path.realpath(tmp_path / 'other')}"]
 
 
+def test_the_saved_answer_keeps_one_line_per_card(pr, monkeypatch, tricky_repo):
+    """After the turn each card is a one-line record in the answer (design issue 8), saved with the thread: how it
+    was settled, or "closed" when it still waited as the turn ended."""
+    from fastapi.testclient import TestClient
+
+    from prr import server
+    from prr.config import Config
+    from prr.state import StateStore
+    from tests.test_merge import make_pr_dir
+
+    ctx = make_pr_dir(pr, tricky_repo["diff"])
+    write_json(pr / "context.json", {**ctx, "worktree": str(pr / "worktree"), "repo_root": str(pr)})
+    (pr / "diff.patch").write_text(tricky_repo["diff"])
+    app = server.create_app(pr, Config())
+    ask = endpoint(app, "/api/internal/approvals", "POST")
+    waiting: list[asyncio.Task] = []
+
+    async def card(tid: str, tool: str, inp: dict) -> str:
+        waiting.append(asyncio.create_task(ask(server.ApprovalIn(thread_id=tid, tool_name=tool, input=inp))))
+        while not app.state.approvals:
+            await asyncio.sleep(0)
+        return next(iter(app.state.approvals))
+
+    async def fake_stream(prompt, **kw):
+        _decide(app, await card(kw["thread_id"], "Bash", {"command": "npm test"}), "deny")
+        assert (await waiting[0])["decision"] == "deny"
+        await card(kw["thread_id"], "Read", {"file_path": "/elsewhere/x.py"})   # still waiting when the turn ends
+        yield {"type": "result", "session_id": "s", "cost_usd": 0.0, "duration_ms": 1}
+
+    monkeypatch.setattr(server, "stream_chat", fake_stream)
+    client = TestClient(server.Guard(app, "tok", 40123), base_url="http://127.0.0.1:40123")
+    client.cookies.set("prr_session", "tok")
+    h = {"origin": "http://127.0.0.1:40123"}
+    tid = client.post("/api/chat/threads", json={}, headers=h).json()["id"]
+    stream = client.post(f"/api/chat/threads/{tid}/messages", json={"text": "hi"}, headers=h).text
+    assert '"type": "approval_done"' in stream and '"why": "answered"' in stream
+    saved = StateStore(pr).load()["threads"][0]["messages"][-1]["approvals"]
+    assert [{k: v for k, v in r.items() if k != "id"} for r in saved] == [
+        {"tool": "Bash", "title": "Run a command", "summary": "npm test", "decision": "deny", "why": "answered"},
+        {"tool": "Read", "title": "Read a file", "summary": "/elsewhere/x.py", "decision": "deny", "why": "closed"},
+    ]
+
+
 def test_trust_state_for_the_page(app, pr):
     assert endpoint(app, "/api/trust", "GET")() == {"author": "alice", "association": "MEMBER", "trusted": True,
                                                     "state": "trusted"}
