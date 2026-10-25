@@ -46,7 +46,8 @@ const ghComments = [
 
 // Since your review (prr/since.py). The mock pretends you reviewed an older commit; PRR_MOCK_SINCE=0 starts with no
 // reviewed commit, and submitting a review here moves it to the current head (both hide the toggle).
-// PRR_MOCK_NEW_COMMITS=1 makes GitHub's head differ from the analyzed one ("New commits since you opened this").
+// PRR_MOCK_NEW_COMMITS=1 makes GitHub's head differ from the analyzed one ("New commits since you opened this", in
+// the banner and in Submit's warning).
 state.reviewed_head ??= process.env.PRR_MOCK_SINCE === "0" ? null : "b".repeat(40);
 const githubHead = process.env.PRR_MOCK_NEW_COMMITS === "1" ? "e".repeat(40) : analysis.pr.head_sha;
 const estimate = { minutes: 6, usd: 2.1 };
@@ -263,7 +264,7 @@ function preview(body, event) {
   };
   return {
     payload, inline_count: anchored.length, unanchored, analyzed_head: analysis.pr.head_sha,
-    current_head: analysis.pr.head_sha, head_changed: false, viewer: "you", is_author: false,
+    current_head: githubHead, head_changed: githubHead !== analysis.pr.head_sha, viewer: "you", is_author: false,
   };
 }
 

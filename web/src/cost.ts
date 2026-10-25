@@ -1,6 +1,6 @@
 // How spend reads in the app (design review issue 7). Every number comes from GET /api/cost or the chat's own
 // answers, which the server computes from calls.jsonl (prr/cost.py).
-import type { ChatMessage, CostSummary, ThreadCost } from "./types";
+import type { ChatMessage, CostSummary, RunEstimate, ThreadCost } from "./types";
 
 /** "$0.42": always 2 decimals. */
 export function usd(n: number): string {
@@ -31,6 +31,13 @@ export function overLimitText(warn: number): string {
 /** A thread's total in the thread picker, or "" for a thread with no answers yet. */
 export function threadTotalText(t: ThreadCost | undefined): string {
   return t && t.turns > 0 ? atLeast(t.total_usd, t.unknown) : "";
+}
+
+/** "Re-read the PR"'s cost, from the last complete run (GET /api/head estimate): "about 6 min and $2". */
+export function estimateText(e: RunEstimate): string {
+  const m = Math.max(1, Math.round(e.minutes));
+  const time = m < 60 ? `${m} min` : `${Math.floor(m / 60)}h${m % 60 ? ` ${m % 60}m` : ""}`;
+  return `about ${time} and ${e.usd < 1 ? usd(e.usd) : `$${Math.round(e.usd)}`}`;
 }
 
 export interface SoFar { usd: number; unknown: boolean }

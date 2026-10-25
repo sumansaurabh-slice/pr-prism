@@ -133,6 +133,24 @@ describe("the stop list (DT8)", () => {
     expect(rows).toHaveLength(6); // 5 listed + the opened more place
   });
 
+  it("with Changes since your review on, Only new stops lists just the stops whose lines changed (E4)", () => {
+    useStore.setState({
+      sinceReview: {
+        reviewed_head: "aaaaaaa", head: "bbbbbbb", files: [{ path: PATH, hunks: [] }], patch: {}, note: null, ok: true,
+        full_pr: false, comments: [], comments_error: null, new_stop_ids: [finding.id],
+      },
+      sinceChoice: {},
+    });
+    open(`#/review/${finding.id}`);
+    const nav = stopNav();
+    const listed = () => within(nav).getAllByRole("link").filter((a) => a.getAttribute("href")?.startsWith("#/review/"));
+    expect(listed()).toHaveLength(1);
+    const onlyNew = within(nav).getByRole("switch", { name: /Only new stops/ });
+    expect(onlyNew).toBeChecked();
+    fireEvent.click(onlyNew);
+    expect(listed()).toHaveLength(4);
+  });
+
   it('ends with "N files have nothing flagged" linking to Files changed', () => {
     open(`#/review/${finding.id}`);
     const link = within(stopNav()).getByRole("link", { name: "61 files have nothing flagged →" });

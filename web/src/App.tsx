@@ -6,9 +6,10 @@ import { FlowView } from "./components/FlowView";
 import { Header } from "./components/Header";
 import { Impact } from "./components/Impact";
 import { Overview } from "./components/Overview";
-import { ProgressBanner, RestoreBanner } from "./components/ProgressBanner";
+import { NewCommitsBanner, ProgressBanner, RestoreBanner } from "./components/ProgressBanner";
 import { ReviewPath } from "./components/ReviewPath";
 import { ReviewView } from "./components/ReviewView";
+import { SinceReviewBanner, SinceReviewToggle, useSinceReviewSync } from "./components/SinceReview";
 import { SubmitModal } from "./components/SubmitModal";
 import { DiffStat, IconChecklist, IconComment, IconFileDiff, IconPulse, IconWorkflow, IconX } from "./icons";
 import { REVIEW_SHORTCUTS, SHORTCUTS, useGlobalKeys } from "./keyboard";
@@ -17,6 +18,7 @@ import { fileHref, navigate, reviewHref, useRoute, type Route } from "./router";
 import { reviewOrder, useStore } from "./store";
 
 const POLL_MS = 3000;
+const HEAD_POLL_MS = 60_000; // GitHub's head is read at most once a minute anyway (GET /api/head)
 
 function Tabs({ route }: { route: Route }) {
   const analysis = useStore((s) => s.analysis);
@@ -57,6 +59,7 @@ function Tabs({ route }: { route: Route }) {
       </div>
       {analysis && (
         <div className="tabs-right">
+          <SinceReviewToggle />
           <span className="viewed-count" title="Files you have marked as viewed">
             <span className="viewed-ring" style={{ "--pct": `${files.length ? (viewed / files.length) * 100 : 0}%` } as CSSProperties} />
             {viewed} / {files.length} files viewed
@@ -173,22 +176,32 @@ export default function App() {
     if (useStore.getState().chatRail !== chatRail) useStore.getState().setChatRail(chatRail);
   }, [chatRail]);
 
+  useSinceReviewSync();
+
   useEffect(() => {
-    const { loadAnalysis, loadState, loadGithubComments, loadTrust } = useStore.getState();
+    const { loadAnalysis, loadState, loadGithubComments, loadTrust, loadHead } = useStore.getState();
     void loadAnalysis();
     void loadState();
     void loadGithubComments();
     void loadTrust();
+    void loadHead();
   }, []);
 
-  // Poll while Claude is still analyzing; deterministic data is already on screen.
+  // Poll while Claude is still analyzing (or re-reading the PR); deterministic data is already on screen. The PR's
+  // head rides along ("New commits since you opened this"), and is still checked once a minute after that.
   const status = analysis?.status;
   const hasAnalysis = !!analysis;
+  const rereading = useStore((s) => s.head?.running ?? false);
+  const analyzing = !hasAnalysis || (status !== "complete" && status !== "failed") || rereading;
   useEffect(() => {
-    if (hasAnalysis && (status === "complete" || status === "failed")) return;
-    const t = window.setInterval(() => void useStore.getState().loadAnalysis(), POLL_MS);
+    const poll = () => {
+      const st = useStore.getState();
+      if (analyzing) void st.loadAnalysis();
+      void st.loadHead();
+    };
+    const t = window.setInterval(poll, analyzing ? POLL_MS : HEAD_POLL_MS);
     return () => window.clearInterval(t);
-  }, [status, hasAnalysis]);
+  }, [analyzing]);
 
   useEffect(() => {
     if (analysis) document.title = `${analysis.pr.title} · #${analysis.pr.number} · PR Prism`;
@@ -226,6 +239,8 @@ export default function App() {
       <Header />
       <Tabs route={route} />
       <ProgressBanner />
+      <NewCommitsBanner />
+      <SinceReviewBanner />
       <RestoreBanner />
       <div className="layout">
         {route.view === "review" ? (

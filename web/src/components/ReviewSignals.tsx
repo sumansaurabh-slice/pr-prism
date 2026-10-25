@@ -265,7 +265,7 @@ export function RecheckedBox() {
   return (
     <section className="Box">
       <div className="Box-header">
-        <h3 className="Box-title">Earlier problems, re-checked after new commits</h3>
+        <h3 className="Box-title">Earlier problems, re-checked on the latest commit</h3>
         <span className="color-muted small">
           {fixed} fixed · {items.length - fixed} still open
         </span>

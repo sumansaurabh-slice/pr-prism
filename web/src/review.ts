@@ -1,7 +1,7 @@
 // Guided review (prr/stops.py, docs/api.md "Guided review"): which stops the Review view lists, how far you are,
 // and the words it uses. Pure helpers, shared by the Review tab, the Overview's plan box and the Review view.
 import { useMemo, useRef } from "react";
-import { useStore } from "./store";
+import { useSinceView, useStore } from "./store";
 import type { Analysis, ContextChip, Draft, ReviewState, Stop, StopKind, Verdict } from "./types";
 
 export const KIND_TEXT: Record<StopKind, string> = {
@@ -36,9 +36,12 @@ export interface ReviewModel {
  * Sort the stops into the list. `pinned` is the stop you are on when it was in the numbered list: if a later poll
  * moves it past the cap, hides it or drops it, it stays where it was (the server can't know which stop is open).
  */
-export function buildModel(stops: Stop[], includeLow: boolean, pinned: Stop | null = null): ReviewModel {
+export function buildModel(
+  stops: Stop[], includeLow: boolean, pinned: Stop | null = null, onlyNew: Set<string> | null = null,
+): ReviewModel {
   const byOrder = (a: Stop, b: Stop) => a.order - b.order;
-  const main = stops.filter((s) => inMainList(s, includeLow));
+  const keep = (s: Stop) => !onlyNew || onlyNew.has(s.id);
+  const main = stops.filter((s) => inMainList(s, includeLow) && keep(s));
   const gone = new Set<string>();
   if (pinned && !main.some((s) => s.id === pinned.id)) {
     const latest = stops.find((s) => s.id === pinned.id);
@@ -49,7 +52,7 @@ export function buildModel(stops: Stop[], includeLow: boolean, pinned: Stop | nu
   const rest = (s: Stop) => !main.some((m) => m.id === s.id);
   return {
     main,
-    more: stops.filter((s) => s.more && !s.dropped && !s.low_confidence && rest(s)).sort(byOrder),
+    more: stops.filter((s) => s.more && !s.dropped && !s.low_confidence && keep(s) && rest(s)).sort(byOrder),
     earlier: stops.filter((s) => s.dropped && rest(s)).sort(byOrder),
     low: stops.filter((s) => s.low_confidence && !s.dropped).length,
     gone,
@@ -68,21 +71,31 @@ export function reviewCounts(main: Stop[], state: ReviewState): ReviewCounts {
   };
 }
 
+/** "Only new stops" (E4): while "Changes since your review" is on, only the stops whose lines changed since then.
+ * null when the filter doesn't apply (the view is off, or you turned the filter off). */
+export function useNewStops(): Set<string> | null {
+  const since = useSinceView();
+  const only = useStore((s) => s.onlyNewStops);
+  const ids = useStore((s) => s.sinceReview?.new_stop_ids);
+  return useMemo(() => (since.on && only && ids ? new Set(ids) : null), [since.on, only, ids]);
+}
+
 /** The numbered list without pinning: for the Review tab's "N left" and the Overview's plan box. */
 export function useReviewCounts(): ReviewCounts & { places: number; quiet: number; started: boolean } {
   const analysis = useStore((s) => s.analysis);
   const state = useStore((s) => s.state);
   const includeLow = useStore((s) => s.includeLow);
+  const onlyNew = useNewStops();
   return useMemo(() => {
     const stops = analysis?.stops ?? [];
-    const main = stops.filter((s) => inMainList(s, includeLow));
+    const main = stops.filter((s) => inMainList(s, includeLow) && (!onlyNew || onlyNew.has(s.id)));
     return {
       ...reviewCounts(main, state),
       places: analysis?.review_summary?.places ?? main.length,
       quiet: analysis?.review_summary?.quiet_files ?? 0,
       started: stops.some((s) => !!state.stop_verdicts[s.id]),
     };
-  }, [analysis, state, includeLow]);
+  }, [analysis, state, includeLow, onlyNew]);
 }
 
 /** Every stop seen this session, so one that vanishes while you are on it can still be shown. */
@@ -95,12 +108,13 @@ const lastSeen = new Map<string, Stop>();
 export function useReviewModel(currentId: string | null): ReviewModel & { current: Stop | null; index: number } {
   const analysis = useStore((s) => s.analysis);
   const includeLow = useStore((s) => s.includeLow);
+  const onlyNew = useNewStops();
   const pin = useRef<Stop | null>(null);
   return useMemo(() => {
     const stops = analysis?.stops ?? [];
     for (const s of stops) lastSeen.set(s.id, s);
     if (pin.current && pin.current.id !== currentId) pin.current = null;
-    const model = buildModel(stops, includeLow, pin.current);
+    const model = buildModel(stops, includeLow, pin.current, onlyNew);
     const index = currentId ? model.main.findIndex((s) => s.id === currentId) : -1;
     if (index !== -1) pin.current = model.main[index];
     const current =
@@ -108,7 +122,7 @@ export function useReviewModel(currentId: string | null): ReviewModel & { curren
         ? model.main[index]
         : (stops.find((s) => s.id === currentId) ?? (currentId ? lastSeen.get(currentId) : undefined) ?? null);
     return { ...model, current, index };
-  }, [analysis, includeLow, currentId]);
+  }, [analysis, includeLow, onlyNew, currentId]);
 }
 
 /** The next stop to answer after `fromId` in list order (wrapping), skipping `skip` (the one just answered). */

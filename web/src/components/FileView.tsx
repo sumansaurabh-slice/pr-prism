@@ -1,7 +1,7 @@
 import { useCallback, useEffect, useMemo, useRef, useState, type MouseEvent, type ReactNode, type RefObject } from "react";
 import {
   Decoration, Diff, Hunk, getChangeKey, isDelete, isInsert, parseDiff, tokenize,
-  type ChangeData, type FileData, type HunkData, type HunkTokens, type TokenizeOptions,
+  type ChangeData, type FileData, type GutterOptions, type HunkData, type HunkTokens, type TokenizeOptions,
 } from "react-diff-view";
 import "react-diff-view/style/index.css";
 import { refractor } from "refractor";
@@ -18,17 +18,29 @@ import { isSeen, markHunkSeen, SEEN_AFTER_MS } from "../coverage";
 import { registerFileNav, stepFile } from "../keyboard";
 import { InlineText, Markdown } from "../markdown";
 import { goFile, navigate, fileHref, useNavTick } from "../router";
-import { fileByPath, fmtMinutes, isStaleReview, readLS, splitPath, useStore, writeLS, type Selection } from "../store";
+import {
+  fileByPath, fmtMinutes, isStaleReview, readLS, splitPath, useSinceView, useStore, writeLS, type Selection,
+} from "../store";
 import type { CIAnnotation, Draft, ExistingComment, FileEntry, Finding, Note, SecondLook, Severity, Side } from "../types";
 import { Avatar, DiffStat, StatusIcon } from "../icons";
 import { RiskBadge } from "./Header";
+import { CommentStatusLine } from "./SinceReview";
 
 for (const lang of [jsx, tsx, toml, protobuf, graphql, hcl, docker]) refractor.register(lang);
 
 // ------------------------------------------------------------------ helpers
 
-export const diffCache = new Map<string, string>(); // path → patch, shared with the Review view's hunks
+// Keyed by the analyzed head too: "Re-read the PR" brings new commits without reloading the page. Shared with the
+// Review view's hunks.
+export const diffCache = new Map<string, string>();
+export function diffKey(path: string, head = useStore.getState().analysis?.pr.head_sha ?? ""): string {
+  return `${head}:${path}`;
+}
 const fileCache = new Map<string, string>();
+
+/** "Changes since your review" shows the interdiff; its lines that aren't in the PR's own diff can't take a line
+ * comment (GitHub only takes comments on the PR's diff). */
+const NO_COMMENT = "Comment on this in the full PR view";
 
 const EXT_LANG: Record<string, string> = {
   js: "javascript", mjs: "javascript", cjs: "javascript", jsx: "jsx", ts: "typescript", mts: "typescript",
@@ -522,9 +534,12 @@ export function DraftCard({ d, compact }: { d: Draft; compact?: boolean }) {
 
 function GithubThread({ comments }: { comments: ExistingComment[] }) {
   const analysis = useStore((s) => s.analysis);
+  // One of your comments from your last review: fixed, still open, line unchanged… (GET /api/since-review)
+  const earlier = useStore((s) => s.sinceReview?.comments.find((c) => comments.some((x) => x.id === c.id)));
   const bot = analysis?.bot_findings.find((b) => b.comment_id === comments[0]?.id);
   return (
     <div className="review-comment gh-thread">
+      {earlier && <CommentStatusLine c={earlier} />}
       {bot?.verdict && (
         <div className={`bot-verdict verdict-${bot.verdict}`}>
           <span className={`Label Label--${VERDICT_VARIANT[bot.verdict]}`}>{VERDICT_TEXT[bot.verdict]}</span>
@@ -625,12 +640,13 @@ function FullFile({
   path: string; at: "head" | "base"; focusLine: number | null; inPR: boolean;
   selection: Selection | null; onSelect: (line: number, shift: boolean, text: (s: number, e: number) => string) => void;
 }) {
-  const [content, setContent] = useState<string | null>(fileCache.get(`${at}:${path}`) ?? null);
+  const head = useStore((s) => s.analysis?.pr.head_sha ?? "");
+  const [content, setContent] = useState<string | null>(fileCache.get(`${head}:${at}:${path}`) ?? null);
   const [error, setError] = useState<string | null>(null);
   const ref = useRef<HTMLDivElement>(null);
   const navTick = useNavTick();
   useEffect(() => {
-    const k = `${at}:${path}`;
+    const k = `${head}:${at}:${path}`;
     if (fileCache.has(k)) {
       setContent(fileCache.get(k)!);
       return;
@@ -644,7 +660,7 @@ function FullFile({
       },
       (e) => setError((e as Error).message),
     );
-  }, [path, at]);
+  }, [path, at, head]);
   const lines = useMemo(() => (content === null ? [] : content.replace(/\n$/, "").split("\n")), [content]);
   useEffect(() => {
     if (!focusLine || !lines.length) return;
@@ -779,8 +795,10 @@ export function FileView({ path, line, side, full }: { path: string; line: numbe
   const navTick = useNavTick();
   const file = fileByPath(analysis, path);
   const inPR = !!file;
+  const head = analysis?.pr.head_sha ?? "";
+  const cacheKey = diffKey(path, head);
 
-  const [patch, setPatch] = useState<string | null>(diffCache.get(path) ?? null);
+  const [patch, setPatch] = useState<string | null>(diffCache.get(cacheKey) ?? null);
   const [diffError, setDiffError] = useState<string | null>(null);
   const [viewType, setViewType] = useState<"unified" | "split">(() =>
     readLS("prr.viewType") === "split" ? "split" : "unified",
@@ -792,8 +810,8 @@ export function FileView({ path, line, side, full }: { path: string; line: numbe
   useEffect(() => {
     noteCursor.current = -1;
     if (!inPR) return;
-    if (diffCache.has(path)) {
-      setPatch(diffCache.get(path)!);
+    if (diffCache.has(cacheKey)) {
+      setPatch(diffCache.get(cacheKey)!);
       return;
     }
     setPatch(null);
@@ -801,7 +819,7 @@ export function FileView({ path, line, side, full }: { path: string; line: numbe
     let cancelled = false;
     api.diff(path).then(
       (r) => {
-        diffCache.set(path, r.patch);
+        diffCache.set(cacheKey, r.patch);
         if (!cancelled) setPatch(r.patch);
       },
       (e) => !cancelled && setDiffError((e as Error).message),
@@ -809,19 +827,57 @@ export function FileView({ path, line, side, full }: { path: string; line: numbe
     return () => {
       cancelled = true;
     };
-  }, [path, inPR]);
+  }, [path, inPR, cacheKey]);
+
+  // "Changes since your review": this file's interdiff instead of its PR diff. When the reviewed commit is gone the
+  // API's "interdiff" is the whole PR (full_pr), so the PR diff is shown as usual.
+  const since = useSinceView();
+  const interdiff = since.on && !since.review?.full_pr ? (since.review?.patch[path] ?? null) : null;
+  const shownPatch = interdiff ?? patch;
 
   const fileData: FileData | null = useMemo(() => {
-    if (!patch) return null;
+    if (!shownPatch) return null;
     try {
       // "zip" pairs deletions with insertions side by side — right for split view, confusing in unified.
-      return parseDiff(patch, viewType === "split" ? { nearbySequences: "zip" } : undefined)[0] ?? null;
+      return parseDiff(shownPatch, viewType === "split" ? { nearbySequences: "zip" } : undefined)[0] ?? null;
     } catch {
       return null;
     }
-  }, [patch, viewType]);
+  }, [shownPatch, viewType]);
   const hunks = useMemo(() => fileData?.hunks ?? [], [fileData]);
   const index = useMemo(() => buildIndex(hunks), [hunks]);
+
+  // Interdiff lines outside the PR's own diff: a removed line (it was on the commit you reviewed, not the PR's base),
+  // or a line outside every PR hunk. They can't take a line comment.
+  const noComment = useMemo(() => {
+    if (!interdiff) return null;
+    const prHunks = file?.hunks ?? [];
+    const inPRDiff = (n: number) => prHunks.some((h) => n >= h.new_start && n < h.new_start + h.new_lines);
+    const out = new Set<string>();
+    for (const h of hunks) {
+      for (const c of h.changes) {
+        const n = newNo(c);
+        if (n === null || !inPRDiff(n)) out.add(getChangeKey(c));
+      }
+    }
+    return out;
+  }, [interdiff, hunks, file]);
+  const renderGutter = useCallback(
+    ({ change, renderDefault, wrapInAnchor }: GutterOptions) =>
+      noComment?.has(getChangeKey(change)) ? (
+        <span className="gutter-no-comment" title={NO_COMMENT}>
+          {renderDefault()}
+        </span>
+      ) : (
+        wrapInAnchor(renderDefault())
+      ),
+    [noComment],
+  );
+  /** The interdiff's old side is the commit you reviewed, not the PR's base: nothing on the LEFT maps onto it. */
+  const keyAt = useCallback(
+    (s: Side, l: number) => (interdiff && s === "LEFT" ? undefined : keyFor(index, s, l)),
+    [index, interdiff],
+  );
 
   const tokens: HunkTokens | null = useMemo(() => {
     if (!hunks.length) return null;
@@ -842,7 +898,7 @@ export function FileView({ path, line, side, full }: { path: string; line: numbe
   // ---- navigation to ?line=
   useEffect(() => {
     if (!line || showFull || !fileData) return;
-    const k = keyFor(index, side, line);
+    const k = keyAt(side, line);
     if (k === undefined) {
       // Line is outside the diff — show it in the full file instead.
       navigate(fileHref(path, line, side, true));
@@ -873,6 +929,7 @@ export function FileView({ path, line, side, full }: { path: string; line: numbe
     let j = keys.indexOf(toKey);
     if (i > j) [i, j] = [j, i];
     const range = keys.slice(i, j + 1);
+    if (noComment && range.some((k) => noComment.has(k))) return `${NO_COMMENT}.`;
     const anchor = anchorFor(index.changeByKey.get(range[0])!, index.changeByKey.get(range[range.length - 1])!);
     if (typeof anchor === "string") return anchor;
     return { path, ...anchor, hunk, keys: range, text: range.map((k) => index.content.get(k) ?? "").join("\n") };
@@ -891,6 +948,10 @@ export function FileView({ path, line, side, full }: { path: string; line: numbe
     if (!change || e.button !== 0) return;
     e.preventDefault(); // don't start a text selection while picking lines
     const key = getChangeKey(change);
+    if (noComment?.has(key)) {
+      toast("info", `${NO_COMMENT}.`);
+      return;
+    }
     const cur = useStore.getState().selection;
     if (e.shiftKey && cur && cur.path === path && cur.hunk !== -1 && anchorKey.current) {
       const blocked = extendTo(key);
@@ -968,9 +1029,10 @@ export function FileView({ path, line, side, full }: { path: string; line: numbe
   const notes = file?.notes ?? [];
   const sortedNotes = useMemo(() => {
     return notes
-      .map((n, i) => ({ n, i, key: keyFor(index, n.side, n.end) }))
+      .map((n, i) => ({ n, i, key: keyAt(n.side, n.end) }))
+      .filter((x) => !interdiff || x.key !== undefined) // since your review: only notes on lines shown
       .sort((a, b) => (index.keyOrder.get(a.key ?? "") ?? 1e9) - (index.keyOrder.get(b.key ?? "") ?? 1e9));
-  }, [notes, index]);
+  }, [notes, index, keyAt, interdiff]);
 
   // A finding already in your review keeps its card, labelled "In your review" with "Open your comment" (design D20).
   const dismissed = useMemo(() => new Set(state.dismissed_suggestions), [state.dismissed_suggestions]);
@@ -994,10 +1056,13 @@ export function FileView({ path, line, side, full }: { path: string; line: numbe
   const { widgets, floating } = useMemo(() => {
     const byKey = new Map<string, ReactNode[]>();
     const floating: ReactNode[] = [];
-    const put = (side: Side, l: number, node: ReactNode) => {
-      const k = keyFor(index, side, l);
-      if (k === undefined) floating.push(node);
-      else {
+    // Since your review, cards on lines that didn't change since then wait in the whole PR view; your own pending
+    // comments (and the comment box) never hide.
+    const put = (side: Side, l: number, node: ReactNode, keep = false) => {
+      const k = keyAt(side, l);
+      if (k === undefined) {
+        if (!interdiff || keep) floating.push(node);
+      } else {
         const arr = byKey.get(k) ?? [];
         arr.push(node);
         byKey.set(k, arr);
@@ -1025,15 +1090,15 @@ export function FileView({ path, line, side, full }: { path: string; line: numbe
     for (const d of fileDrafts) {
       const card = <DraftCard key={`d${d.id}`} d={d} />;
       if (d.outdated) floating.push(card); // its line is on an older commit, so it is never pinned to today's diff
-      else put(d.side, d.line, card);
+      else put(d.side, d.line, card, true);
     }
     if (composer && composer.path === path && composer.start > 0 && hunks.length) {
-      put(composer.side, composer.end, <Composer key="composer" />);
+      put(composer.side, composer.end, <Composer key="composer" />, true);
     }
     const widgets: Record<string, ReactNode> = {};
     for (const [k, nodes] of byKey) widgets[k] = <div className="widget-stack">{nodes}</div>;
     return { widgets, floating };
-  }, [index, sortedNotes, liveSuggestions, ciNotes, githubComments, fileDrafts, composer, path, hunks.length]);
+  }, [keyAt, interdiff, sortedNotes, liveSuggestions, ciNotes, githubComments, fileDrafts, composer, path, hunks.length]);
 
   // ---- keyboard registration
   useEffect(() => {
@@ -1111,6 +1176,12 @@ export function FileView({ path, line, side, full }: { path: string; line: numbe
           </div>
         )}
 
+        {!showFull && since.on && !since.review?.full_pr && inPR && !interdiff && (
+          <div className="flash flash-muted since-file-note">
+            This file has no changes since your review. This is its whole PR diff.
+          </div>
+        )}
+
         {!showFull && floating.length > 0 && (
           <div className="floating-notes">
             <div className="floating-title">About this file, or about lines not shown in this diff</div>
@@ -1120,9 +1191,9 @@ export function FileView({ path, line, side, full }: { path: string; line: numbe
 
         {showFull ? (
           <FullFile path={path} at={fullAt} focusLine={line} inPR={inPR} selection={selection} onSelect={onFullSelect} />
-        ) : diffError ? (
+        ) : diffError && !interdiff ? (
           <div className="blankslate">Could not load the changes: {diffError}</div>
-        ) : patch === null ? (
+        ) : shownPatch === null ? (
           <div className="blankslate">Loading the changes…</div>
         ) : !hunks.length ? (
           <div className="blankslate">
@@ -1141,6 +1212,7 @@ export function FileView({ path, line, side, full }: { path: string; line: numbe
               tokens={tokens}
               widgets={widgets}
               selectedChanges={selectedChanges}
+              renderGutter={noComment ? renderGutter : undefined}
               gutterEvents={{ onMouseDown: onLineMouseDown, onMouseEnter: onLineMouseEnter }}
               codeEvents={{ onMouseEnter: onLineMouseEnter }}
               optimizeSelection
@@ -1287,7 +1359,7 @@ function FileSummary({ file, stale }: { file: FileEntry; stale: boolean }) {
             Needs extra care
           </span>
         )}
-        {stale && <span className="Label Label--attention">Changed since you viewed it</span>}
+        {stale && <span className="Label Label--attention">Changed since you viewed</span>}
         <span className="claude-box-time">{fmtMinutes(file.minutes)} to review</span>
       </div>
       <div className="Box-body">

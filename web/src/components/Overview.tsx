@@ -7,6 +7,7 @@ import type { Ref } from "../types";
 import { RiskBadge } from "./Header";
 import { BlockerBanner, CIBox, FindingsBox, OtherToolsBox, RecheckedBox } from "./ReviewSignals";
 import { PlanBox } from "./ReviewView";
+import { SinceReviewBox } from "./SinceReview";
 
 export function RefList({ refs }: { refs: Ref[] }) {
   if (!refs.length) return null;
@@ -63,6 +64,7 @@ export function Overview() {
   return (
     <div className="overview">
       <div className="overview-main">
+        <SinceReviewBox />
         <PlanBox />
         <BlockerBanner />
         <AnalysisWarnings warnings={analysis.warnings ?? []} />

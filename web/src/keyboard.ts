@@ -1,7 +1,7 @@
 import { useEffect } from "react";
 import { goNextUnchecked } from "./coverage";
 import { goFile, navigate, parseHash } from "./router";
-import { fileByPath, fileMap, hiddenByPrefs, reviewOrder, useStore } from "./store";
+import { fileByPath, fileMap, hiddenByPrefs, reviewOrder, sinceView, useStore } from "./store";
 
 /** The Walkthrough registers these while mounted so global keys can reach it. */
 export interface FileNav {
@@ -44,14 +44,18 @@ function onApprovalCard(target: EventTarget | null): boolean {
   return target instanceof Element && target.closest(".approval") !== null;
 }
 
-/** Next/previous file in the reading order, skipping files the "Hide …" checkboxes hide. */
+/** Next/previous file in the reading order, skipping files the "Hide …" checkboxes hide (and, with "Changes since
+ * your review" on, files that didn't change since then). */
 export function stepFile(delta: 1 | -1) {
-  const { analysis, prefs, state } = useStore.getState();
+  const { analysis, prefs, state, sinceReview, sinceChoice } = useStore.getState();
   const files = fileMap(analysis);
+  const since = sinceView(sinceReview, sinceChoice);
   const route = parseHash(window.location.hash);
   const current = route.view === "file" ? route.path : null;
   const order = reviewOrder(analysis).filter(
-    (p) => p === current || !files.has(p) || !hiddenByPrefs(files.get(p)!, prefs, state.reviewed),
+    (p) =>
+      p === current ||
+      ((!files.has(p) || !hiddenByPrefs(files.get(p)!, prefs, state.reviewed)) && (!since.on || since.files.has(p))),
   );
   if (!order.length) return;
   const idx = current ? order.indexOf(current) : -1;

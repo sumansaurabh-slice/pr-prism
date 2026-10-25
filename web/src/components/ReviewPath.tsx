@@ -3,7 +3,7 @@ import { riskySeenText, useCoverage, useCoverageSync } from "../coverage";
 import { IconCheck, IconChevronDown, IconChevronRight, IconEye, IconSearch, StatusIcon } from "../icons";
 import { InlineText } from "../markdown";
 import { fileHref, useRoute } from "../router";
-import { fileMap, hiddenByPrefs, isStaleReview, splitPath, useStore, type ViewPrefs } from "../store";
+import { fileMap, hiddenByPrefs, isStaleReview, splitPath, useSinceView, useStore, type ViewPrefs } from "../store";
 import type { ChapterFile, FileEntry } from "../types";
 
 const OTHER_ID = "_other"; // the extra group for files the reading order left out
@@ -65,7 +65,7 @@ function FileRow({ file, why, active }: { file: FileEntry; why: string; active: 
           {file.sensitive && <span className="Label Label--attention Label--small">needs care</span>}
           {stale && (
             <span className="Label Label--attention Label--small" title="This file changed after you marked it viewed">
-              changed
+              changed since you viewed
             </span>
           )}
           {drafts > 0 && (
@@ -94,6 +94,7 @@ export function ReviewPath() {
   const setPref = useStore((s) => s.setPref);
   const [closed, setClosed] = useState<Record<string, boolean>>({});
   const [openSkim, setOpenSkim] = useState<Record<string, boolean>>({});
+  const since = useSinceView(); // "Changes since your review": only the files changed since then
   const activePath = route.view === "file" ? route.path : null;
   useCoverageSync(); // "2 of 5 risky hunks seen" on high-risk files
 
@@ -131,7 +132,7 @@ export function ReviewPath() {
   const needle = filter.trim().toLowerCase();
   const visible = (f: FileEntry) =>
     (!needle || f.path.toLowerCase().includes(needle)) &&
-    (f.path === activePath || !hiddenByPrefs(f, prefs, reviewedMap));
+    (f.path === activePath || (!hiddenByPrefs(f, prefs, reviewedMap) && (!since.on || since.files.has(f.path))));
   const total = analysis.files.length;
   const shown = analysis.files.filter(visible).length;
   const testCount = analysis.files.filter((f) => f.is_test).length;

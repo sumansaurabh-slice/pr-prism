@@ -1,3 +1,5 @@
+import { useState } from "react";
+import { estimateText } from "../cost";
 import { IconX } from "../icons";
 import { useStore } from "../store";
 
@@ -16,12 +18,55 @@ export function RestoreBanner() {
   );
 }
 
+/** GitHub has commits the analysis hasn't read (design D12): "New commits since you opened this · [Re-read the PR]
+ * (about 6 min and $2, based on the last run; you can keep working)". Hidden while a run goes: the progress banner
+ * follows it. */
+export function NewCommitsBanner() {
+  const head = useStore((s) => s.head);
+  const reanalyze = useStore((s) => s.reanalyze);
+  const [busy, setBusy] = useState(false);
+  if (!head?.head_changed || head.running) return null;
+  return (
+    <div className="flash flash-info strip" role="status">
+      <span className="strip-text new-commits">
+        <strong>New commits since you opened this</strong>
+        <span aria-hidden>·</span>
+        <button
+          className="btn btn-sm"
+          disabled={busy}
+          title="Fetch the new commits and have Claude read the PR again, in the background"
+          onClick={() => {
+            setBusy(true);
+            void reanalyze().finally(() => setBusy(false));
+          }}
+        >
+          Re-read the PR
+        </button>
+        {head.estimate && (
+          <span className="color-muted">({estimateText(head.estimate)}, based on the last run; you can keep working)</span>
+        )}
+      </span>
+    </div>
+  );
+}
+
 export function ProgressBanner() {
   const analysis = useStore((s) => s.analysis);
   const error = useStore((s) => s.analysisError);
+  const rereading = useStore((s) => s.head?.running ?? false);
   if (error && !analysis) return <div className="flash flash-error">Could not load the review: {error}</div>;
   if (!analysis) return null;
   const p = analysis.progress;
+  if (rereading && (p.status === "complete" || p.status === "failed")) {
+    // "Re-read the PR" fetches first; the analysis (and its progress) starts once the new commits are in.
+    return (
+      <div className="flash flash-info">
+        <span className="spinner" aria-hidden />
+        <span className="flash-main">Re-reading the PR: getting the new commits…</span>
+        <span className="flash-log">You can keep working. The page updates when Claude is done.</span>
+      </div>
+    );
+  }
   if (p.status === "complete") return null;
   const last = p.log.length ? p.log[p.log.length - 1] : "";
   if (p.status === "failed") {
