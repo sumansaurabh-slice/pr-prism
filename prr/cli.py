@@ -140,6 +140,33 @@ def cmd_analyze(args: argparse.Namespace, cfg: Config) -> int:
     return 0 if a["status"] == "complete" else 1
 
 
+def cmd_reanalyze(args: argparse.Namespace, cfg: Config) -> int:
+    """`prr _reanalyze <PR>`: the app's "Re-read the PR" (POST /api/reanalyze). Fetch the PR again, then analyze it with
+    the last run's focus. analyze.pid is held from the start, so the app sees one run from the click on."""
+    from .analyze import AnalyzeError, analyze
+    from .fetch import fetch
+    from .util import now_iso, write_json
+
+    ref, root, d = _resolve(args, cfg)
+    pid_file = d / "analyze.pid"
+    other = read_json(pid_file) or {}
+    if other.get("pid") != os.getpid() and supervise.pid_alive(other.get("pid")):
+        _err(f"another analysis is already running for this PR (pid {other['pid']})")
+        return 1
+    write_json(pid_file, {"pid": os.getpid(), "started_at": now_iso()})
+    try:
+        focus = (read_json(d / "progress.json") or {}).get("focus")
+        fetch(ref, root, cfg)
+        a = analyze(d, cfg, focus=focus or None, echo=lambda m: print(f"• {m}", flush=True))
+    except AnalyzeError as e:
+        _err(str(e))
+        return 1
+    finally:
+        pid_file.unlink(missing_ok=True)
+    _print_summary(a, d)
+    return 0 if a["status"] == "complete" else 1
+
+
 def _print_summary(a: dict, d: Path) -> None:
     s = a["summary"] or {}
     info = read_json(d / "server.json") or {}
@@ -443,6 +470,8 @@ def main(argv: list[str] | None = None) -> None:
     s = sub.add_parser("_eval-run", help=argparse.SUPPRESS)  # one eval analysis, in its own process group
     s.add_argument("run_dir")
     s.add_argument("tag")
+    s = sub.add_parser("_reanalyze", help=argparse.SUPPRESS)  # the app's "Re-read the PR": fetch, then analyze
+    s.add_argument("pr")
     s = sub.add_parser("_serve", help=argparse.SUPPRESS)  # the supervisor
     s.add_argument("pr_dir")
     s = sub.add_parser("_mcp", help=argparse.SUPPRESS)  # the chat's comment tools (an MCP server on stdio)
@@ -455,7 +484,8 @@ def main(argv: list[str] | None = None) -> None:
     cfg = load_config()
     handlers = {"doctor": cmd_doctor, "fetch": cmd_fetch, "serve": cmd_serve, "analyze": cmd_analyze,
                 "status": cmd_status, "stop": cmd_stop, "clean": cmd_clean, "labels": cmd_labels, "eval": cmd_eval,
-                "_eval-run": cmd_eval_run, "_serve": cmd_supervise, "_serve-child": cmd_serve_child, "_mcp": cmd_mcp}
+                "_eval-run": cmd_eval_run, "_reanalyze": cmd_reanalyze, "_serve": cmd_supervise,
+                "_serve-child": cmd_serve_child, "_mcp": cmd_mcp}
     try:
         code = handlers[args.cmd](args, cfg)
     except (CommandError, ValueError, FileNotFoundError) as e:

@@ -1,6 +1,7 @@
 import type {
   Analysis, ApprovalDecision, CIInfo, ChatEvent, ChatThread, ContextChip, CostSummary, Coverage, Draft, DraftPlace,
-  ExistingComment, HunkInfo, ReviewEvent, ReviewPreview, ReviewState, Side, Trust, UndoResult, Verdict, VerdictResult,
+  ExistingComment, HeadStatus, HunkInfo, ReanalyzeResult, ReviewEvent, ReviewPreview, ReviewState, Side, SinceReview,
+  Trust, UndoResult, Verdict, VerdictResult,
 } from "./types";
 
 export class ApiError extends Error {
@@ -93,6 +94,10 @@ export const api = {
   saveReviewBody: (body: string) => request<{ ok: boolean }>("PUT", "/api/review-body-draft", { body }),
   markSeen: (path: string, hunks: string[]) => request<{ ok: boolean }>("POST", "/api/seen", { path, hunks }),
   coverage: () => request<Coverage>("GET", "/api/coverage"),
+  sinceReview: () => request<SinceReview>("GET", "/api/since-review"),
+  head: () => request<HeadStatus>("GET", "/api/head"),
+  /** "Re-read the PR": fetch and analyze in the background. ApiError 409 while an analysis already runs. */
+  reanalyze: () => request<ReanalyzeResult>("POST", "/api/reanalyze"),
 };
 
 /** POST a chat message and stream SSE `data: <json>` frames back to `onEvent`. */

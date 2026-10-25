@@ -1,10 +1,13 @@
 """After new commits: are earlier problems fixed?
 
-Checked for (a) findings from the previous review round and (b) review comments on the PR that GitHub now
-marks as outdated. In order, for each one:
+Checked for (a) findings from the previous review round, (b) review comments on the PR that GitHub now
+marks as outdated and (c) your own comments that aren't outdated but whose lines the new commits touched
+(`changed_nearby`, prr/since.py). In order, for each one:
   1. its file left the PR or was deleted → fixed;
-  2. its exact line is still in the file → still open (no model call: the code didn't change there);
+  2. its exact line is still in the file → still open (no model call: the code didn't change there). Skipped for
+     (c): their line is still there by definition, and the fix may be right next to it;
   3. otherwise Claude compares old and new code and says "fixed" only with positive evidence (≥ 80% sure).
+At most `[analysis] recheck_max` items go to Claude per run; the rest stay open, marked `not_checked`.
 """
 
 from __future__ import annotations
@@ -23,10 +26,10 @@ from .findings import norm
 from .models import llm_schema
 from .util import now_iso
 
-MAX_CHECKED = 20
 MIN_FIXED_CONFIDENCE = 80
 WINDOW_BEFORE, WINDOW_AFTER = 25, 40
 MIN_SUBSTRING_ANCHOR = 20
+NOT_CHECKED = "not checked (limit; raise `recheck_max`)"
 
 
 class Check(BaseModel):
@@ -99,14 +102,15 @@ def run(items: list[dict], ctx: dict, worktree: Path, cfg: Config, cache: dict, 
             out[it["id"]] = cache[key] = {**it, "status": "fixed", "how": how}
             continue
         head_lines = path.read_text(errors="replace").splitlines()
-        if it["side"] == "RIGHT" and _present(it["anchor"], head_lines):
+        if it["side"] == "RIGHT" and not it.get("changed_nearby") and _present(it["anchor"], head_lines):
             out[it["id"]] = cache[key] = {**it, "status": "still-open", "how": "the same line is still in the code"}
             continue
         ask.append({**it, "_key": key, "_new_window": window(head_lines, it["line"] or 1)})
 
     if ask:
+        asked = ask[:cfg.analysis.recheck_max]
         prompt = (PROMPTS_DIR / "recheck.md").read_text().replace("{{STYLE}}", style_rules()) + "\n---\n"
-        for it in ask[:MAX_CHECKED]:
+        for it in asked:
             prompt += (f"\n### {it['id']}\nFile: {it['path']}\nThe earlier problem: {it['title']}\nThe line it was on: "
                        f"`{it['anchor'].strip()}`\n\nOld code:\n```\n{it['old_window'] or '(not saved)'}\n```\n\n"
                        f"New code near the same place:\n```\n{it['_new_window']}\n```\n")
@@ -114,14 +118,16 @@ def run(items: list[dict], ctx: dict, worktree: Path, cfg: Config, cache: dict, 
         try:
             raw, _ = run_structured(prompt, llm_schema(ChecksOut), cwd=worktree, model=cfg.models.ci, tools=[],
                                     max_turns=3, timeout=600, ledger=ledger, purpose="recheck",
-                                    target=f"{len(ask[:MAX_CHECKED])} earlier problems")
+                                    target=f"{len(asked)} earlier problems")
             decided = {c.id: c for c in ChecksOut.model_validate(raw).checks}
         except (ClaudeError, ValueError) as e:
             echo(f"Could not re-check earlier findings: {str(e)[:150]}")
-        for it in ask:
+        for n, it in enumerate(ask):
             c = decided.get(it["id"])
             clean = {k: v for k, v in it.items() if not k.startswith("_")}
-            if c and c.fixed and c.confidence >= MIN_FIXED_CONFIDENCE:
+            if n >= len(asked):  # over the limit: open, as before, and marked so the app can say why
+                res = {**clean, "status": "still-open", "how": NOT_CHECKED, "not_checked": True}
+            elif c and c.fixed and c.confidence >= MIN_FIXED_CONFIDENCE:
                 res = {**clean, "status": "fixed", "how": c.reason}
             else:
                 res = {**clean, "status": "still-open",

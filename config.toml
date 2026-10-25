@@ -24,6 +24,7 @@ deepcheck = true                 # run the deep check after the summary (adds a 
 deepcheck_max_targets = 4        # areas checked per PR, riskiest first; skipped risky areas are listed as warnings
 deepcheck_target_timeout_s = 600  # time limit for one area (a failed area retries once if the budget allows)
 deepcheck_budget_s = 900         # no area starts after this many seconds; areas still running stop 60 s later
+recheck_max = 20                 # after new commits: earlier problems and your comments Claude re-checks per run; the rest show "not checked"
 
 [chat]
 can_post = true       # the chat may post comments (and comment-only reviews) to GitHub when you ask it to

@@ -119,6 +119,7 @@ def existing_comments(owner: str, repo: str, number: int) -> list[dict]:
             "is_bot": user.get("type") == "Bot" or login.endswith("[bot]"),
             "commit_id": c.get("commit_id"), "original_commit_id": c.get("original_commit_id"),
             "original_line": c.get("original_line"), "diff_hunk": c.get("diff_hunk", ""),
+            "review_id": c.get("pull_request_review_id"),
         })
     return comments
 

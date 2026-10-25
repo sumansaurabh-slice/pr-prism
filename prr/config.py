@@ -38,6 +38,7 @@ class AnalysisSettings:
     deepcheck_max_targets: int = 4     # areas checked per PR; riskier areas past this are named as skipped
     deepcheck_target_timeout_s: int = 600  # one area's time limit
     deepcheck_budget_s: int = 900      # no area starts (or retries) after this; running ones stop 60 s later
+    recheck_max: int = 20              # earlier problems and comments re-checked by Claude per run; the rest: "not checked"
 
 
 @dataclass
