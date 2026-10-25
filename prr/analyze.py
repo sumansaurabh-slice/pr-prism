@@ -17,7 +17,7 @@ from pathlib import Path
 from typing import Any, Callable
 
 from . import (blockers, bots, ci, cluster, cost, deepcheck, diffparse, filekinds, github, impact, judge, ledger,
-               merge, recheck, rubrics)
+               merge, recheck, rubrics, since)
 from .claude import ClaudeError, run_structured
 from .config import GUIDELINES_FILE, PROMPTS_DIR, Config
 from .models import AnnotateOut, SynthesisOut, llm_schema
@@ -378,12 +378,19 @@ def _analyze(pr_dir: Path, ctx: dict, cfg: Config, focus: str | None, force: boo
             items += previous.get("items", [])
         items += [e for c in comments if c.get("line") is None and not c.get("in_reply_to_id")
                   for e in [recheck.comment_entry(c)] if e]
+        yours: set[str] = set()
+        try:  # since your review: your comments whose lines the new commits touched are re-checked too
+            yours, nearby = since.for_recheck(pr_dir, ctx, comments)
+            items += nearby
+        except Exception as e:  # noqa: BLE001 — the rest of the re-check goes on without them
+            progress.update(f"Could not tell which of your comments the new commits touched: {str(e)[:150]}")
+        items.sort(key=lambda it: it["id"] not in yours)  # your own comments first, within recheck_max
         if items:
             saved_checks = (read_json(pr_dir / "recheck.json") or {}).get("cache", {})
             results = recheck.run(items, ctx, worktree, cfg, saved_checks, progress.update,  # updates saved_checks
                                   ledger=progress.ledger)
             write_json(pr_dir / "recheck.json", {"cache": saved_checks, "results": results,
-                                                 "previous_head": previous.get("head_sha")})
+                                                 "previous_head": previous.get("head_sha"), "head_sha": pr["head_sha"]})
             fixed = sum(1 for r in results.values() if r["status"] == "fixed")
             progress.update(f"Re-checked {len(results)} earlier problems: {fixed} fixed")
 

@@ -5,7 +5,7 @@ import { useEffect, useRef, useState, type ReactNode } from "react";
 import { IconAlert, IconCheck, IconChevronDown, IconChevronRight, IconCircle, IconQuestion } from "../icons";
 import { KIND_TEXT, VERDICT_TEXT, stopDone, whereText, type ReviewModel } from "../review";
 import { fileHref, reviewHref } from "../router";
-import { reviewOrder, useStore } from "../store";
+import { reviewOrder, useSinceView, useStore } from "../store";
 import type { Stop, Verdict } from "../types";
 
 const VERDICT_LOOK: Record<Verdict, { icon: ReactNode; variant: string }> = {
@@ -68,6 +68,10 @@ export function StopList({ model, currentId }: { model: ReviewModel; currentId: 
   const state = useStore((s) => s.state);
   const includeLow = useStore((s) => s.includeLow);
   const setIncludeLow = useStore((s) => s.setIncludeLow);
+  const since = useSinceView();
+  const onlyNew = useStore((s) => s.onlyNewStops);
+  const setOnlyNew = useStore((s) => s.setOnlyNewStops);
+  const newCount = useStore((s) => s.sinceReview?.new_stop_ids.length ?? 0);
   const fresh = useStore((s) => s.freshStops);
   const [openMore, setOpenMore] = useState(false);
   const [openEarlier, setOpenEarlier] = useState(false);
@@ -102,6 +106,13 @@ export function StopList({ model, currentId }: { model: ReviewModel; currentId: 
               Include low-confidence findings
               <span className="Counter">{model.low}</span>
             </label>
+            {since.on && (
+              <label className="tree-toggle" title="Stops whose lines changed since your last submitted review">
+                <input type="checkbox" role="switch" checked={onlyNew} onChange={(e) => setOnlyNew(e.target.checked)} />
+                Only new stops
+                <span className="Counter">{newCount}</span>
+              </label>
+            )}
           </div>
         </div>
         <div className="tree-scroll">

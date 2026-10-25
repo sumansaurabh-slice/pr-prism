@@ -16,7 +16,7 @@ import {
 import { REVIEW_END, fileHref, navigate, reviewHref } from "../router";
 import { fmtMinutes, splitPath, useStore, type ToastAction } from "../store";
 import type { Draft, Severity, Side, Stop, Verdict } from "../types";
-import { DraftCard, SEVERITY_TEXT, SeverityLabel, diffCache, languageOf, refractorAdapter } from "./FileView";
+import { DraftCard, SEVERITY_TEXT, SeverityLabel, diffCache, diffKey, languageOf, refractorAdapter } from "./FileView";
 
 // ------------------------------------------------------------------ shared actions (keys, toasts, the end screen)
 
@@ -116,7 +116,7 @@ function pickHunk(patch: string, stop: Stop): Picked | null {
 
 /** The stop's lines from the diff already loaded (for the chat chip); "" when it isn't loaded. */
 function codeFor(stop: Stop): string {
-  const patch = stop.path ? diffCache.get(stop.path) : undefined;
+  const patch = stop.path ? diffCache.get(diffKey(stop.path)) : undefined;
   return (patch && pickHunk(patch, stop)?.code) || "";
 }
 
@@ -124,18 +124,19 @@ function codeFor(stop: Stop): string {
  * under the stop's last line. */
 function StopHunk({ stop, widget }: { stop: Stop; widget: ReactNode }) {
   const path = stop.path!;
-  const [patch, setPatch] = useState<string | null>(diffCache.get(path) ?? null);
+  const key = diffKey(path);
+  const [patch, setPatch] = useState<string | null>(diffCache.get(key) ?? null);
   const [error, setError] = useState<string | null>(null);
   const [whole, setWhole] = useState(false);
   useEffect(() => {
-    if (diffCache.has(path)) {
-      setPatch(diffCache.get(path)!);
+    if (diffCache.has(key)) {
+      setPatch(diffCache.get(key)!);
       return;
     }
     let cancelled = false;
     api.diff(path).then(
       (r) => {
-        diffCache.set(path, r.patch);
+        diffCache.set(key, r.patch);
         if (!cancelled) setPatch(r.patch);
       },
       (e) => !cancelled && setError((e as Error).message),
@@ -143,7 +144,7 @@ function StopHunk({ stop, widget }: { stop: Stop; widget: ReactNode }) {
     return () => {
       cancelled = true;
     };
-  }, [path]);
+  }, [path, key]);
   const picked = useMemo(() => (patch ? pickHunk(patch, stop) : null), [patch, stop]);
   const shown = picked ? (whole ? picked.hunk : picked.short) : null;
   const tokens: HunkTokens | null = useMemo(() => {

@@ -102,7 +102,7 @@ export interface CICheck {
 export interface CIAnnotation { check: string; path: string; line: number; end_line: number | null; level: string; message: string }
 export interface CIInfo { fetched_at: string | null; head_sha: string | null; checks: CICheck[]; annotations: CIAnnotation[] }
 
-/** An earlier finding or comment, re-checked after new commits. */
+/** An earlier finding or comment, re-checked on the latest commit. */
 export interface Rechecked {
   kind: "finding" | "comment"; title: string; path: string; line: number | null;
   status: "fixed" | "still-open"; how: string; author: string | null; html_url: string | null;
@@ -247,6 +247,10 @@ export interface ReviewState {
   stop_verdicts: Record<string, StopVerdict>;
   seen_hunks: Record<string, string[]>;  // path → hunk ids on screen for 3 s (hunkId in api.ts)
   review_body_draft: string;             // the Submit dialog's review summary, autosaved
+  // Set when you submit a review (Submit, or the chat's post_review; not a lone chat comment): see GET /api/since-review
+  reviewed_head?: string | null;         // the analyzed head you reviewed (kept as refs/pr-prism/<n>/reviewed)
+  reviewed_base?: string | null;         // its merge base
+  reviewed_stop_ids?: string[];          // the guided-review stops present then
 }
 
 /** POST /api/stops/{id}/verdict */
@@ -284,6 +288,7 @@ export interface Coverage {
 export interface ExistingComment {
   id: number; path: string; line: number | null; side: Side | null; start_line: number | null;
   body: string; user: string; created_at: string; html_url: string; in_reply_to_id: number | null;
+  review_id?: number | null;             // the GitHub review it belongs to
 }
 
 export interface ReviewPreview {
@@ -376,3 +381,49 @@ export interface CostSummary {
   over_budget: boolean;                                      // total_usd > warn_usd: "over your $N limit"
   long_thread: { turns: number; usd: number };               // the hint's thresholds (15, 3.0)
 }
+
+// ---- since your review (GET /api/since-review, GET /api/head, POST /api/reanalyze; prr/since.py) ----
+
+/** One hunk of the interdiff: the commit you reviewed → the analyzed head. */
+export interface InterdiffHunk { old_start: number; old_lines: number; new_start: number; new_lines: number }
+export interface InterdiffFile { path: string; hunks: InterdiffHunk[] }
+
+/** fixed / still-open: the re-check on the new head (note says why); line-unchanged: the new commits didn't touch
+ * it; checking: a re-read is running ("Checking…"); not-checked: over recheck_max ("N not checked (limit; raise
+ * `recheck_max`)"), or not re-checked on this commit yet. */
+export type EarlierCommentStatus = "fixed" | "still-open" | "line-unchanged" | "checking" | "not-checked";
+
+/** One of your earlier comments on the PR. `id` is its GitHub id (ExistingComment.id); `line` is null when outdated. */
+export interface EarlierComment {
+  id: number; path: string; line: number | null; status: EarlierCommentStatus; note: string | null;
+}
+
+export interface SinceReview {
+  reviewed_head: string | null;  // the head of your last submitted review; null: none yet
+  head: string;                  // the analyzed head
+  files: InterdiffFile[];        // [] with no reviewed head or the same head: hide the toggle
+  patch: Record<string, string>; // path → that file's interdiff as a unified diff (like GET /api/diff's patch)
+  note: string | null;           // "main moved; some changes may come from main", the reviewed commit is gone, or
+                                 // "Couldn't compute changes since your review: …"
+  ok: boolean;                   // false: git failed; show the note and disable the toggle
+  full_pr: boolean;              // the reviewed commit is gone: files and patch are the whole PR
+  comments: EarlierComment[];
+  comments_error: string | null; // GitHub couldn't list the PR's comments
+  new_stop_ids: string[];        // guided-review stops whose lines the new commits touched ("Only new stops")
+}
+
+/** The last complete analysis run's time and cost (calls.jsonl): "about 6 min and $2, based on the last run". */
+export interface RunEstimate { minutes: number; usd: number }
+
+/** GET /api/head: the PR's head on GitHub (read at most once a minute) against the analyzed head. */
+export interface HeadStatus {
+  analyzed_head: string;
+  current_head: string | null;   // null when GitHub couldn't be reached (see error)
+  head_changed: boolean;         // "New commits since you opened this"
+  running: boolean;              // an analysis (or a re-read) is running
+  estimate: RunEstimate | null;  // null: no run has completed yet
+  error: string | null;
+}
+
+/** POST /api/reanalyze ("Re-read the PR"); 409 while an analysis runs. */
+export interface ReanalyzeResult { started: boolean; estimate: RunEstimate | null }
