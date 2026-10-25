@@ -31,7 +31,7 @@ def new_draft(ctx: dict, path: str, side: str, line: int, body: str, *, start_li
     """A draft dict for state.json. Raises ValueError when the input can't be a comment on this PR.
     `origin_id` is the guided-review stop it was made from (null otherwise): its eval label follows the comment.
     A "suggestion" or "chat" draft keeps `generated_body`, the text PR Prism wrote (`body` unless given), so its eval
-    label can say whether the reviewer rewrote it (labels.draft_writer)."""
+    label can say whether the reviewer rewrote it (labels.draft_writer); a "user" draft has it only when given."""
     fc = next((f for f in ctx["files"] if f["path"] == path), None)
     if fc is None:
         raise ValueError(f"{path} is not part of this PR")
@@ -51,7 +51,7 @@ def new_draft(ctx: dict, path: str, side: str, line: int, body: str, *, start_li
     return {
         "id": uuid.uuid4().hex[:12], "path": path, "side": side, "line": line, "start_line": start,
         "start_side": start_side, "body": body, "source": source,
-        "generated_body": (body if generated_body is None else generated_body) if source != "user" else None,
+        "generated_body": generated_body if generated_body is not None else body if source != "user" else None,
         "suggestion_id": suggestion_id, "origin_id": origin_id,
         "anchored": anchors.check(fc, side, line, start, start_side) is None,
         "outdated": False, "commit_id": ctx["pr"]["head_sha"], "created_at": now_iso(),

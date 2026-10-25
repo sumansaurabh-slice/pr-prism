@@ -576,9 +576,14 @@ def create_app(pr_dir: Path, cfg: Config) -> FastAPI:
 
         def apply(s: dict) -> dict:
             try:
-                return stops.answer(s, stop, body.verdict, c, opened_at=body.opened_at, now=now_iso())
+                out = stops.answer(s, stop, body.verdict, c, opened_at=body.opened_at, now=now_iso())
             except ValueError as e:
                 raise HTTPException(400, str(e)) from e
+            made = out.get("draft")  # the stop's pending comment, in `s`
+            if made is not None and made.get("generated_body") is None and stop.get("comment_body") \
+                    and made.get("body") == stop["comment_body"]:
+                made["generated_body"] = stop["comment_body"]  # pre-filled with the stop's text: not typed by you
+            return out
 
         out = store.update(apply)
         previous = out.pop("previous")

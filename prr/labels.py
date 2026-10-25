@@ -20,15 +20,15 @@ reported on their own, and each such split gets its own gate in `prr eval`. A PR
 Who wrote the label's text, `written_by`, so eval can report recall on the reviewer's own comments: a comment that
 PR Prism wrote and the reviewer only clicked through is one the analysis "finds" by itself.
 - human: the reviewer wrote it;
-- tool: PR Prism wrote it: a finding's ready-made comment or the chat's text, posted unchanged or edited only a little,
-  or a "real" answer on a finding or risk-note stop;
+- tool: PR Prism wrote it: a finding's ready-made comment, the chat's text or a stop's pre-filled comment, posted
+  unchanged or edited only a little, or a "real" answer on a finding or risk-note stop;
 - unknown: can't tell (an imported comment not in PR Prism's format, another tool's stop, a line from before this).
 `written_by_from` is how it is known, surest first: set (you said so: `--written-by` or `prr labels tag`), app (from
 the pending comment that was posted, or the stop that was answered), format (an imported comment's text: PR Prism's
 finding format, PRISM_FORMAT, is tool, anything else unknown; the writing style is never guessed from).
-A posted comment (draft_writer) is human when its draft's source is "user", or when the reviewer typed more than 30%
-of its words (EDITED_SHARE: the posted words that don't line up, in order, with the text PR Prism generated, the
-draft's `generated_body`). Removing words alone never makes it human.
+A posted comment (draft_writer) is human when the reviewer typed it (a "user" draft that didn't start as generated
+text), or typed more than 30% of its words (EDITED_SHARE: the posted words that don't line up, in order, with the text
+PR Prism generated, the draft's `generated_body`). Removing words alone never makes it human.
 
 Compaction, so one issue counts once:
 1. A line's key is its origin_id (the stop it came from) when present, else its gh_comment_id; a line with both links
@@ -298,15 +298,14 @@ def typed_share(generated: str, body: str) -> float:
 
 
 def draft_writer(draft: dict) -> str:
-    """Who wrote a pending comment that is being posted: human for one the reviewer typed (source "user"); for a
-    finding's comment ("suggestion") or the chat's ("chat"), tool unless the reviewer typed more than EDITED_SHARE of
-    its words, then human. Unknown for such a draft made before its generated text was kept."""
-    if draft.get("source") not in ("suggestion", "chat"):
-        return "human"
+    """Who wrote a pending comment that is being posted. One that started as PR Prism's text (`generated_body`: a
+    finding's comment, the chat's, or a stop's pre-filled one) is tool unless the reviewer typed more than
+    EDITED_SHARE of its words, then human. Otherwise source "user" is human (the reviewer typed it), and a
+    "suggestion" or "chat" draft made before its generated text was kept is unknown."""
     generated = draft.get("generated_body")
-    if not isinstance(generated, str):
-        return "unknown"
-    return "human" if typed_share(generated, draft.get("body") or "") > EDITED_SHARE else "tool"
+    if isinstance(generated, str):
+        return "human" if typed_share(generated, draft.get("body") or "") > EDITED_SHARE else "tool"
+    return "unknown" if draft.get("source") in ("suggestion", "chat") else "human"
 
 
 def guessed_writer(label: dict) -> tuple[str, str]:

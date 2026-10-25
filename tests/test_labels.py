@@ -346,6 +346,30 @@ def test_each_posted_comment_says_who_wrote_it(pr, monkeypatch):
                    7: ("human", "app")}
 
 
+def test_a_stops_prefilled_comment_is_the_tools_until_rewritten(pr, monkeypatch):
+    from tests.test_stops import BOTS, write_pr
+
+    write_pr(pr.dir, (pr.dir / "diff.patch").read_text(), bots=BOTS)      # a risk note and another tool's finding
+    listed = {s["kind"]: s for s in pr.client.get("/api/analysis").json()["stops"]}
+
+    def real(kind: str) -> dict:
+        r = pr.client.post(f"/api/stops/{listed[kind]['id']}/verdict", json={"verdict": "real"}, headers=ORIGIN)
+        assert r.status_code == 200, r.text
+        return r.json()["draft"]
+
+    note, bot = real("risk_note"), real("bot")
+    assert (note["source"], note["generated_body"]) == ("user", "Line 5 changed without a test.")
+    r = pr.client.patch(f"/api/drafts/{bot['id']}", json={"body": "Name this value: the parser reads the same "
+                                                                  "limit from its config, so they will drift."},
+                        headers=ORIGIN)
+    assert r.status_code == 200
+    monkeypatch.setattr(github, "submit", lambda o, r, n, payload: {"id": 9, "html_url": "u", "user": {"login": "me"}})
+    monkeypatch.setattr(github, "review_comments", lambda *a: [])
+    assert pr.client.post("/api/review/submit", json={"body": "", "event": "COMMENT"}, headers=ORIGIN).status_code == 200
+    assert {x["stop_kind"]: (x["source"], x["written_by"]) for x in labels.load(pr.repo)} == {
+        "risk_note": ("posted", "tool"), "bot": ("posted", "human")}
+
+
 def test_submit_saves_a_problem_label_per_posted_comment(pr, monkeypatch):
     first = add(pr, 22, "Check the inserted lines", start_line=21)
     with_origin(pr, first, "s-1")

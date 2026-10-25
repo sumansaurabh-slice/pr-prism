@@ -333,7 +333,7 @@ prr eval --split holdout2                      # only that split's PRs
 ```
 
 - **Who wrote each label** (`written_by`: `human`, `tool` or `unknown`). A comment PR Prism wrote and you only clicked through is one the analysis "finds" by itself, so eval also reports recall on your own comments alone.
-  - Posted from the app or the chat: `human` when you typed it. A finding's ready-made comment or the chat's text is `tool`, unless you typed more than 30% of the posted words (the words that don't line up, in order, with the text PR Prism generated; cutting text out doesn't count). A "Real problem" answer on a finding or risk note is `tool`.
+  - Posted from the app or the chat: `human` when you typed it. A finding's ready-made comment, the comment a "Real problem" answer pre-fills, or the chat's text is `tool`, unless you typed more than 30% of the posted words (the words that don't line up, in order, with the text PR Prism generated; cutting text out doesn't count). A "Real problem" answer on a finding or risk note is `tool`.
   - Imported: `tool` when the comment is in PR Prism's finding format (a bold title line, then an italic "Must fix · category" line), else `unknown`; the writing style is never taken as proof. `--written-by` sets it for every comment imported.
   - `prr labels tag` re-tags saved labels by appending a copy of each one: `--written-by` and `--split` need `--prs`; with neither, it fills in who wrote the labels saved before this was recorded. What you set wins over what the app knew, which wins over a guess from the format.
 - **Splits:** `train` is the default; any other name (`holdout`, `holdout2`, …) is a set of PRs kept out of prompt work and reported on its own. A PR is in one split as a whole.
