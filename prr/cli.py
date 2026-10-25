@@ -1,4 +1,4 @@
-"""`prr` command line: doctor | fetch | serve | analyze | status | stop | clean | labels import | eval.
+"""`prr` command line: doctor | fetch | serve | analyze | status | stop | clean | labels import | labels tag | eval.
 
 Logs go to stderr; the machine-readable result of each command goes to stdout.
 """
@@ -335,27 +335,55 @@ def cmd_clean(args: argparse.Namespace, cfg: Config) -> int:
     return 1 if failed else 0
 
 
+def _repo_prs(items: list[str], root: Path, owner: str, repo: str) -> list[int]:
+    """PR numbers (or URLs) of the repo you are in. Raises ValueError for another repo's PR."""
+    prs = []
+    for arg in items:
+        num = arg.strip().lstrip("#")
+        ref = PRRef(owner, repo, int(num)) if num.isdigit() else parse_pr_arg(arg, root)
+        if (ref.owner.lower(), ref.repo.lower()) != (owner.lower(), repo.lower()):
+            raise ValueError(f"{arg} is not a PR of {owner}/{repo}, the repo you are in")
+        prs.append(ref.number)
+    return prs
+
+
 def cmd_labels(args: argparse.Namespace, cfg: Config) -> int:
-    """`prr labels import <pr…>`: the review comments already on past PRs become eval labels. Only reads GitHub."""
+    """`prr labels import <pr…>`: the review comments already on past PRs become eval labels. Only reads GitHub.
+    `prr labels tag`: re-tag the labels already saved (who wrote them, which split)."""
     from . import labels
-    from .gitgh import viewer_login
+    from .gitgh import default_repo, viewer_login
 
     root = repo_root(args.repo or ".")
+    if args.labels_cmd == "tag":
+        owner, repo = default_repo(root)
+        prs = _repo_prs(args.prs, root, owner, repo) if args.prs else None
+        out = labels.tag(labels.repo_dir(cfg.cache_dir, owner, repo), prs, written_by=args.written_by,
+                         split=args.split)
+        n = out["written_by"]
+        _err(f"Re-tagged {out['retagged']} of {out['labels']} labels on "
+             + (", ".join(f"#{x}" for x in out["prs"]) or "no PRs")
+             + f": {n['human']} written by you, {n['tool']} by PR Prism, {n['unknown']} unknown")
+        print(json.dumps(out, indent=1))
+        return 0
     viewer = viewer_login() if args.reviewers == "me" else None
     rows, failed = [], False
     for arg in args.prs:
         try:
             ref = parse_pr_arg(arg, root)
             row = labels.import_comments(ref, root, labels.repo_dir(cfg.cache_dir, ref.owner, ref.repo),
-                                         reviewers=args.reviewers, viewer=viewer, split=args.split)
+                                         reviewers=args.reviewers, viewer=viewer, split=args.split,
+                                         written_by=args.written_by)
         except (CommandError, ValueError, OSError, TimeoutError) as e:
             _err(f"PR {arg}: not imported: {e}")
             failed = True
             continue
         whose = "your" if args.reviewers == "me" else "reviewers'"
+        tool = row["written_by"]["tool"]
         _err(f"#{row['pr']}: {row['imported']} of {whose} comments added as {row['split']} labels"
              + (f", {row['already_imported']} already there" if row["already_imported"] else "")
-             + (f" ({row['outdated']} on code that changed later)" if row["outdated"] else ""))
+             + (f" ({row['outdated']} on code that changed later)" if row["outdated"] else "")
+             + (f" (written by: {args.written_by})" if args.written_by
+                else f" ({tool} in PR Prism's format)" if tool else ""))
         rows.append(row)
     print(json.dumps(rows, indent=1))
     return 1 if failed else 0
@@ -372,16 +400,11 @@ def cmd_eval(args: argparse.Namespace, cfg: Config) -> int:
         return 2
     root = repo_root(args.repo or ".")
     owner, repo = default_repo(root)
-    prs = None
-    if args.prs:
-        prs = []
-        for arg in args.prs:
-            num = arg.strip().lstrip("#")
-            ref = PRRef(owner, repo, int(num)) if num.isdigit() else parse_pr_arg(arg, root)
-            if (ref.owner.lower(), ref.repo.lower()) != (owner.lower(), repo.lower()):
-                _err(f"{arg} is not a PR of {owner}/{repo}, the repo you are in")
-                return 2
-            prs.append(ref.number)
+    try:
+        prs = _repo_prs(args.prs, root, owner, repo) if args.prs else None
+    except ValueError as e:
+        _err(str(e))
+        return 2
 
     def confirm(text: str) -> bool:
         print(text, flush=True)
@@ -429,6 +452,20 @@ def cmd_serve_child(args: argparse.Namespace, cfg: Config) -> int:
     return 0
 
 
+def _split(name: str) -> str:
+    """--split: train, holdout or any other split name (letters, digits, '.', '_' or '-')."""
+    from .labels import check_split
+
+    try:
+        return check_split(name)
+    except ValueError as e:
+        raise argparse.ArgumentTypeError(str(e)) from None
+
+
+def _eval_split(name: str) -> str:
+    return name if name == "all" else _split(name)
+
+
 def main(argv: list[str] | None = None) -> None:
     p = argparse.ArgumentParser(prog="prr", description="PR Prism: interactive, Claude-guided GitHub PR review")
     p.add_argument("--repo", help="path inside the git repo (default: cwd)")
@@ -462,13 +499,24 @@ def main(argv: list[str] | None = None) -> None:
     s.add_argument("prs", nargs="+", metavar="pr", help="PR numbers or URLs")
     s.add_argument("--reviewers", choices=["me", "all"], default="me",
                    help="whose root comments: yours (default) or every human reviewer's (never bots)")
-    s.add_argument("--split", choices=["train", "holdout"], default="train",
-                   help="holdout: PRs kept out of prompt work and reported on their own by `prr eval`")
+    s.add_argument("--split", type=_split, default="train",
+                   help="train (default), or any other name, e.g. holdout or holdout2: PRs kept out of prompt work, "
+                        "reported on their own and gated by `prr eval`")
+    s.add_argument("--written-by", choices=["human", "tool", "unknown"], default=None,
+                   help="who wrote these comments (default: PR Prism's finding format is tool, the rest unknown); "
+                        "e.g. human for PRs reviewed before PR Prism existed")
+    s = labels_sub.add_parser("tag", help="re-tag saved labels: who wrote them, or which split their PRs are in")
+    s.add_argument("--prs", nargs="+", metavar="pr",
+                   help="these PRs (needed with --written-by or --split; default: every labelled PR)")
+    s.add_argument("--written-by", choices=["human", "tool", "unknown"], default=None,
+                   help="who wrote their comments; without it, labels saved before written_by existed get it from "
+                        "their format")
+    s.add_argument("--split", type=_split, default=None, help="move the PRs to this split")
     s = sub.add_parser("eval", help="replay the analysis on the PRs you labelled and score it (costs money; asks first)")
     s.add_argument("--prs", nargs="+", metavar="pr", help="only these PRs (default: every labelled PR of this repo)")
     s.add_argument("--runs", type=int, default=3, help="analyses per labelled PR commit (default 3)")
-    s.add_argument("--split", choices=["train", "holdout", "all"], default="all",
-                   help="which labelled PRs: train, holdout (the gate's PRs) or all (default)")
+    s.add_argument("--split", type=_eval_split, default="all",
+                   help="which labelled PRs: all (default), train, or a held-out split such as holdout (gated)")
     s.add_argument("--max-usd", type=float, default=None, help="start no new run once this much has been spent")
     s.add_argument("--yes", action="store_true", help="don't ask before spending (needed without a terminal)")
     s.add_argument("--keep", action="store_true", help="keep the eval folders (worktrees and each run's files)")

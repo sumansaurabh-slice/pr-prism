@@ -414,6 +414,17 @@ def create_app(pr_dir: Path, cfg: Config) -> FastAPI:
 
         return {"reviewed": store.update(apply)}
 
+    def finding_comment(fid: str | None) -> str | None:
+        """The ready-made comment of the finding a "suggestion" draft comes from: what PR Prism wrote, which the
+        reviewer may have edited before adding it (None when it can't be found)."""
+        if not fid:
+            return None
+        try:
+            placed, _, _ = merge.build_findings(pr_dir, ctx())
+        except Exception:  # noqa: BLE001 — only the eval label's "who wrote it" depends on this
+            return None
+        return next((f["comment_body"] for f in placed if f["id"] == fid), None)
+
     @app.post("/api/drafts")
     def add_draft(body: DraftIn) -> dict:
         if body.origin_id is not None and not stops.ID.fullmatch(body.origin_id):
@@ -421,7 +432,8 @@ def create_app(pr_dir: Path, cfg: Config) -> FastAPI:
         try:
             draft = new_draft(ctx(), body.path, body.side, body.line, body.body, start_line=body.start_line,
                               start_side=body.start_side, source=body.source, suggestion_id=body.suggestion_id,
-                              origin_id=body.origin_id)
+                              origin_id=body.origin_id, generated_body=finding_comment(body.suggestion_id)
+                              if body.source == "suggestion" else None)
         except ValueError as e:
             raise HTTPException(400, str(e)) from e
         store.update(lambda s: s["drafts"].append(draft))

@@ -27,9 +27,11 @@ SOURCES = ("user", "suggestion", "chat")
 
 def new_draft(ctx: dict, path: str, side: str, line: int, body: str, *, start_line: int | None = None,
               start_side: str | None = None, source: str = "user", suggestion_id: str | None = None,
-              origin_id: str | None = None) -> dict:
+              origin_id: str | None = None, generated_body: str | None = None) -> dict:
     """A draft dict for state.json. Raises ValueError when the input can't be a comment on this PR.
-    `origin_id` is the guided-review stop it was made from (null otherwise): its eval label follows the comment."""
+    `origin_id` is the guided-review stop it was made from (null otherwise): its eval label follows the comment.
+    A "suggestion" or "chat" draft keeps `generated_body`, the text PR Prism wrote (`body` unless given), so its eval
+    label can say whether the reviewer rewrote it (labels.draft_writer)."""
     fc = next((f for f in ctx["files"] if f["path"] == path), None)
     if fc is None:
         raise ValueError(f"{path} is not part of this PR")
@@ -45,9 +47,11 @@ def new_draft(ctx: dict, path: str, side: str, line: int, body: str, *, start_li
         elif start > line:
             start, line = line, start
     start_side = start_side if start is not None else None
+    source = source if source in SOURCES else "user"
     return {
         "id": uuid.uuid4().hex[:12], "path": path, "side": side, "line": line, "start_line": start,
-        "start_side": start_side, "body": body, "source": source if source in SOURCES else "user",
+        "start_side": start_side, "body": body, "source": source,
+        "generated_body": (body if generated_body is None else generated_body) if source != "user" else None,
         "suggestion_id": suggestion_id, "origin_id": origin_id,
         "anchored": anchors.check(fc, side, line, start, start_side) is None,
         "outdated": False, "commit_id": ctx["pr"]["head_sha"], "created_at": now_iso(),

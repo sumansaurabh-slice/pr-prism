@@ -10,11 +10,12 @@ from types import SimpleNamespace
 import pytest
 from fastapi.testclient import TestClient
 
-from prr import chat_tools, github, labels, server
+from prr import chat_tools, findings, github, labels, merge, server
 from prr.config import Config
 from prr.gitgh import CommandError, PRRef
 from prr.server import Guard, create_app
 from prr.state import StateStore
+from prr.util import write_json
 from tests.conftest import _git
 from tests.test_merge import make_pr_dir
 
@@ -44,8 +45,9 @@ def test_append_writes_one_private_line_per_label(tmp_path):
     assert [r["kind"] for r in rows] == ["problem", "not-problem"]
     assert rows[0] == first and set(first) == {
         "v", "id", "pr", "commit_id", "merge_base_sha", "path", "side", "line", "kind", "text", "author", "source",
-        "origin_id", "gh_comment_id", "finding_id", "stop_kind", "split", "at"}
+        "origin_id", "gh_comment_id", "finding_id", "stop_kind", "split", "written_by", "written_by_from", "at"}
     assert (first["v"], first["split"], rows[1]["split"]) == (1, "holdout", "train")
+    assert (first["written_by"], first["written_by_from"]) == ("unknown", None)
 
 
 def test_bad_values_are_refused():
@@ -53,8 +55,14 @@ def test_bad_values_are_refused():
         labels.new_label(pr=1, kind="maybe", source="posted")
     with pytest.raises(ValueError):
         labels.new_label(pr=1, kind="problem", source="dismissed")      # dismissing is not a label source
+    for split in ("", "all", "has space", "../x", "x" * 41):                  # any other name is a split
+        with pytest.raises(ValueError):
+            labels.new_label(pr=1, kind="problem", source="posted", split=split)
+    assert labels.new_label(pr=1, kind="problem", source="posted", split="holdout2")["split"] == "holdout2"
     with pytest.raises(ValueError):
-        labels.new_label(pr=1, kind="problem", source="posted", split="test")
+        labels.new_label(pr=1, kind="problem", source="posted", written_by="me")
+    with pytest.raises(ValueError):
+        labels.new_label(pr=1, kind="problem", source="posted", written_by="human", written_by_from="guess")
 
 
 def test_a_damaged_line_is_skipped(tmp_path):
@@ -158,6 +166,25 @@ def test_load_compacts_what_is_on_disk(tmp_path):
     assert len(labels.read(folder)) == 3 and len(labels.load(folder)) == 1
 
 
+def test_the_surest_written_by_wins_when_lines_merge():
+    posted = problem(source="posted", gh_comment_id=555, written_by="human", written_by_from="app")
+    imported = problem(source="imported", gh_comment_id=555, written_by="tool", written_by_from="format")
+    [one] = labels.compact([posted, imported])                    # the import is newer, but only guessed from the text
+    assert (one["source"], one["written_by"], one["written_by_from"]) == ("imported", "human", "app")
+    told = {**imported, "id": "x", "written_by": "unknown", "written_by_from": "set"}
+    assert labels.compact([posted, imported, told])[0]["written_by"] == "unknown"   # what you set wins
+    old = {k: v for k, v in problem(source="posted", gh_comment_id=7).items() if not k.startswith("written_by")}
+    [one] = labels.compact([old, problem(source="imported", gh_comment_id=7, written_by="tool",
+                                         written_by_from="format")])
+    assert labels.writer(one) == "tool" and labels.writer(old) == "unknown"     # a line from before written_by
+
+
+def test_a_pr_is_in_one_split_as_a_whole():
+    rows = [problem(pr=1), problem(pr=1, split="holdout2"), problem(pr=1),          # a posted comment: train default
+            problem(pr=2), problem(pr=3, split="holdout"), problem(pr=3, split="holdout2")]
+    assert labels.pr_splits(rows) == {1: "holdout2", 2: "train", 3: "holdout2"}
+
+
 # ---- what counts toward recall, and matching -----------------------------------------------------
 
 
@@ -178,6 +205,44 @@ def test_match_label_uses_the_finding_title_and_impact():
     assert not labels.match_label(label, {**finding, "path": "src/b.py"})
     assert not labels.match_label(label, {**finding, "title": "Unused import", "impact": "Lint noise"})
     assert not labels.match_label(problem(line=None), finding)                       # no line: never matched
+
+
+def test_a_label_on_a_deleted_line_matches_a_finding_on_that_deleted_line():
+    # "Why was the retry removed?" on old line 34, a deleted (LEFT) line: GitHub's original_line is the old number
+    label = problem(side="LEFT", line=34, text="Why was the retry removed? Callers relied on it")
+    question = {"path": "src/a.py", "side": "LEFT", "line": 34, "category": "intent",
+                "title": "Why was the retry removed?", "impact": "Callers that relied on it now fail at once"}
+    assert labels.match_label(label, question)
+    assert labels.match_label(label, {**question, "line": 36, "title": "Retry removed without a reason"})
+    assert not labels.match_label(label, {**question, "line": 36, "title": "Unused import", "impact": ""})
+    assert labels.match_label(problem(line=22), {**question, "side": "RIGHT", "line": 22})   # sides aren't compared
+
+
+def test_who_wrote_a_posted_comment():
+    made = findings.comment_body({"title": "Unused variable y", "severity": "minor", "category": "correctness",
+                                  "impact": "It is never read, so the value computed above is lost.",
+                                  "fix": "Return y, or drop it.", "suggestion": None, "why": ""})
+    suggestion = {"source": "suggestion", "generated_body": made, "body": made}
+    assert labels.draft_writer({"source": "user", "body": "Why is this here?"}) == "human"
+    assert labels.draft_writer(suggestion) == "tool"
+    assert labels.draft_writer({**suggestion, "body": made.split("\n\n")[0]}) == "tool"      # only cut down
+    assert labels.draft_writer({**suggestion, "body": made.replace("drop it", "drop it please")}) == "tool"
+    edited = made + "\n\nWe hit exactly this in the billing job last month, see the incident notes for details."
+    assert labels.typed_share(made, edited) > labels.EDITED_SHARE
+    assert labels.draft_writer({**suggestion, "body": edited}) == "human"
+    assert labels.draft_writer({**suggestion, "body": "nit: drop y"}) == "human"                # rewritten
+    assert labels.draft_writer({"source": "chat", "generated_body": "Rename x.", "body": "Rename x."}) == "tool"
+    assert labels.draft_writer({"source": "suggestion", "body": made}) == "unknown"   # made before generated_body
+
+
+def test_a_verdict_label_says_the_issue_was_the_tools():
+    pr = {"number": 7, "head_sha": "h", "merge_base_sha": "b"}
+    stop = {"id": "s-1", "kind": "finding", "path": "src/a.py", "side": "RIGHT", "line": 3, "finding_id": "f-1",
+            "comment_body": "**x**"}
+    [row] = labels.for_verdict(pr, stop, "real", None, author="me")
+    assert (row["written_by"], row["written_by_from"]) == ("tool", "app")
+    [row] = labels.for_verdict(pr, {**stop, "kind": "bot", "finding_id": None}, "real", None, author="me")
+    assert row["written_by"] == "unknown"                                    # another tool's comment
 
 
 def test_posted_drafts_get_their_github_ids():
@@ -235,6 +300,50 @@ def with_origin(pr, draft: dict, origin: str) -> None:
 
 def test_new_drafts_have_no_origin(pr):
     assert add(pr, 22, "x")["origin_id"] is None
+
+
+def with_finding(pr) -> dict:
+    """One finding of the analysis on src/core.py line 22, as the app lists it (with its comment_body)."""
+    write_json(pr.dir / "clusters.json", {"clusters": [{"id": "c1", "items": [
+        {"path": "src/core.py", "part": 1, "parts": 1, "key": "k1"}]}]})
+    write_json(pr.dir / "partials" / "k1.json", {"annotation": {
+        "path": "src/core.py", "summary": "Core.", "risk": "high", "look_for": [], "changed_symbols": [], "notes": [],
+        "findings": [{"title": "Inserted lines skip validation", "category": "correctness", "severity": "major",
+                      "side": "RIGHT", "anchor": "inserted B", "line": 22, "impact": "Bad input reaches the parser.",
+                      "fix": "Validate before inserting.", "suggestion": None, "why": "", "evidence": "",
+                      "confidence": 90}]}})
+    [f] = merge.build_findings(pr.dir, json.loads((pr.dir / "context.json").read_text()))[0]
+    return f
+
+
+def test_each_posted_comment_says_who_wrote_it(pr, monkeypatch):
+    f = with_finding(pr)
+    mine = add(pr, 5, "Why is this needed?")
+    as_is = add(pr, 22, f["comment_body"], source="suggestion", suggestion_id=f["id"])
+    assert as_is["generated_body"] == f["comment_body"] and mine["generated_body"] is None
+    rewritten = add(pr, 21, "Please validate here; we had an outage from exactly this input last quarter.",
+                    source="suggestion", suggestion_id=f["id"])              # edited in the card before adding
+    assert rewritten["generated_body"] == f["comment_body"]
+    touched = add(pr, 3, f["comment_body"], source="suggestion", suggestion_id=f["id"])
+    r = pr.client.patch(f"/api/drafts/{touched['id']}", json={"body": f["comment_body"] + " Thanks!"},
+                        headers=ORIGIN)
+    assert r.status_code == 200
+    text, err = chat_tools.call_tool(pr.dir, pr.cfg, "add_pending_comment",
+                                     {"path": "src/core.py", "line": 7, "body": "This drops the error from parse()."})
+    assert not err, text
+    chat = next(d for d in StateStore(pr.dir).load()["drafts"] if d["source"] == "chat")
+    assert chat["generated_body"] == "This drops the error from parse()."
+    r = pr.client.patch(f"/api/drafts/{chat['id']}", json={"body": "I think the caller swallows the parse error "
+                                                                   "here, and the retry in sync() never sees it."},
+                        headers=ORIGIN)
+    assert r.status_code == 200
+    monkeypatch.setattr(github, "submit", lambda o, r, n, payload: {"id": 9, "html_url": "u", "user": {"login": "me"}})
+    monkeypatch.setattr(github, "review_comments", lambda *a: [])
+    r = pr.client.post("/api/review/submit", json={"body": "Notes", "event": "COMMENT"}, headers=ORIGIN)
+    assert r.status_code == 200
+    got = {x["line"]: (x["written_by"], x["written_by_from"]) for x in labels.read(pr.repo)}
+    assert got == {5: ("human", "app"), 22: ("tool", "app"), 21: ("human", "app"), 3: ("tool", "app"),
+                   7: ("human", "app")}
 
 
 def test_submit_saves_a_problem_label_per_posted_comment(pr, monkeypatch):
@@ -330,12 +439,13 @@ def test_chat_posts_pass_each_comment_to_record(pr, monkeypatch):
     assert states[0]["drafts"] == [] and states[0]["submitted"][-1]["review_id"] == 8
 
     assert seen == [
-        [{"path": "src/core.py", "line": 22, "side": "RIGHT", "body": "Posted from the chat", "gh_comment_id": 77}],
+        [{"path": "src/core.py", "line": 22, "side": "RIGHT", "body": "Posted from the chat", "gh_comment_id": 77,
+          "written_by": "tool"}],
         [{"path": "src/core.py", "line": 5, "side": "RIGHT", "body": "Sent with the review", "gh_comment_id": 88,
-          "origin_id": "s-9"}]]
+          "origin_id": "s-9", "written_by": "human"}]]
     rows = labels.read(pr.repo)
-    assert [(x["gh_comment_id"], x["origin_id"], x["source"], x["author"]) for x in rows] == [
-        (77, None, "posted", "me"), (88, "s-9", "posted", "me")]
+    assert [(x["gh_comment_id"], x["origin_id"], x["source"], x["author"], x["written_by"]) for x in rows] == [
+        (77, None, "posted", "me", "tool"), (88, "s-9", "posted", "me", "human")]
     # a review with only a summary posts no comments and saves no labels
     text, err = chat_tools.call_tool(pr.dir, pr.cfg, "post_review", {"body": "One more thing"})
     assert not err and len(labels.read(pr.repo)) == 2
@@ -503,3 +613,120 @@ def test_prr_labels_import_command(tmp_path, tricky_repo, monkeypatch, capsys):
     assert json.loads(out.out)[0]["imported"] == 1 and "#1: 1 of your comments added as holdout labels" in out.err
     [row] = labels.load(tmp_path / "cache" / "o__r")
     assert row["split"] == "holdout" and row["gh_comment_id"] == 1
+
+
+PRISM_COMMENT = findings.comment_body({"title": "Timeout error swallowed", "severity": "major",
+                                       "category": "error-handling", "impact": "Callers never see the timeout.",
+                                       "fix": "Re-raise it.", "suggestion": None, "why": "The retry loop eats it."})
+
+
+def test_import_says_a_comment_in_pr_prisms_format_was_written_by_the_tool(tmp_path, tricky_repo, monkeypatch):
+    head = tricky_repo["head"]
+    comments = [gh_comment(1, "me", original_commit_id=head, body=PRISM_COMMENT),
+                gh_comment(2, "me", original_commit_id=head, line=30, original_line=30, body="Why is this needed?"),
+                gh_comment(3, "me", original_commit_id=head, line=34, original_line=34,
+                           body=PRISM_COMMENT.replace("\n", "\r\n"))]             # edited on github.com: CRLF
+    merged = {"number": 1, "state": "MERGED", "baseRefName": "main", "baseRefOid": tricky_repo["base"]}
+    out, rows, _ = import_into(tmp_path, tricky_repo, monkeypatch, comments, merged, viewer="me")
+    assert [(r["gh_comment_id"], r["written_by"], r["written_by_from"]) for r in rows] == [
+        (1, "tool", "format"), (2, "unknown", "format"), (3, "tool", "format")]
+    assert out["written_by"] == {"human": 0, "tool": 2, "unknown": 1}
+    assert labels.text_writer("**Looks odd**\n\nshould this be here?") == "unknown"    # no severity line
+    assert labels.text_writer("Agreed:\n\n" + PRISM_COMMENT) == "unknown"             # it must start the comment
+
+
+def test_import_written_by_overrides_the_guess(tmp_path, tricky_repo, monkeypatch):
+    head = tricky_repo["head"]
+    comments = [gh_comment(1, "me", original_commit_id=head, body=PRISM_COMMENT),
+                gh_comment(2, "me", original_commit_id=head, line=30, original_line=30, body="Why is this needed?")]
+    merged = {"number": 1, "state": "MERGED", "baseRefName": "main", "baseRefOid": tricky_repo["base"]}
+    import_into(tmp_path, tricky_repo, monkeypatch, comments, merged, viewer="me")
+    out, _, _ = import_into(tmp_path, tricky_repo, monkeypatch, comments, merged, viewer="me", written_by="human")
+    assert out["imported"] == 2                                  # already there, but not yet set to human
+    assert [(x["written_by"], x["written_by_from"]) for x in labels.load(tmp_path / "o__r")] == [
+        ("human", "set"), ("human", "set")]
+    out, _, _ = import_into(tmp_path, tricky_repo, monkeypatch, comments, merged, viewer="me", written_by="human")
+    assert (out["imported"], out["already_imported"]) == (0, 2)
+    out, _, _ = import_into(tmp_path, tricky_repo, monkeypatch, comments, merged, viewer="me")
+    assert out["imported"] == 0 and {x["written_by"] for x in labels.load(tmp_path / "o__r")} == {"human"}
+    with pytest.raises(ValueError):
+        import_into(tmp_path, tricky_repo, monkeypatch, comments, merged, viewer="me", written_by="me")
+
+
+def test_import_keeps_a_comment_on_a_deleted_line_on_the_left(tmp_path, tricky_repo, monkeypatch):
+    head = tricky_repo["head"]
+    hunk = "@@ -30,6 +32,5 @@\n line 32\n line 33\n-line 34"
+    comments = [gh_comment(1, "me", original_commit_id=head, side="LEFT", line=34, original_line=34,
+                           body="Why was this removed?"),
+                gh_comment(2, "me", original_commit_id=head, side=None, line=None, original_line=34, diff_hunk=hunk,
+                           body="And this?"),                                # no side given: the hunk says LEFT
+                gh_comment(3, "me", original_commit_id=head, side=None, diff_hunk="@@ -1 +1 @@\n+line 22")]
+    merged = {"number": 1, "state": "MERGED", "baseRefName": "main", "baseRefOid": tricky_repo["base"]}
+    _, rows, _ = import_into(tmp_path, tricky_repo, monkeypatch, comments, merged, viewer="me")
+    assert [(r["side"], r["line"]) for r in rows] == [("LEFT", 34), ("LEFT", 34), ("RIGHT", 22)]
+    question = {"path": "src/core.py", "side": "LEFT", "line": 34, "category": "intent",
+                "title": "Why was line 34 removed?", "impact": ""}
+    assert labels.match_label(rows[0], question)
+
+
+def test_labels_tag_sets_who_wrote_them_and_fills_in_old_labels(tmp_path):
+    folder = tmp_path / "o__r"
+    old = [{k: v for k, v in x.items() if not k.startswith("written_by")} for x in (
+        problem(pr=1, source="imported", gh_comment_id=1, text=PRISM_COMMENT),
+        problem(pr=1, source="imported", gh_comment_id=2, line=40, text="Why is this needed?"),
+        problem(pr=2, source="verdict", origin_id="s-1", stop_kind="risk_note"))]
+    labels.write(folder, old + [problem(pr=2, source="posted", gh_comment_id=3, line=50, written_by="human",
+                                        written_by_from="app")])
+    out = labels.tag(folder)                                                 # no PRs, no value: fill in the gaps
+    assert (out["retagged"], out["labels"], out["prs"]) == (3, 4, [1, 2])
+    assert {x["gh_comment_id"] or x["origin_id"]: (x["written_by"], x["written_by_from"])
+            for x in labels.load(folder)} == {1: ("tool", "format"), 2: ("unknown", "format"), "s-1": ("tool", "app"),
+                                              3: ("human", "app")}
+    assert labels.tag(folder)["retagged"] == 0                              # nothing left to fill in
+    out = labels.tag(folder, [1], written_by="human")
+    assert out["retagged"] == 2 and out["written_by"] == {"human": 2, "tool": 0, "unknown": 0}
+    out = labels.tag(folder, [2], split="holdout2")
+    assert out["retagged"] == 2 and len(labels.load(folder)) == 4           # re-tagging appends; still one per issue
+    assert {x["written_by"] for x in labels.load(folder) if x["pr"] == 1} == {"human"}
+    assert labels.pr_splits(labels.load(folder)) == {1: "train", 2: "holdout2"}
+    assert {x["id"] for x in labels.load(folder)} == {x["id"] for x in labels.read(folder)}   # copies keep the id
+    with pytest.raises(ValueError, match="--prs"):
+        labels.tag(folder, written_by="human")
+    with pytest.raises(ValueError):
+        labels.tag(folder, [1], split="all")
+
+
+def test_prr_labels_tag_and_import_commands(tmp_path, tricky_repo, monkeypatch, capsys):
+    from prr import cli, config, gitgh
+
+    head = tricky_repo["head"]
+    monkeypatch.setattr(labels, "find_remote", lambda root, ref: str(root))
+    FakeGitHub(monkeypatch, [gh_comment(1, "me", original_commit_id=head, body=PRISM_COMMENT)],
+               {"number": 1, "state": "MERGED", "baseRefName": "main", "baseRefOid": tricky_repo["base"]})
+    monkeypatch.setattr(gitgh, "viewer_login", lambda: "me")
+    monkeypatch.setattr(gitgh, "default_repo", lambda cwd: ("o", "r"))
+    monkeypatch.setattr(cli, "parse_pr_arg", lambda arg, root: PRRef("o", "r", int(arg.lstrip("#"))))
+    monkeypatch.setattr(cli, "load_config", lambda: Config(cache_dir=tmp_path / "cache"))
+    monkeypatch.setattr(config, "REPO_DIR", tmp_path)                    # no config.toml: nothing real is read
+
+    def run(*argv) -> int:
+        with pytest.raises(SystemExit) as done:
+            cli.main(["--repo", str(tricky_repo["root"]), *argv])
+        return done.value.code
+
+    assert run("labels", "import", "1", "--split", "holdout2") == 0
+    assert "#1: 1 of your comments added as holdout2 labels (1 in PR Prism's format)" in capsys.readouterr().err
+    [row] = labels.load(tmp_path / "cache" / "o__r")
+    assert (row["split"], row["written_by"]) == ("holdout2", "tool")
+    assert run("labels", "tag", "--prs", "#1", "--written-by", "human") == 0
+    out = capsys.readouterr()
+    assert json.loads(out.out)["retagged"] == 1 and "Re-tagged 1 of 1 labels" in out.err
+    [row] = labels.load(tmp_path / "cache" / "o__r")
+    assert (row["split"], row["written_by"], row["written_by_from"]) == ("holdout2", "human", "set")
+    assert run("labels", "tag", "--written-by", "tool") == 1                # which PRs?
+    assert "--prs" in capsys.readouterr().err
+    assert run("labels", "import", "1", "--written-by", "human", "--split", "holdout2") == 0
+    assert "1 already there" in capsys.readouterr().err                      # already set to human
+    with pytest.raises(SystemExit) as done:
+        cli.main(["labels", "import", "1", "--split", "bad split"])         # argparse refuses the name
+    assert done.value.code == 2
