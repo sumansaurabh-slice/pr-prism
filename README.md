@@ -194,7 +194,8 @@ Put team rules under "Team context" in `skill/review-guidelines.md`. Claude foll
 - `prr/prompts/*.md` holds the detailed instructions for annotation, synthesis and chat.
 - `prr/prompts/rubrics/*.md` are the per-language checklists. Edit them, or add a file for a new language and map it in `prr/rubrics.py`.
 - `config.toml` sets:
-  - the models for each step (`annotate`, `synthesize`, `chat`, `blockers`, `judge`, `ci`);
+  - the models for each step (`annotate`, `synthesize`, `chat`, `blockers`, `judge`, `ci`, `deepcheck`);
+  - the deep check under `[analysis]`: on or off, how many areas, and its time limits;
   - concurrency, batch size and cache location;
   - the chat's switches under `[chat]`;
   - an optional spend warning per PR under `[budget]` (`warn_usd`; a warning only).
@@ -219,6 +220,7 @@ Put team rules under "Team context" in `skill/review-guidelines.md`. Claude foll
 4. **Second look.** A separate, cheaper model scores every finding against its code. It can only veto. Findings that score low are hidden as **low confidence**, not deleted. The first reviewer's own "% sure" never hides a finding by itself. If the second look fails, the finding stays shown, marked "not second-checked", and is checked again on the next run.
 5. **CI, other tools, re-checks.** These run side by side (see above).
 6. **Summary.** The summary, reading order, data flows and impact take all of the above into account.
+7. **Deep check.** An Opus agent takes the riskiest parts of the reading order (at most 4) and asks "what could break?". It follows the code across files: callers outside the diff, odd inputs, error paths, old data, two requests at once, frontend and backend contracts, units and missing values. Each finding gives the steps of how it could happen, with example values, and one yes/no question for you. The second look checks each one against the code at the spots it cites. Findings show up as each area finishes. An area that fails, runs out of time or is skipped is listed at the top of the Overview.
 
 ## How it works
 
@@ -228,6 +230,7 @@ Put team rules under "Team context" in `skill/review-guidelines.md`. Claude foll
                       ─► prr analyze ─► N × `claude -p --json-schema` (per batch of related files, parallel)
                                      ─► impact (codegraph / git grep, no LLM)
                                      ─► 1 × `claude -p --json-schema` synthesis
+                                     ─► ≤ 4 × `claude -p --json-schema` deep check (3 at a time, time budget)
                                      ─► analysis.json   (repaired, never rejected)
 browser chat ─► POST /api/chat/... ─► `claude -p --resume <session>` (read-only tools, cwd = worktree) ─► SSE
 Submit       ─► POST /api/review/submit ─► `gh api POST /repos/{o}/{r}/pulls/{n}/reviews`
