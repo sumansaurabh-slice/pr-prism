@@ -84,6 +84,12 @@ describe("analysis warnings and deep check progress", () => {
     expect(screen.queryByText("Some checks didn't run fully")).not.toBeInTheDocument();
   });
 
+  it("during the deep check the summary is no longer pending", () => {
+    resetStore({ analysis: makeAnalysis({ status: "deepchecking", summary: null }), state: makeState() });
+    render(<Overview />);
+    expect(screen.getByText("could not write a summary")).toBeInTheDocument();
+  });
+
   function progress(over: Partial<Progress>) {
     const a = makeAnalysis({ status: "deepchecking" });
     resetStore({ analysis: { ...a, progress: { ...a.progress, status: "deepchecking", ...over } }, state: makeState() });

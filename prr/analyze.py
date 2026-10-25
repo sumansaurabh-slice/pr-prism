@@ -418,8 +418,9 @@ def _analyze(pr_dir: Path, ctx: dict, cfg: Config, focus: str | None, force: boo
         progress.update("Could not write the summary. Showing the file notes in the default order")
 
     all_failed = clusters and progress.data["clusters_failed"] == len(clusters)
-    if not all_failed:  # "what could break" in the riskiest areas; runs in every mode, eval measures it
-        deepcheck.run(pr_dir, ctx, cfg, diffs, progress, focus=focus, force=force)
+    # "What could break" in the riskiest areas. It runs in every mode: eval measures it.
+    deepcheck.run(pr_dir, ctx, cfg, diffs, progress, focus=focus, force=force,
+                  skip="Claude could not read any group of files" if all_failed else None)
     progress.update(f"Analysis {'failed' if all_failed else 'complete'} (≈${progress.data['cost_usd']:.2f})",
                     status="failed" if all_failed else "complete", finished_at=now_iso())
     analysis = merge.build_analysis(pr_dir)

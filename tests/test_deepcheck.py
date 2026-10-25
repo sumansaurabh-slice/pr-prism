@@ -602,8 +602,16 @@ def test_turned_off_it_asks_nothing_but_still_saves_the_before_snapshot(tmp_path
     cfg.analysis.deepcheck = False
     run_deepcheck(pr, ctx, cfg)
     assert fake.calls == [] and read_json(pr / deepcheck.SNAPSHOT_FILE) == []
-    assert read_json(pr / "progress.json")["status"] == "synthesizing"
+    progress = read_json(pr / "progress.json")
+    assert progress["status"] == "synthesizing" and "turned off" in progress["message"]
     assert read_json(pr / deepcheck.FILE)["run"]["enabled"] is False
+
+    (pr / deepcheck.SNAPSHOT_FILE).unlink()           # analyze skips it when no file group could be read
+    progress = start(pr)
+    diffs = {f.path: f for f in diffparse.parse((pr / "diff.patch").read_text())}
+    deepcheck.run(pr, ctx, Config(), diffs, progress, skip="Claude could not read any group of files")
+    assert fake.calls == [] and read_json(pr / deepcheck.SNAPSHOT_FILE) == []
+    assert read_json(pr / "progress.json")["message"] == "Deep check skipped: Claude could not read any group of files"
 
 
 def test_deep_check_settings_are_read_from_config(tmp_path, monkeypatch):

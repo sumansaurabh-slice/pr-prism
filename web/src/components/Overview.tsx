@@ -2,7 +2,7 @@ import { useState } from "react";
 import { Avatar, DiffStat, IconCheck, IconChevronDown, IconChevronRight } from "../icons";
 import { InlineText, Markdown, RefLink } from "../markdown";
 import { goFile } from "../router";
-import { fileMap, fmtMinutes, splitPath, totalMinutes, useStore } from "../store";
+import { fileMap, fmtMinutes, splitPath, summaryPending, totalMinutes, useStore } from "../store";
 import type { Ref } from "../types";
 import { RiskBadge } from "./Header";
 import { BlockerBanner, CIBox, FindingsBox, OtherToolsBox, RecheckedBox } from "./ReviewSignals";
@@ -56,7 +56,7 @@ export function Overview() {
   if (!analysis) return <div className="blankslate">Loading…</div>;
   const { pr, summary } = analysis;
   const files = fileMap(analysis);
-  const pending = analysis.status !== "complete" && analysis.status !== "failed";
+  const pending = summaryPending(analysis);
   const viewed = analysis.files.filter((f) => f.path in reviewed).length;
 
   return (

@@ -322,7 +322,7 @@ class _Run:
     """One analysis run's deep check: its areas, the shared caches, and the lock every write goes through."""
 
     def __init__(self, pr_dir: Path, ctx: dict, cfg: Config, diffs: dict[str, FileDiff], progress: Any,
-                 focus: str | None, force: bool, view: dict):
+                 focus: str | None, force: bool, view: dict, *, enabled: bool = True):
         self.pr_dir, self.ctx, self.cfg, self.diffs, self.progress = pr_dir, ctx, cfg, diffs, progress
         self.focus, self.force = focus, force
         self.worktree = Path(ctx["worktree"])
@@ -334,7 +334,7 @@ class _Run:
         self.lock = threading.Lock()
         saved = read_json(pr_dir / FILE) or {}
         self.cache: dict = saved.get("cache") if isinstance(saved.get("cache"), dict) else {}
-        self.run: dict = {"run_id": progress.ledger.run_id, "enabled": cfg.analysis.deepcheck, "model": self.model,
+        self.run: dict = {"run_id": progress.ledger.run_id, "enabled": enabled, "model": self.model,
                           "started_at": now_iso(), "finished_at": None, "targets": [], "warnings": []}
         self.recs: dict[str, dict] = {}
         self.judged = JudgeStore(pr_dir / "judge.json")
@@ -509,12 +509,13 @@ class _Run:
 
 
 def run(pr_dir: Path, ctx: dict, cfg: Config, diffs: dict[str, FileDiff], progress: Any,
-        focus: str | None = None, force: bool = False) -> None:
+        focus: str | None = None, force: bool = False, skip: str | None = None) -> None:
     """The deep check stage of `prr analyze`, after the summary. Never raises: a problem becomes a warning.
 
-    `progress` is analyze.Progress (its `update` and its `ledger`)."""
+    `progress` is analyze.Progress (its `update` and its `ledger`). With `skip` (why), or with `[analysis] deepcheck`
+    off, nothing is asked, but placed_pre_deepcheck.json is still written."""
     try:
-        _run(pr_dir, ctx, cfg, diffs, progress, focus, force)
+        _run(pr_dir, ctx, cfg, diffs, progress, focus, force, skip)
     except Exception as e:  # noqa: BLE001 — the deep check adds to the review; it must not sink it
         msg = f"The deep check stopped with an error: {str(e)[:200]}"
         data = read_json(pr_dir / FILE) or {}
@@ -526,18 +527,19 @@ def run(pr_dir: Path, ctx: dict, cfg: Config, diffs: dict[str, FileDiff], progre
 
 
 def _run(pr_dir: Path, ctx: dict, cfg: Config, diffs: dict[str, FileDiff], progress: Any, focus: str | None,
-         force: bool) -> None:
+         force: bool, skip: str | None) -> None:
     from .merge import build_analysis
 
-    if cfg.analysis.deepcheck:
+    off = skip or (None if cfg.analysis.deepcheck else "it is turned off ([analysis] deepcheck = false)")
+    if not off:
         progress.update("Deep check: picking the riskiest areas", status="deepchecking", deepcheck_total=0,
                         deepcheck_done=0, deepcheck_cost_usd=0.0)
     view = build_analysis(pr_dir)
-    r = _Run(pr_dir, ctx, cfg, diffs, progress, focus, force, view)
+    r = _Run(pr_dir, ctx, cfg, diffs, progress, focus, force, view, enabled=not off)
     r.save()                          # this run has no deep-check findings yet
     write_snapshot(pr_dir, ctx)       # "deep check off", for eval
-    if not cfg.analysis.deepcheck:
-        progress.update("Deep check is off ([analysis] deepcheck = false)")
+    if off:
+        progress.update(f"Deep check skipped: {off}")
         return
     chosen, skipped = pick_targets(view["findings"], read_json(pr_dir / "synthesis.json"), ctx, risk=r.risk,
                                    clusters=read_json(pr_dir / "clusters.json"),

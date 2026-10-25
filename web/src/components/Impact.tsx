@@ -1,5 +1,5 @@
 import { InlineText, Markdown } from "../markdown";
-import { useStore } from "../store";
+import { summaryPending, useStore } from "../store";
 import type { ImpactKind, ImpactItem, Level } from "../types";
 import { RiskBadge } from "./Header";
 import { RefList } from "./Overview";
@@ -23,7 +23,7 @@ export function Impact() {
   if (!analysis) return <div className="blankslate">Loading…</div>;
   const groups = new Map<ImpactKind, ImpactItem[]>();
   for (const item of analysis.impact) groups.set(item.kind, [...(groups.get(item.kind) ?? []), item]);
-  const pending = analysis.status !== "complete" && analysis.status !== "failed";
+  const pending = summaryPending(analysis);
   if (!analysis.impact.length) {
     return (
       <div className="blankslate">
