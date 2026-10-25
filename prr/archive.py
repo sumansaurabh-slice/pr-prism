@@ -24,15 +24,16 @@ from pathlib import Path
 from typing import Any
 
 from .config import Config
-from .state import StateStore
+from .state import StateStore, empty_state
 from .util import now_iso, read_json
 
 # state.json keys holding the reviewer's work: chat threads, pending comments, stop verdicts, the reviewed commit
-# and its stop ids, submitted reviews, viewed marks, dismissed findings, seen hunks, the review body draft and cost
-# totals. A PR whose keys are all empty (and that has no cost ledger) is not archived. New kinds of work go here.
+# and its stop ids, submitted reviews, viewed marks, dismissed findings, seen hunks, the review body draft, the
+# "Understand this PR" steps marked "Got it" and its background level. A PR whose keys all hold their empty default
+# (and that has no cost ledger) is not archived. New kinds of work go here.
 WORK_FIELDS = (
     "threads", "drafts", "stop_verdicts", "reviewed_head", "reviewed_stop_ids", "submitted", "reviewed",
-    "dismissed_suggestions", "seen_hunks", "review_body_draft",
+    "dismissed_suggestions", "seen_hunks", "review_body_draft", "understood_steps", "understand_level",
 )  # spend lives in calls.jsonl (archived beside the state), not in state.json
 LEDGER = "calls.jsonl"
 _NAME = re.compile(r"^pr-(\d+)-(\d{8}T\d{6}Z)(?:-(\d+))?\.(json|calls\.jsonl)$")
@@ -65,7 +66,10 @@ def _has_work(raw: bytes) -> bool:
         state = json.loads(raw)
     except ValueError:
         return True  # unreadable, so it can't be shown to be empty: keep it rather than delete it
-    return not isinstance(state, dict) or any(state.get(k) for k in WORK_FIELDS)
+    if not isinstance(state, dict):
+        return True
+    default = empty_state()  # the level "new" is a default, not work
+    return any(state.get(k) and state.get(k) != default.get(k) for k in WORK_FIELDS)
 
 
 def counts(state: dict[str, Any]) -> dict[str, int]:
