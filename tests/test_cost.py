@@ -294,6 +294,21 @@ class FakeClaude:
         return subprocess.CompletedProcess(argv, 0, stdout=json.dumps(data), stderr="")
 
 
+def test_an_analysis_from_before_the_ledger_still_counts(tmp_path):
+    """progress.json from before calls.jsonl kept that run's (partial) spend: it counts, and the total reads "≥"."""
+    write_json(tmp_path / "progress.json", {"status": "complete", "started_at": "2026-10-24T12:08:59+00:00",
+                                            "cost_usd": 1.6712})
+    s = cost.summary(tmp_path)
+    assert s["total_usd"] == 1.6712 and s["unknown"] and cost.label(s) == "≥ $1.67"
+
+    cost.keep_before_ledger(tmp_path)          # a new run starts: the old spend moves into calls.jsonl, once
+    cost.keep_before_ledger(tmp_path)
+    write_json(tmp_path / "progress.json", {"status": "annotating", "run_id": "r2", "cost_usd": 0.0})
+    s = cost.summary(tmp_path)
+    assert s["total_usd"] == 1.6712 and s["unknown"]
+    assert [x["run_id"] for x in ledger.read(tmp_path)] == [cost.BEFORE_LEDGER]
+
+
 def test_totals_match_the_ledger_across_two_runs_and_every_call_type(tmp_path, monkeypatch):
     fake = FakeClaude(monkeypatch)
     cfg = Config()

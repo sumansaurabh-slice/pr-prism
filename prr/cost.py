@@ -141,6 +141,28 @@ def analysis_running(pr_dir: Path) -> bool:
     return isinstance(pid, int) and _pid_alive(pid)
 
 
+BEFORE_LEDGER = "before-ledger"
+
+
+def before_ledger(pr_dir: Path) -> dict | None:
+    """The last analysis run from before calls.jsonl existed, as a ledger line, or None. Its progress.json counted
+    only some calls (annotate and synthesis), so the line is `partial`: the total then reads "≥ $X"."""
+    prog = read_json(pr_dir / "progress.json") or {}
+    spent = prog.get("cost_usd")
+    if prog.get("run_id") or not isinstance(spent, (int, float)) or spent <= 0:
+        return None
+    return {"at": prog.get("started_at"), "run_id": BEFORE_LEDGER, "purpose": "annotate", "model": None,
+            "target": None, "duration_ms": None, "cost_usd": round(float(spent), 6), "outcome": "ok", "error": None,
+            "migrated": True, "partial": True}
+
+
+def keep_before_ledger(pr_dir: Path) -> None:
+    """Before a new run replaces progress.json: copy an older run's spend into calls.jsonl (once)."""
+    old = before_ledger(pr_dir)
+    if old and not any(x.get("run_id") == BEFORE_LEDGER for x in ledger.read(pr_dir)):
+        ledger.append(pr_dir, old)
+
+
 def run_total(lines: list[dict], run_id: str) -> float:
     return sum(x.get("cost_usd") or 0.0 for x in lines if x.get("purpose") and x.get("run_id") == run_id)
 
@@ -161,14 +183,14 @@ def totals(lines: list[dict], threads: list[dict]) -> dict[str, Any]:
             chat += c or 0.0
             by_thread[x.get("target") or ""] += c or 0.0
             continue
-        unknown = unknown or c is None
+        unknown = unknown or c is None or bool(x.get("partial"))
         rid = x.get("run_id")
         if rid:
             r = runs.setdefault(rid, {"run_id": rid, "started_at": x.get("at"), "cost_usd": 0.0, "calls": 0,
                                       "unknown": False})
             r["cost_usd"] += c or 0.0
             r["calls"] += 1
-            r["unknown"] = r["unknown"] or c is None
+            r["unknown"] = r["unknown"] or c is None or bool(x.get("partial"))
             analysis += c or 0.0
         else:
             other += c or 0.0
@@ -192,6 +214,9 @@ def summary(pr_dir: Path, warn_usd: float = 0.0) -> dict[str, Any]:
     state, migrated = StateStore(pr_dir).read()
     lines = ledger.read(pr_dir)
     lines += not_yet_recorded(lines, migrated)  # an old state.json not yet written back still counts its chats
+    old = before_ledger(pr_dir)
+    if old and not any(x.get("run_id") == BEFORE_LEDGER for x in lines):
+        lines.append(old)  # an analysis from before calls.jsonl, not yet copied into it
     out = totals(lines, state["threads"])
     running = analysis_running(pr_dir)
     current = (read_json(pr_dir / "progress.json") or {}).get("run_id")

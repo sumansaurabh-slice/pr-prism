@@ -179,6 +179,7 @@ class Progress:
         self.path = pr_dir / "progress.json"
         self.lock = threading.Lock()
         self.echo = echo
+        cost.keep_before_ledger(pr_dir)  # this run's progress.json replaces the older run's spend record
         self.ledger = ledger.Ledger(pr_dir, ledger.new_run_id())
         self.data: dict[str, Any] = {"status": "annotating", "focus": focus, "clusters_total": 0, "clusters_done": 0,
                                      "clusters_failed": 0, "message": "", "started_at": now_iso(),
