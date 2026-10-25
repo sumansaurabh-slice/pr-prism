@@ -108,6 +108,52 @@ def test_a_finding_the_second_look_never_scored_keeps_its_own_flag():
     assert not evalrun.hidden({**F4, "severity": "blocker"}, {}, 50)              # blockers are never hidden
 
 
+def test_each_view_counts_the_human_written_labels_on_their_own(tmp_path):
+    rows = [label(5, "Changed value breaks parsing of old files", written_by="human", written_by_from="set"),
+            label(21, "Inserted lines skip validation", written_by="tool", written_by_from="format"),
+            label(30, "Off by one in the loop", written_by="human", written_by_from="app"),
+            label(10, "Missing null check before use")]                    # unknown: not counted as human
+    write_run(tmp_path, [F1, F2, F3, F4], [F1, F3, F4], [call("annotate", 1.0)])
+    v = evalrun.score_run(tmp_path, rows, elapsed_s=60)["views"]
+    assert (v["on"]["found"], v["on"]["countable"]) == (3, 4)
+    assert v["on"]["human"] == {"countable": 2, "found": 1, "recall": 0.5}      # 30 was hidden by the second look
+    assert v["off"]["human"] == {"countable": 2, "found": 1, "recall": 0.5}
+    assert evalrun.score([rows[1]], [F2], {}, None)["human"] == {"countable": 0, "found": 0, "recall": None}
+
+
+def test_a_label_on_a_deleted_line_is_found_by_a_finding_on_that_line():
+    removed = label(34, "Why was the retry removed?", side="LEFT")          # GitHub's original_line: the old file's
+    question = {**finding("q1", 34, "Why was the retry removed?"), "side": "LEFT", "category": "intent",
+                "impact": "Callers relied on it"}
+    assert evalrun.score([removed], [question], {}, None)["labels"] == {removed["id"]: "found"}
+    elsewhere = {**question, "line": 37, "title": "Unused import"}
+    assert evalrun.score([removed], [elsewhere], {}, None)["labels"] == {removed["id"]: "missed"}
+
+
+def deepcheck_run(run_dir, *, enabled: bool = True, targets: list[dict] | None = None) -> None:
+    """deepcheck.json as the deep check leaves it: this run's areas, their files and status."""
+    write_json(run_dir / "deepcheck.json",
+               {"cache": {}, "run": {"run_id": "r", "enabled": enabled, "targets": targets or []}})
+
+
+def test_a_missed_label_says_whether_it_was_inside_a_deep_check_area(tmp_path):
+    rows = [label(5, "Changed value breaks parsing"), label(21, "Inserted lines skip validation"),
+            label(3, "Typo in the guide", path="docs/guide.md"), label(9, "Bad name", path="src/util.py")]
+    write_run(tmp_path, [F1], [F1], [call("annotate", 1.0)])
+    deepcheck_run(tmp_path, targets=[
+        {"id": "chapter:a", "title": "Parsing", "files": ["src/core.py", "src/util.py"], "status": "checked"},
+        {"id": "flow:b", "title": "Startup", "files": ["src/core.py"], "status": "nothing-found"},
+        {"id": "chapter:c", "title": "Docs", "files": ["docs/guide.md"], "status": "failed"}])  # didn't look
+    run = evalrun.score_run(tmp_path, rows, elapsed_s=60)
+    assert [(m["line"], m["in_deepcheck_area"], m["areas"]) for m in run["missed"]] == [
+        (21, True, ["Parsing", "Startup"]), (3, False, []), (9, True, ["Parsing"])]
+    assert [a["title"] for a in run["deepcheck_areas"]] == ["Parsing", "Startup"]
+    deepcheck_run(tmp_path, enabled=False)                                  # turned off or skipped
+    assert {m["in_deepcheck_area"] for m in evalrun.score_run(tmp_path, rows, 60)["missed"]} == {None}
+    (tmp_path / "deepcheck.json").unlink()
+    assert {m["in_deepcheck_area"] for m in evalrun.score_run(tmp_path, rows, 60)["missed"]} == {None}
+
+
 # ---- which pairs, and the estimate -----------------------------------------------------------------
 
 
@@ -123,6 +169,9 @@ def test_pairs_are_distinct_pr_commits_and_a_pr_is_held_out_as_a_whole():
     assert pairs[0]["merge_base_sha"] == "b" * 40 and pairs[1]["merge_base_sha"] is None
     assert [p["pr"] for p in evalrun.pairs_from(rows, split="train")] == [2]
     assert [p["pr"] for p in evalrun.pairs_from(rows, prs=[2])] == [2]
+    rows.append(label(7, "e", pr=4, commit_id="f" * 40, split="holdout2"))   # any split name
+    assert [(p["pr"], p["split"]) for p in evalrun.pairs_from(rows, split="holdout2")] == [(4, "holdout2")]
+    assert [p["pr"] for p in evalrun.pairs_from(rows, split="holdout")] == [1, 1]
 
 
 # ---- the whole eval, with fakes ----------------------------------------------------------------------
@@ -188,7 +237,8 @@ def test_eval_replays_each_pair_three_times_and_reports_the_spread(repo, monkeyp
     assert [(c[0].name, c[1], c[2]) for c in fake.calls] == [
         (f"run-{i}", repo.head, f"#1 {repo.head[:7]} run {i}/3") for i in (1, 2, 3)]
     [one, gone] = report["pairs"]
-    assert (one["status"], one["labels"]) == ("complete", {"problems": 2, "countable": 2, "not_problem": 0})
+    assert (one["status"], one["labels"]) == ("complete", {"problems": 2, "countable": 2, "not_problem": 0,
+                                                           "written_by": {"human": 0, "tool": 0, "unknown": 2}})
     assert gone["status"] == "skipped" and "couldn't fetch commit 0000000000" in gone["reason"]
     assert report["skipped"] == [{"pr": 2, "commit_id": "0" * 40, "reason": gone["reason"]}]
     on, off = report["total"]["all"]["on"], report["total"]["all"]["off"]
@@ -200,12 +250,12 @@ def test_eval_replays_each_pair_three_times_and_reports_the_spread(repo, monkeyp
     assert [p["pr"] for p in report["prs"]] == [1, 2] and set(report["total"]) == {"all", "holdout"}  # no train runs
     assert repo.asked == [1, 2]                                             # `gh pr view` once per PR
     # the gate, on the held-out PR: +33 points, 83%, $1.00 added, no unlabelled findings
-    g = report["gate"]
-    assert g["pass"] is True and g["prs"] == 1
+    [g] = report["gates"]
+    assert g["pass"] is True and g["prs"] == 1 and g["split"] == "holdout"
     assert [(b["shown"], b["pass"]) for b in g["bars"]] == [("+33 points", True), ("83%", True), ("$1.00", True),
                                                            ("0.0", True)]
     text = "\n".join(lines)
-    assert "about $30.00" in text and "Wave 2 gate, held-out PRs (1), mean of 3 runs: PASS" in text
+    assert "about $30.00" in text and "Wave 2 gate, holdout PRs (1), mean of 3 runs: PASS" in text
     assert "#2 0000000: couldn't fetch commit" in text and "Deep check on, no floor (now): found 1.7 of 2" in text
 
 
@@ -215,7 +265,7 @@ def test_the_report_is_private_and_the_eval_folders_are_cleaned_up(repo, monkeyp
     path = repo.folder / f"eval-{datetime.now(timezone.utc):%Y-%m-%d}.json"
     assert report["path"] == str(path) and stat.S_IMODE(os.stat(path).st_mode) == 0o600
     saved = read_json(path)
-    assert saved["gate"]["pass"] is True and saved["pairs"][0]["runs"][0]["views"]["on"]["found"] == 2
+    assert saved["gates"][0]["pass"] is True and saved["pairs"][0]["runs"][0]["views"]["on"]["found"] == 2
     assert eval_folders(repo) == []                                         # worktree removed, folder deleted
     assert "_eval" not in _git(repo.root, "worktree", "list")
     assert _git(repo.root, "rev-parse", f"refs/pr-prism/eval/{repo.head}").strip() == repo.head   # the pin stays
@@ -408,8 +458,102 @@ def test_no_labels_means_nothing_to_run(tmp_path):
 def test_no_held_out_prs_means_no_gate(repo, monkeypatch):
     FakeAnalysis(monkeypatch)
     report, lines = eval_now(repo, split="train")
-    assert report["gate"]["pass"] is None and report["gate"]["bars"] == []
+    assert [(g["split"], g["pass"], g["bars"]) for g in report["gates"]] == [("holdout", None, [])]
     assert any("No held-out PRs were scored" in x for x in lines)
+
+
+def relabel(repo, rows: list[dict]) -> None:
+    (repo.folder / "labels.jsonl").unlink()
+    labels.write(repo.folder, rows)
+
+
+def test_the_report_shows_recall_on_human_written_labels_too(repo, monkeypatch):
+    FakeAnalysis(monkeypatch)                                # run 2 misses the deep-check finding (line 21)
+    relabel(repo, [label(5, "Changed value breaks parsing", commit_id=repo.head, merge_base_sha=repo.base,
+                         split="holdout", written_by="tool", written_by_from="format"),
+                   label(21, "Inserted lines skip validation", commit_id=repo.head, merge_base_sha=repo.base,
+                         split="holdout", written_by="human", written_by_from="set")])
+    report, lines = eval_now(repo)
+    [pair] = report["pairs"]
+    assert pair["labels"]["written_by"] == {"human": 1, "tool": 1, "unknown": 0}
+    assert [r["views"]["on"]["human"]["recall"] for r in pair["runs"]] == [1.0, 0.0, 1.0]
+    on, off = report["total"]["all"]["on"], report["total"]["all"]["off"]
+    assert on["recall"]["mean"] == pytest.approx(0.8333, abs=1e-4)
+    assert on["human"]["recall"] == {"mean": pytest.approx(0.6667, abs=1e-4), "min": 0.0, "max": 1.0, "runs": 3}
+    assert on["human"]["countable"]["mean"] == 1 and off["human"]["recall"]["mean"] == 0.0
+    assert report["total"]["holdout"]["on"]["human"]["found"]["mean"] == pytest.approx(0.6667, abs=1e-4)
+    [g] = report["gates"]
+    assert g["human_labels"] == 1
+    assert [(b["shown"], b.get("human", {}).get("shown")) for b in g["bars"]] == [
+        ("+33 points", "+67 points"), ("83%", "67%"), ("$1.00", None), ("0.0", None)]
+    text = "\n".join(lines)
+    assert "Deep check on, no floor (now): found 1.7 of 2 problems, 83% (50-100%); human-written: 0.7 of 1, 67% " \
+           "(0-100%)" in text
+    assert "; human-written 67% (0-100%) → 0% (0-0%) of 1" in text
+    assert "Wave 2 gate, holdout PRs (1), mean of 3 runs: PASS · 1 human-written label" in text
+    assert "finds at least 40% of your problems: 83% (human-written only: 67%)" in text
+    assert "saved before PR Prism recorded" not in text
+
+
+def test_labels_from_before_written_by_are_counted_as_unknown_and_noted(repo, monkeypatch):
+    FakeAnalysis(monkeypatch)
+    old = [{k: v for k, v in x.items() if not k.startswith("written_by")} for x in labels.read(repo.folder)]
+    relabel(repo, old)
+    report, lines = eval_now(repo, prs=[1], runs=1)
+    assert report["total"]["all"]["on"]["human"]["countable"]["mean"] == 0
+    assert any("2 labels saved before PR Prism recorded who wrote each comment" in x and "`prr labels tag`" in x
+               for x in lines)
+    assert any("(now): found 2.0 of 2 problems, 100%; none human-written" in x for x in lines)
+
+
+def test_any_split_name_gets_its_own_gate_but_train_never(repo, monkeypatch):
+    FakeAnalysis(monkeypatch)
+    relabel(repo, [label(5, "Changed value breaks parsing", commit_id=repo.head, merge_base_sha=repo.base,
+                         split="holdout2"),
+                   label(21, "Inserted lines skip validation", commit_id=repo.head, merge_base_sha=repo.base),
+                   label(5, "Gone", pr=2, commit_id="0" * 40, merge_base_sha=repo.base, split="holdout")])
+    report, lines = eval_now(repo, split="holdout2", runs=1)
+    assert [p["pr"] for p in report["pairs"]] == [1] and report["split"] == "holdout2"
+    assert set(report["total"]) == {"all", "holdout2"}
+    [g] = report["gates"]
+    assert (g["split"], g["prs"], g["pass"]) == ("holdout2", 1, True)
+    assert any("Wave 2 gate, holdout2 PRs (1), mean of 1 runs: PASS" in x for x in lines)
+    report, lines = eval_now(repo, runs=1)                                 # all: one gate per held-out split
+    assert [(g["split"], g["prs"]) for g in report["gates"]] == [("holdout", 0), ("holdout2", 1)]
+    assert report["gates"][0]["note"] == "No held-out PRs were scored. Import some with " \
+                                         "`prr labels import --split holdout <pr…>`."
+    assert any("Wave 2 gate, holdout2 PRs (1)" in x for x in lines)
+    assert evalrun.gate([], 1, "holdout3")["note"] == "No PRs of the holdout3 split were scored."
+
+
+class AreaAnalysis(FakeAnalysis):
+    """FakeAnalysis whose deep check checked one area holding src/core.py."""
+
+    def __call__(self, run_dir, tag):
+        super().__call__(run_dir, tag)
+        deepcheck_run(run_dir, targets=[{"id": "chapter:a", "title": "Parsing", "files": ["src/core.py"],
+                                         "status": "checked"}])
+
+
+def test_the_report_lists_each_miss_and_whether_it_was_in_a_deep_check_area(repo, monkeypatch):
+    AreaAnalysis(monkeypatch)                                # run 2 misses line 21, inside the "Parsing" area
+    report, lines = eval_now(repo, prs=[1])
+    [pair] = report["pairs"]
+    assert [r["missed"] for r in pair["runs"]][1][0]["in_deepcheck_area"] is True
+    [miss] = pair["missed"]
+    assert {k: miss[k] for k in ("line", "runs", "in_deepcheck_area", "areas", "text")} == {
+        "line": 21, "runs": 1, "in_deepcheck_area": True, "areas": ["Parsing"],
+        "text": "Inserted lines skip validation"}
+    text = "\n".join(lines)
+    assert "of 2 problems · missed: 1 (1 was inside a deep-check area)" in text
+    assert "Deep check on, missed: 1 (1 was inside a deep-check area); each miss is listed" in text
+
+
+def test_without_the_deep_check_a_miss_has_no_area(repo, monkeypatch):
+    FakeAnalysis(monkeypatch)                                # writes no deepcheck.json
+    report, lines = eval_now(repo, prs=[1])
+    assert report["pairs"][0]["missed"][0]["in_deepcheck_area"] is None
+    assert any("Deep check on, missed: 1 (the deep check didn't run)" in x for x in lines)
 
 
 def test_the_command_needs_yes_without_a_terminal(repo, monkeypatch, capsys):

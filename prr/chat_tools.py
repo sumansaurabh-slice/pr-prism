@@ -101,8 +101,9 @@ def _record(pr_dir: Path, html_url: str, event: str, comments: int, review_id: A
     """Note the post in state.json. For a review with pending comments, also remove the ones it claimed (only those).
     `posted` is each comment that went to GitHub ({path, line, side, body, gh_comment_id, origin_id?, written_by}), or
     a function that returns them (when their GitHub ids must be read first: that waits until state.json is safe). Each
-    becomes a problem label for `prr eval`, saying who wrote it (labels.draft_writer). `review`: a submitted review (post_review), which moves "since your review" to this
-    commit; a lone comment doesn't. Returns a warning when those labels couldn't be saved."""
+    becomes a problem label for `prr eval`, saying who wrote it (labels.draft_writer). `review`: a submitted review
+    (post_review), which moves "since your review" to this commit; a lone comment doesn't. Returns a warning when
+    those labels couldn't be saved."""
     def rows() -> list[dict]:
         pr = read_json(pr_dir / "context.json")["pr"]
         comments_posted = posted() if callable(posted) else posted or []

@@ -8,11 +8,16 @@ For each distinct (PR, commit) that has labels (prr/labels.py):
    session (`prr _eval-run`), so Ctrl-C stops it and every `claude` call it started at once.
 3. Score every run in four views: deep check off or on (off = placed_pre_deepcheck.json, the findings before the deep
    check merged; on = analysis.json) × confidence floor on or off (judge.is_low with floor=50 or None). Per view, per
-   PR and in total: recall over countable problem labels, problems found but hidden by the second look, findings that
-   match not-problem labels, unlabelled findings (listed, not counted as wrong), cost and time, each as the mean and
-   min-max across runs; plus the pairs that were skipped.
-4. On the held-out PRs, check the Wave 2 gate (D21): deep check on beats off by 25+ points of recall, on finds 40%+,
-   the deep check adds at most $6 per PR, and at most 10 unlabelled findings per PR.
+   PR and in total: recall over countable problem labels, and again over the human-written ones alone (`human`:
+   labels.writer, since a comment PR Prism wrote is one the analysis finds by itself), problems found but hidden by
+   the second look, findings that match not-problem labels, unlabelled findings (listed, not counted as wrong), cost
+   and time, each as the mean and min-max across runs; plus the pairs that were skipped.
+4. For each label a run missed (deep check on, no floor), whether its file was inside an area the deep check checked
+   in that run (`in_deepcheck_area`, from the run's deepcheck.json; null when the deep check didn't run), so a miss
+   the deep check looked at can be told from one it never looked at. Each pair lists its misses across runs.
+5. On each split other than train (holdout, holdout2, …), check the Wave 2 gate (D21): deep check on beats off by
+   25+ points of recall, on finds 40%+, the deep check adds at most $6 per PR, and at most 10 unlabelled findings per
+   PR. Recall on the human-written labels is shown next to the two recall bars; the bars are judged on all labels.
 
 Before it starts, the estimate (each pair × runs × that PR's most expensive earlier analysis) must be confirmed;
 `max_usd` stops new runs once that much is spent, and Ctrl-C still writes the report so far.
@@ -36,7 +41,7 @@ from pathlib import Path
 from statistics import mean
 from typing import Any, Callable
 
-from . import analyze, cost, fetch, judge, labels, ledger
+from . import analyze, cost, deepcheck, fetch, judge, labels, ledger
 from .config import REPO_DIR, Config
 from .gitgh import CommandError, PRRef, find_remote, git, git_ok
 from .util import now_iso, read_json, write_json
@@ -54,6 +59,7 @@ GATE_ON, GATE_OFF = "on", "off"  # the gate isolates the deep check: both sides 
 GATE = {"gain_points": 25.0, "on_recall": 0.40, "added_usd": 6.0, "unlabelled": 10.0}
 _METRICS = ("recall", "found", "countable", "hidden", "not_problem", "unlabelled_per_pr", "judge_hidden_rate",
             "cost_usd_per_pr", "deepcheck_usd_per_pr", "time_s_per_pr")
+_HUMAN = ("recall", "found", "countable")  # each view's `human`: the same, over the human-written labels alone
 
 
 class Skip(Exception):
@@ -69,18 +75,19 @@ def _log(msg: str) -> None:
 # --------------------------------------------------------------------------------------
 
 
-def pairs_from(all_labels: list[dict], prs: list[int] | None = None, split: str = "all") -> list[dict]:
-    """The distinct (PR, commit) pairs that have labels, oldest PR first. A PR is held out when any of its labels is
-    (labels import sets the split per PR). Labels without a commit can't be replayed and are left out."""
-    held = {x["pr"] for x in all_labels if x.get("split") == "holdout"}
+def pairs_from(all_labels: list[dict], prs: list[int] | None = None, split: str = labels.ALL) -> list[dict]:
+    """The distinct (PR, commit) pairs that have labels, oldest PR first, in `split` (any split name, or all). A PR is
+    in one split as a whole (labels.pr_splits: its latest split other than train). Labels without a commit can't be
+    replayed and are left out."""
+    splits = labels.pr_splits(all_labels)
     groups: dict[tuple[int, str], list[dict]] = {}
     for x in all_labels:
         if x.get("commit_id") and (not prs or x["pr"] in prs):
             groups.setdefault((x["pr"], x["commit_id"]), []).append(x)
     out = []
     for (pr, commit), rows in sorted(groups.items()):
-        pr_split = "holdout" if pr in held else "train"
-        if split != "all" and pr_split != split:
+        pr_split = splits[pr]
+        if split != labels.ALL and pr_split != split:
             continue
         bases = Counter(x["merge_base_sha"] for x in rows if x.get("merge_base_sha"))
         out.append({"pr": pr, "commit_id": commit, "merge_base_sha": bases.most_common(1)[0][0] if bases else None,
@@ -88,15 +95,19 @@ def pairs_from(all_labels: list[dict], prs: list[int] | None = None, split: str 
     return out
 
 
-def label_counts(rows: list[dict]) -> dict[str, int]:
-    return {"problems": sum(1 for x in rows if x["kind"] == "problem"), "countable": sum(map(labels.countable, rows)),
-            "not_problem": sum(1 for x in rows if x["kind"] == "not-problem")}
+def label_counts(rows: list[dict]) -> dict[str, Any]:
+    """The pair's label counts; `written_by` splits the countable ones by who wrote them."""
+    counted = [x for x in rows if labels.countable(x)]
+    return {"problems": sum(1 for x in rows if x["kind"] == "problem"), "countable": len(counted),
+            "not_problem": sum(1 for x in rows if x["kind"] == "not-problem"),
+            "written_by": {w: sum(1 for x in counted if labels.writer(x) == w) for w in labels.WRITERS}}
 
 
 def label_list(rows: list[dict]) -> list[dict]:
     """The pair's labels as the report lists them; each run's views say which were found, by id."""
     return [{"id": x["id"], "kind": x["kind"], "countable": labels.countable(x), "path": x.get("path"),
-             "line": x.get("line"), "source": x.get("source"), "text": (x.get("text") or "")[:300]} for x in rows]
+             "side": x.get("side"), "line": x.get("line"), "source": x.get("source"),
+             "written_by": labels.writer(x), "text": (x.get("text") or "")[:300]} for x in rows]
 
 
 def full_run_usd(repo_folder: Path) -> dict[int, float]:
@@ -227,10 +238,13 @@ def score(pair_labels: list[dict], found: list[dict], verdicts: dict, floor: int
     flagged = [f for f in shown if any(labels.match_label(x, f) for x in rejected)]
     unlabelled = [f for f in shown if not any(labels.match_label(x, f) for x in placed)]
     found_n = sum(1 for s in status.values() if s == "found")
+    human = [x for x in problems if labels.writer(x) == "human"]
+    human_found = sum(1 for x in human if status[x["id"]] == "found")
     return {
         "countable": len(problems), "found": found_n, "hidden": sum(1 for s in status.values() if s == "hidden"),
         "missed": sum(1 for s in status.values() if s == "missed"),
         "recall": found_n / len(problems) if problems else None,
+        "human": {"countable": len(human), "found": human_found, "recall": human_found / len(human) if human else None},
         "not_problem": len(flagged), "not_problem_findings": [_brief(f) for f in flagged],
         "unlabelled": len(unlabelled), "unlabelled_findings": [_brief(f) for f in unlabelled],
         "shown": len(shown), "judge_hidden": len(held_back), "findings": len(found), "labels": status,
@@ -249,8 +263,32 @@ def _span_s(lines: list[dict]) -> float:
     return (max(e for _, e in spans) - min(s for s, _ in spans)).total_seconds() if spans else 0.0
 
 
+def deepcheck_areas(run_dir: Path) -> list[dict] | None:
+    """The areas this run's deep check checked ([{title, files}], from its deepcheck.json), or None when the deep
+    check didn't run (turned off or skipped). An area that failed or was skipped didn't look, so it isn't listed."""
+    run = (read_json(run_dir / deepcheck.FILE) or {}).get("run")
+    if not isinstance(run, dict) or not run.get("enabled"):
+        return None
+    return [{"title": t.get("title") or t.get("id") or "", "files": list(t.get("files") or [])}
+            for t in run.get("targets") or [] if isinstance(t, dict) and t.get("status") in deepcheck.CHECKED]
+
+
+def misses(pair_labels: list[dict], status: dict[str, str], areas: list[dict] | None) -> list[dict]:
+    """The labels a view missed, each with `in_deepcheck_area`: was its file in an area the deep check checked (None
+    when it didn't run), and those areas' titles."""
+    out = []
+    for x in pair_labels:
+        if status.get(x["id"]) != "missed":
+            continue
+        titles = [a["title"] for a in areas or [] if x.get("path") in a["files"]]
+        out.append({"id": x["id"], "path": x.get("path"), "line": x.get("line"),
+                    "in_deepcheck_area": None if areas is None else bool(titles), "areas": titles})
+    return out
+
+
 def score_run(run_dir: Path, pair_labels: list[dict], elapsed_s: float) -> dict[str, Any]:
-    """All four views of one finished run, from its folder, plus its cost and time (from calls.jsonl)."""
+    """All four views of one finished run, from its folder, plus its cost and time (from calls.jsonl), and the labels
+    it missed with deep check on (no floor), each saying whether it was inside a deep-check area."""
     final = (read_json(run_dir / "analysis.json") or {}).get("findings") or []
     before = read_json(run_dir / PRE_DEEPCHECK)
     ran = isinstance(before, list)
@@ -265,9 +303,11 @@ def score_run(run_dir: Path, pair_labels: list[dict], elapsed_s: float) -> dict[
         views[vid]["cost_usd"] = round(total if v["deepcheck"] else total - deep_usd, 4)
         views[vid]["time_s"] = round(elapsed_s if v["deepcheck"] else max(0.0, elapsed_s - deep_s), 1)
         views[vid]["deepcheck_usd"] = round(deep_usd if v["deepcheck"] else 0.0, 4)
+    areas = deepcheck_areas(run_dir)
     return {"status": "complete", "deepcheck_ran": ran, "cost_usd": round(total, 4), "deepcheck_usd": round(deep_usd, 4),
             "time_s": round(elapsed_s, 1), "deepcheck_time_s": round(deep_s, 1),
-            "unknown_cost": any(x.get("cost_usd") is None for x in calls), "views": views}
+            "unknown_cost": any(x.get("cost_usd") is None for x in calls), "views": views,
+            "deepcheck_areas": areas, "missed": misses(pair_labels, views[GATE_ON]["labels"], areas)}
 
 
 # --------------------------------------------------------------------------------------
@@ -282,7 +322,10 @@ def combine(pairs: list[dict], vid: str, i: int) -> dict[str, Any] | None:
         return None
     countable, found_n = sum(r["countable"] for r in rs), sum(r["found"] for r in rs)
     every = sum(r["findings"] for r in rs)
+    h_countable, h_found = sum(r["human"]["countable"] for r in rs), sum(r["human"]["found"] for r in rs)
     return {"recall": found_n / countable if countable else None, "found": found_n, "countable": countable,
+            "human": {"recall": h_found / h_countable if h_countable else None, "found": h_found,
+                      "countable": h_countable},
             "hidden": sum(r["hidden"] for r in rs), "not_problem": sum(r["not_problem"] for r in rs),
             "unlabelled_per_pr": mean(r["unlabelled"] for r in rs),
             "judge_hidden_rate": sum(r["judge_hidden"] for r in rs) / every if every else None,
@@ -298,21 +341,29 @@ def spread(values: list[float | None]) -> dict[str, float] | None:
 
 
 def summarize(pairs: list[dict], runs: int) -> dict[str, dict]:
-    """Per view: each metric's mean and min-max across runs."""
+    """Per view: each metric's mean and min-max across runs, and under `human` the same for the human-written labels."""
     out = {}
     for vid in VIEWS:
         per_run = [combine(pairs, vid, i) for i in range(runs)]
         out[vid] = {m: spread([r[m] if r else None for r in per_run]) for m in _METRICS}
+        out[vid]["human"] = {m: spread([r["human"][m] if r else None for r in per_run]) for m in _HUMAN}
     return out
 
 
-def gate(pairs: list[dict], runs: int) -> dict[str, Any]:
-    """The Wave 2 gate (D21) on the held-out pairs, from the mean of the runs."""
-    held = [p for p in pairs if p["split"] == "holdout" and any(r["status"] == "complete" for r in p["runs"])]
+def gate_splits(pairs: list[dict]) -> list[str]:
+    """The splits that get a gate: every one but train, holdout first."""
+    return sorted({p["split"] for p in pairs} - {labels.TRAIN}, key=lambda name: (name != "holdout", name))
+
+
+def gate(pairs: list[dict], runs: int, split: str = "holdout") -> dict[str, Any]:
+    """The Wave 2 gate (D21) on one held-out split's pairs, from the mean of the runs. The two recall bars also show
+    the human-written labels' recall (`human`), which is not judged."""
+    held = [p for p in pairs if p["split"] == split and any(r["status"] == "complete" for r in p["runs"])]
     if not held:
-        return {"split": "holdout", "pass": None, "prs": 0, "bars": [],
-                "note": "No held-out PRs were scored. Import some with `prr labels import --split holdout <pr…>`."}
-    gains, on_recall, added, unlabelled = [], [], [], []
+        note = ("No held-out PRs were scored. Import some with `prr labels import --split holdout <pr…>`."
+                if split == "holdout" else f"No PRs of the {split} split were scored.")
+        return {"split": split, "pass": None, "prs": 0, "bars": [], "note": note}
+    gains, on_recall, added, unlabelled, human_gains, human_on = [], [], [], [], [], []
     for i in range(runs):
         on, off = combine(held, GATE_ON, i), combine(held, GATE_OFF, i)
         if not on or not off:
@@ -320,24 +371,33 @@ def gate(pairs: list[dict], runs: int) -> dict[str, Any]:
         if on["recall"] is not None and off["recall"] is not None:
             gains.append((on["recall"] - off["recall"]) * 100)
             on_recall.append(on["recall"])
+        if on["human"]["recall"] is not None and off["human"]["recall"] is not None:
+            human_gains.append((on["human"]["recall"] - off["human"]["recall"]) * 100)
+            human_on.append(on["human"]["recall"])
         added.append(on["deepcheck_usd_per_pr"])
         unlabelled.append(on["unlabelled_per_pr"])
 
-    def bar(text: str, values: list[float], ok: Callable[[float], bool], shown: Callable[[float], str]) -> dict:
+    def bar(text: str, values: list[float], ok: Callable[[float], bool], shown: Callable[[float], str],
+            human: list[float] | None = None) -> dict:
         value = round(mean(values), 4) if values else None
-        return {"bar": text, "value": value, "shown": shown(value) if value is not None else "no data",
-                "pass": bool(value is not None and ok(value))}
+        out = {"bar": text, "value": value, "shown": shown(value) if value is not None else "no data",
+               "pass": bool(value is not None and ok(value))}
+        if human is not None:
+            mine = round(mean(human), 4) if human else None
+            out["human"] = {"value": mine, "shown": shown(mine) if mine is not None else "no human-written labels"}
+        return out
 
     bars = [
         bar("Deep check on finds at least 25 points more of your problems than off", gains,
-            lambda v: v >= GATE["gain_points"], lambda v: f"{v:+.0f} points"),
+            lambda v: v >= GATE["gain_points"], lambda v: f"{v:+.0f} points", human_gains),
         bar("Deep check on finds at least 40% of your problems", on_recall,
-            lambda v: v >= GATE["on_recall"], lambda v: f"{v:.0%}"),
+            lambda v: v >= GATE["on_recall"], lambda v: f"{v:.0%}", human_on),
         bar("The deep check adds at most $6 per PR", added, lambda v: v <= GATE["added_usd"], lambda v: f"${v:.2f}"),
         bar("At most 10 unlabelled findings per PR", unlabelled,
             lambda v: v <= GATE["unlabelled"], lambda v: f"{v:.1f}"),
     ]
-    out: dict[str, Any] = {"split": "holdout", "pass": all(b["pass"] for b in bars), "prs": len(held),
+    out: dict[str, Any] = {"split": split, "pass": all(b["pass"] for b in bars), "prs": len(held),
+                           "human_labels": sum(p["labels"]["written_by"]["human"] for p in held),
                            "runs": runs, "views": {"on": GATE_ON, "off": GATE_OFF}, "bars": bars}
     if not any(r.get("deepcheck_ran") for p in held for r in p["runs"]):
         out["note"] = "The deep check did not run, so deep check on and off are the same findings."
@@ -428,7 +488,7 @@ def run_eval(cfg: Config, root: Path, owner: str, repo: str, *, prs: list[int] |
     eval_id = ledger.new_run_id()
     base = cfg.cache_dir / "_eval" / eval_id
     report: dict[str, Any] = {
-        "v": 1, "repo": f"{owner}/{repo}", "eval_id": eval_id, "started_at": now_iso(), "finished_at": None,
+        "v": 2, "repo": f"{owner}/{repo}", "eval_id": eval_id, "started_at": now_iso(), "finished_at": None,
         "status": "running", "stop_reason": None, "runs_per_pair": runs, "split": split, "prs_asked": prs or [],
         "floor": FLOOR, "views": {k: v["title"] for k, v in VIEWS.items()}, "estimate_usd": round(usd, 2),
         "max_usd": max_usd, "spent_usd": 0.0, "pairs": [], "skipped": [], "notes": [],
@@ -438,6 +498,11 @@ def run_eval(cfg: Config, root: Path, owner: str, repo: str, *, prs: list[int] |
         row.update(labels=label_counts(pair["labels"]), label_list=label_list(pair["labels"]), runs=[],
                    status="not run", reason=None)
         report["pairs"].append(row)
+    unsaid = sum(1 for p in pairs for x in p["labels"]
+                 if labels.countable(x) and x.get("written_by") not in labels.WRITERS)
+    if unsaid:
+        report["notes"].append(f"{_plural(unsaid, 'label')} saved before PR Prism recorded who wrote each comment "
+                               "count as unknown, not human-written: `prr labels tag` fills that in.")
     started = time.monotonic()
     try:
         _replay(pairs, report, base=base, root=root, owner=owner, repo=repo, runs=runs, max_usd=max_usd, out=out)
@@ -531,23 +596,45 @@ def _one_run(run_dir: Path, pair: dict, i: int, runs: int) -> dict[str, Any]:
         return {"status": "failed", "reason": reason, "cost_usd": _run_spend(run_dir), "views": {}}
 
 
+def pair_misses(row: dict) -> list[dict]:
+    """The labels missed (deep check on, no floor) in at least one of the pair's complete runs: in how many runs,
+    whether it was inside an area the deep check checked in any of them (null when the deep check ran in none of
+    them), and those areas' titles."""
+    listed = {x["id"]: x for x in row["label_list"]}
+    out: dict[str, dict] = {}
+    for r in row["runs"]:
+        if r["status"] != "complete":
+            continue
+        for m in r.get("missed") or []:
+            x = listed.get(m["id"], {})
+            agg = out.setdefault(m["id"], {"id": m["id"], "path": m["path"], "line": m["line"], "text": x.get("text"),
+                                           "written_by": x.get("written_by"), "runs": 0, "in_deepcheck_area": None,
+                                           "areas": []})
+            agg["runs"] += 1
+            if m["in_deepcheck_area"] is not None:
+                agg["in_deepcheck_area"] = bool(agg["in_deepcheck_area"] or m["in_deepcheck_area"])
+            agg["areas"] += [t for t in m["areas"] if t not in agg["areas"]]
+    return list(out.values())
+
+
 def _add_totals(report: dict, runs: int) -> None:
     pairs = report["pairs"]
     report["skipped"] = [{"pr": p["pr"], "commit_id": p["commit_id"], "reason": p["reason"]}
                          for p in pairs if p["status"] == "skipped"]
     for row in pairs:
         row["summary"] = summarize([row], runs)
+        row["missed"] = pair_misses(row)
     by_pr: dict[int, list[dict]] = {}
     for row in pairs:
         by_pr.setdefault(row["pr"], []).append(row)
     report["prs"] = [{"pr": n, "split": rows[0]["split"], "commits": len(rows), "summary": summarize(rows, runs)}
                      for n, rows in by_pr.items()]
     report["total"] = {"all": summarize(pairs, runs)}
-    for name in ("train", "holdout"):
+    for name in [labels.TRAIN, *gate_splits(pairs)]:
         group = [p for p in pairs if p["split"] == name and p["runs"]]
         if group:
             report["total"][name] = summarize(group, runs)
-    report["gate"] = gate(pairs, runs)
+    report["gates"] = [gate(pairs, runs, name) for name in gate_splits(pairs)] or [gate(pairs, runs)]
     done = [r for p in pairs for r in p["runs"] if r["status"] == "complete"]
     without = sum(1 for r in done if not r.get("deepcheck_ran"))
     if without:
@@ -589,11 +676,34 @@ def _plural(n: int, word: str) -> str:
     return f"{n} {word}{'' if n == 1 else 's'}"
 
 
+def _human(s: dict) -> str:
+    """A view's recall on the human-written labels, in words."""
+    h = s.get("human") or {}
+    if not (h.get("countable") or {}).get("mean"):
+        return "none human-written"
+    return f"human-written: {h['found']['mean']:.1f} of {h['countable']['mean']:.0f}, {_pct(h['recall'])}"
+
+
+def _was(n: int) -> str:
+    return "was" if n == 1 else "were"
+
+
+def misses_text(missed: list[dict]) -> str:
+    """'missed: N (M were inside a deep-check area)'."""
+    inside = sum(1 for m in missed if m["in_deepcheck_area"])
+    if not missed:
+        return "missed: 0"
+    if all(m["in_deepcheck_area"] is None for m in missed):
+        return f"missed: {len(missed)} (the deep check didn't run)"
+    return f"missed: {len(missed)} ({inside} {_was(inside)} inside a deep-check area)"
+
+
 def view_line(s: dict) -> str:
     """One view's numbers in words."""
     if not s.get("countable"):
         return "no runs finished"
     return (f"found {s['found']['mean']:.1f} of {s['countable']['mean']:.0f} problems, {_pct(s['recall'])}"
+            f"; {_human(s)}"
             f" · {_num(s['hidden'])} more hidden by the second look"
             f" · {_num(s['not_problem'])} you said aren't problems"
             f" · {_num(s['unlabelled_per_pr'])} unlabelled per PR"
@@ -617,19 +727,28 @@ def summary_lines(report: dict) -> list[str]:
         lines.append("\nPer PR commit, deep check on → off (no floor):")
         for p in scored:
             on, off = p["summary"]["on"], p["summary"]["off"]
+            mine = p["labels"]["written_by"]["human"]
             lines.append(f"  #{p['pr']} {p['commit_id'][:7]} ({p['split']}): {_pct(on['recall'])} → {_pct(off['recall'])}"
-                         f" of {p['labels']['countable']} problems" + ("" if p["status"] == "complete"
-                                                                         else f" ({p['status']}: {p['reason']})"))
+                         f" of {p['labels']['countable']} problems"
+                         + (f"; human-written {_pct(on['human']['recall'])} → {_pct(off['human']['recall'])} of {mine}"
+                            if mine else "")
+                         + (f" · {misses_text(p['missed'])}" if p["missed"] else "")
+                         + ("" if p["status"] == "complete" else f" ({p['status']}: {p['reason']})"))
+        missed = [m for p in scored for m in p["missed"]]
+        lines.append(f"Deep check on, {misses_text(missed)}" + ("; each miss is listed per PR commit in the report."
+                                                                 if missed else ""))
     if report["skipped"]:
         lines.append("\nSkipped:")
         lines += [f"  #{s['pr']} {s['commit_id'][:7]}: {s['reason']}" for s in report["skipped"]]
-    g = report.get("gate") or {}
-    if g.get("bars"):
-        verdict = "PASS" if g["pass"] else "FAIL"
-        lines.append(f"\nWave 2 gate, held-out PRs ({g['prs']}), mean of {g['runs']} runs: {verdict}")
-        lines += [f"  {'pass' if b['pass'] else 'FAIL'}  {b['bar']}: {b['shown']}" for b in g["bars"]]
-    if g.get("note"):
-        lines.append(("\n" if not g.get("bars") else "  ") + g["note"])
+    for g in report.get("gates") or []:
+        if g.get("bars"):
+            verdict = "PASS" if g["pass"] else "FAIL"
+            lines.append(f"\nWave 2 gate, {g['split']} PRs ({g['prs']}), mean of {g['runs']} runs: {verdict}"
+                         f" · {_plural(g['human_labels'], 'human-written label')}")
+            lines += [f"  {'pass' if b['pass'] else 'FAIL'}  {b['bar']}: {b['shown']}"
+                      + (f" (human-written only: {b['human']['shown']})" if "human" in b else "") for b in g["bars"]]
+        if g.get("note"):
+            lines.append(("\n" if not g.get("bars") else "  ") + g["note"])
     if report.get("folder"):
         lines.append(f"\nEval folders kept in {report['folder']}")
     lines.append(f"\nReport: {report.get('path', '')}")
