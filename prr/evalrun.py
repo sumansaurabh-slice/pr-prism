@@ -4,7 +4,8 @@ For each distinct (PR, commit) that has labels (prr/labels.py):
 1. Prepare it like `prr fetch` does (fetch.prepare), on the pinned commit, fetched into refs/pr-prism/eval/<sha>, in
    <cache>/_eval/<eval id>/pr-<n>-<sha>/. A commit that can't be fetched (force-pushed away) is skipped and listed.
 2. Run the analysis `runs` times (3 by default), each in its own folder so no run reuses another's cached work, with
-   mode="eval": no CI, no other tools' comments, no re-checks, no history.
+   mode="eval": no CI, no other tools' comments, no re-checks, no history. Each run is a child process in its own
+   session (`prr _eval-run`), so Ctrl-C stops it and every `claude` call it started at once.
 3. Score every run in four views: deep check off or on (off = placed_pre_deepcheck.json, the findings before the deep
    check merged; on = analysis.json) × confidence floor on or off (judge.is_low with floor=50 or None). Per view, per
    PR and in total: recall over countable problem labels, problems found but hidden by the second look, findings that
@@ -13,6 +14,9 @@ For each distinct (PR, commit) that has labels (prr/labels.py):
 4. On the held-out PRs, check the Wave 2 gate (D21): deep check on beats off by 25+ points of recall, on finds 40%+,
    the deep check adds at most $6 per PR, and at most 10 unlabelled findings per PR.
 
+Before it starts, the estimate (each pair × runs × that PR's most expensive earlier analysis) must be confirmed;
+`max_usd` stops new runs once that much is spent, and Ctrl-C still writes the report so far.
+
 "Per PR" means per PR at one commit (one analysis). The report goes to <cache>/<owner>__<repo>/eval-<date>.json (0600).
 Eval folders are removed at the end unless `keep`; the refs stay, so a commit that is later force-pushed away can still
 be replayed. Nothing here writes to GitHub: the only GitHub calls are `gh pr view` and git fetches.
@@ -20,7 +24,10 @@ be replayed. Nothing here writes to GitHub: the only GitHub calls are `gh pr vie
 
 from __future__ import annotations
 
+import os
 import shutil
+import signal
+import subprocess
 import sys
 import time
 from collections import Counter
@@ -29,8 +36,8 @@ from pathlib import Path
 from statistics import mean
 from typing import Any, Callable
 
-from . import analyze, fetch, judge, labels, ledger
-from .config import Config
+from . import analyze, cost, fetch, judge, labels, ledger
+from .config import REPO_DIR, Config
 from .gitgh import CommandError, PRRef, find_remote, git, git_ok
 from .util import now_iso, read_json, write_json
 
@@ -92,16 +99,34 @@ def label_list(rows: list[dict]) -> list[dict]:
              "line": x.get("line"), "source": x.get("source"), "text": (x.get("text") or "")[:300]} for x in rows]
 
 
-def last_analysis_usd(repo_folder: Path) -> float | None:
-    """What this repo's most recent finished analysis cost (progress.json), for the estimate."""
-    best: tuple[str, float] | None = None
-    for p in repo_folder.glob("pr-*/progress.json"):
-        prog = read_json(p) or {}
-        spent = prog.get("cost_usd")
-        if prog.get("status") == "complete" and isinstance(spent, (int, float)) and spent > 0:
-            key = (prog.get("finished_at") or "", float(spent))
-            best = key if best is None or key > best else best
-    return best[1] if best else None
+def full_run_usd(repo_folder: Path) -> dict[int, float]:
+    """Per PR in this repo's cache: its most expensive analysis run (calls.jsonl). Eval re-reads every file, so a
+    cheap run that reused cached file notes would make the estimate far too low."""
+    out = {}
+    for d in repo_folder.glob("pr-*"):
+        number = d.name.removeprefix("pr-")
+        if number.isdigit():
+            spent = max((r["cost_usd"] for r in cost.totals(ledger.read(d), [])["runs"]), default=0.0)
+            if spent > 0:
+                out[int(number)] = spent
+    return out
+
+
+def estimate(pairs: list[dict], runs: int, repo_folder: Path) -> tuple[float, str]:
+    """(dollars, how it was worked out): each pair × runs × that PR's most expensive earlier analysis; a PR never
+    analyzed here uses the average of the others, or DEFAULT_RUN_USD when there are none."""
+    known = full_run_usd(repo_folder)
+    fallback = mean(known.values()) if known else DEFAULT_RUN_USD
+    total = runs * sum(known.get(p["pr"], fallback) for p in pairs)
+    missing = sum(1 for p in pairs if p["pr"] not in known)
+    if not known:
+        basis = f"no earlier analysis in this repo, so ${fallback:.2f} each is assumed"
+    elif missing:
+        basis = (f"each PR's most expensive earlier analysis, and ${fallback:.2f} for {_plural(missing, 'PR commit')} "
+                 "never analyzed here")
+    else:
+        basis = "each PR's most expensive earlier analysis"
+    return total, basis
 
 
 # --------------------------------------------------------------------------------------
@@ -333,6 +358,54 @@ def _report_path(repo_folder: Path) -> Path:
     return path
 
 
+class RunFailed(Exception):
+    """One analysis run ended without a usable result."""
+
+
+def run_analysis(run_dir: Path, tag: str) -> None:
+    """Analyze run_dir in eval mode (analyze._analyze, mode="eval") in a child process in its own session, so Ctrl-C
+    reaches only `prr eval`, which then stops the child and every `claude` call it started at once (they would
+    otherwise finish queued work, and retry the calls Ctrl-C killed). Raises RunFailed."""
+    env = {**os.environ, "PYTHONPATH": os.pathsep.join(filter(None, [str(REPO_DIR), os.environ.get("PYTHONPATH")]))}
+    proc = subprocess.Popen([sys.executable, "-P", "-m", "prr", "_eval-run", str(run_dir), tag], env=env,
+                            stdin=subprocess.DEVNULL, start_new_session=True)
+    try:
+        code = proc.wait()
+    except BaseException:
+        stop_process_group(proc)
+        raise
+    if code != 0:
+        raise RunFailed(f"the analysis stopped with exit code {code} (its log is above)")
+
+
+def stop_process_group(proc: subprocess.Popen) -> None:
+    """Stop a child started with start_new_session and everything it started: TERM, then KILL after 10 s."""
+    for sig, wait_s in ((signal.SIGTERM, 10), (signal.SIGKILL, 5)):
+        try:
+            os.killpg(proc.pid, sig)
+        except (ProcessLookupError, PermissionError):
+            return
+        try:
+            proc.wait(timeout=wait_s)
+            return
+        except subprocess.TimeoutExpired:
+            continue
+
+
+def child_run(run_dir: Path, cfg: Config, tag: str) -> int:
+    """`prr _eval-run <run_dir> <tag>`: the child process of run_analysis."""
+    ctx = read_json(run_dir / "context.json")
+    if ctx is None:
+        _log(f"{tag}: {run_dir}/context.json is missing")
+        return 1
+    try:
+        result = analyze._analyze(run_dir, ctx, cfg, None, True, lambda m: _log(f"{tag}: {m}"), mode="eval")
+    except Exception as e:  # noqa: BLE001 — the parent records the run as failed
+        _log(f"{tag}: the analysis failed: {type(e).__name__}: {str(e)[:300]}")
+        return 1
+    return 0 if result.get("status") == "complete" else 1
+
+
 def run_eval(cfg: Config, root: Path, owner: str, repo: str, *, prs: list[int] | None = None, runs: int = 3,
              split: str = "all", max_usd: float | None = None, keep: bool = False,
              confirm: Callable[[str], bool] = lambda text: False, out: Callable[[str], None] = print) -> dict | None:
@@ -344,13 +417,8 @@ def run_eval(cfg: Config, root: Path, owner: str, repo: str, *, prs: list[int] |
         out(f"No labelled PRs to replay for {owner}/{repo}" + (f" in the {split} split" if split != "all" else "")
             + ". Import your comments with `prr labels import <pr…>`.")
         return None
-    last = last_analysis_usd(repo_folder)
-    per_run = last if last is not None else DEFAULT_RUN_USD
-    estimate = len(pairs) * runs * per_run
-    basis = (f"this repo's last analysis cost ${per_run:.2f}" if last is not None
-             else f"no earlier analysis of this repo, so ${per_run:.2f} each is assumed")
-    text = (f"This replays {_plural(len(pairs), 'labelled PR commit')} × {_plural(runs, 'run')}: about ${estimate:.2f}"
-            f" ({basis}).")
+    usd, basis = estimate(pairs, runs, repo_folder)
+    text = f"This replays {_plural(len(pairs), 'labelled PR commit')} × {_plural(runs, 'run')}: about ${usd:.2f} ({basis})."
     if max_usd is not None:
         text += f" It stops starting new runs once ${max_usd:.2f} is spent."
     if not confirm(text):
@@ -359,58 +427,31 @@ def run_eval(cfg: Config, root: Path, owner: str, repo: str, *, prs: list[int] |
 
     eval_id = ledger.new_run_id()
     base = cfg.cache_dir / "_eval" / eval_id
-    remote = None
     report: dict[str, Any] = {
         "v": 1, "repo": f"{owner}/{repo}", "eval_id": eval_id, "started_at": now_iso(), "finished_at": None,
         "status": "running", "stop_reason": None, "runs_per_pair": runs, "split": split, "prs_asked": prs or [],
-        "floor": FLOOR, "views": {k: v["title"] for k, v in VIEWS.items()}, "estimate_usd": round(estimate, 2),
+        "floor": FLOOR, "views": {k: v["title"] for k, v in VIEWS.items()}, "estimate_usd": round(usd, 2),
         "max_usd": max_usd, "spent_usd": 0.0, "pairs": [], "skipped": [], "notes": [],
     }
-    metas: dict[int, dict] = {}
-    spent, started = 0.0, time.monotonic()
+    for pair in pairs:  # every pair has a row from the start, so a stopped eval still lists what it never reached
+        row = {k: pair[k] for k in ("pr", "commit_id", "merge_base_sha", "split")}
+        row.update(labels=label_counts(pair["labels"]), label_list=label_list(pair["labels"]), runs=[],
+                   status="not run", reason=None)
+        report["pairs"].append(row)
+    started = time.monotonic()
     try:
-        for pair in pairs:
-            row = {k: pair[k] for k in ("pr", "commit_id", "merge_base_sha", "split")}
-            row.update(labels=label_counts(pair["labels"]), label_list=label_list(pair["labels"]), runs=[],
-                       status="skipped", reason=None)
-            report["pairs"].append(row)
-            if report["stop_reason"]:
-                row["reason"] = report["stop_reason"]
-                continue
-            ref = PRRef(owner, repo, pair["pr"])
-            folder = base / f"pr-{pair['pr']}-{pair['commit_id']}"
-            try:
-                if pair["pr"] not in metas:
-                    metas[pair["pr"]] = fetch.read_meta(ref)
-                remote = remote or find_remote(root, ref)
-                ctx = prepare_pair(pair, metas[pair["pr"]], root=root, remote=remote, ref=ref, folder=folder)
-            except (Skip, CommandError) as e:
-                row["reason"] = str(e) if isinstance(e, Skip) else f"couldn't read the PR from GitHub: {str(e)[:160]}"
-                out(f"Skipped #{pair['pr']} at {pair['commit_id'][:7]}: {row['reason']}")
-                continue
-            row["merge_base_sha"] = ctx["pr"]["merge_base_sha"]
-            row["status"] = "complete"
-            for i in range(1, runs + 1):
-                if max_usd is not None and spent >= max_usd:
-                    report["stop_reason"] = f"reached --max-usd ${max_usd:.2f} after spending ${spent:.2f}"
-                    row["status"] = "partial" if row["runs"] else "skipped"
-                    row["reason"] = report["stop_reason"]
-                    break
-                result = _one_run(folder / f"run-{i}", ctx, cfg, pair, i, runs)
-                spent += result.get("cost_usd") or 0.0
-                row["runs"].append(result)
-            if row["runs"] and all(r["status"] != "complete" for r in row["runs"]):
-                row["status"], row["reason"] = "failed", "every run of the analysis failed"
+        _replay(pairs, report, base=base, root=root, owner=owner, repo=repo, runs=runs, max_usd=max_usd, out=out)
         report["status"] = "stopped" if report["stop_reason"] else "complete"
     except KeyboardInterrupt:
         report["status"], report["stop_reason"] = "aborted", "stopped with Ctrl-C"
-        for row in report["pairs"]:
-            if row["status"] == "complete" and len(row["runs"]) < runs:
-                row["status"] = "partial" if row["runs"] else "skipped"
-            row["reason"] = row["reason"] or (report["stop_reason"] if row["status"] != "complete" else None)
     finally:
-        # every call the runs made, including one stopped half-way (its folder is about to go)
+        for row in report["pairs"]:
+            if row["status"] in ("not run", "running"):
+                row["status"] = "partial" if row["runs"] else "skipped"
+                row["reason"] = row["reason"] or report["stop_reason"] or "not reached"
+        # every call the runs made, including a run stopped half-way (its folder is about to go)
         calls = [x for p in base.glob("*/run-*") for x in ledger.read(p) if x.get("purpose")]
+        spent = sum(r.get("cost_usd") or 0.0 for row in report["pairs"] for r in row["runs"])
         report["spent_usd"] = round(max(spent, sum(x.get("cost_usd") or 0.0 for x in calls)), 4)
         report["time_s"] = round(time.monotonic() - started, 1)
         report["finished_at"] = now_iso()
@@ -429,25 +470,65 @@ def run_eval(cfg: Config, root: Path, owner: str, repo: str, *, prs: list[int] |
     return report
 
 
-def _one_run(run_dir: Path, ctx: dict, cfg: Config, pair: dict, i: int, runs: int) -> dict[str, Any]:
-    """One fresh analysis of the pinned commit, scored. A failed run is recorded, not raised."""
-    run_dir.mkdir(parents=True, exist_ok=True)
-    pr_folder = run_dir.parent
-    for name in ("context.json", "diff.patch"):
-        shutil.copy2(pr_folder / name, run_dir / name)
+def _replay(pairs: list[dict], report: dict, *, base: Path, root: Path, owner: str, repo: str, runs: int,
+            max_usd: float | None, out: Callable[[str], None]) -> None:
+    """Prepare and run every pair, filling its report row. Stops starting runs once max_usd is spent."""
+    metas: dict[int, dict] = {}
+    remote: str | None = None
+    spent = 0.0
+    for pair, row in zip(pairs, report["pairs"]):
+        if report["stop_reason"]:
+            break
+        row["status"] = "running"
+        ref = PRRef(owner, repo, pair["pr"])
+        folder = base / f"pr-{pair['pr']}-{pair['commit_id']}"
+        try:
+            if pair["pr"] not in metas:
+                try:
+                    metas[pair["pr"]] = fetch.read_meta(ref)
+                except CommandError as e:
+                    raise Skip(f"couldn't read the PR from GitHub: {str(e)[:160]}") from e
+            remote = remote or find_remote(root, ref)
+            ctx = prepare_pair(pair, metas[pair["pr"]], root=root, remote=remote, ref=ref, folder=folder)
+        except Exception as e:  # noqa: BLE001 — one pair that can't be prepared is a row, not the end of the eval
+            row["status"] = "skipped"
+            row["reason"] = str(e) if isinstance(e, Skip) else f"couldn't prepare it: {type(e).__name__}: {str(e)[:160]}"
+            out(f"Skipped #{pair['pr']} at {pair['commit_id'][:7]}: {row['reason']}")
+            continue
+        row["merge_base_sha"] = ctx["pr"]["merge_base_sha"]
+        for i in range(1, runs + 1):
+            if max_usd is not None and spent >= max_usd:
+                report["stop_reason"] = f"reached --max-usd ${max_usd:.2f} after spending ${spent:.2f}"
+                break
+            result = _one_run(folder / f"run-{i}", pair, i, runs)
+            spent += result.get("cost_usd") or 0.0
+            row["runs"].append(result)
+        if len(row["runs"]) < runs:
+            row["status"], row["reason"] = ("partial" if row["runs"] else "skipped"), report["stop_reason"]
+        elif all(r["status"] != "complete" for r in row["runs"]):
+            row["status"], row["reason"] = "failed", "every run of the analysis failed"
+        else:
+            row["status"] = "complete"
+
+
+def _run_spend(run_dir: Path) -> float:
+    return round(sum(x.get("cost_usd") or 0.0 for x in ledger.read(run_dir) if x.get("purpose")), 4)
+
+
+def _one_run(run_dir: Path, pair: dict, i: int, runs: int) -> dict[str, Any]:
+    """One fresh analysis of the pinned commit, scored. A failed run is recorded, not raised (Ctrl-C still stops)."""
     tag = f"#{pair['pr']} {pair['commit_id'][:7]} run {i}/{runs}"
     t0 = time.monotonic()
     try:
-        result = analyze._analyze(run_dir, ctx, cfg, None, True, lambda m: _log(f"{tag}: {m}"), mode="eval")
+        run_dir.mkdir(parents=True, exist_ok=True)
+        for name in ("context.json", "diff.patch"):
+            shutil.copy2(run_dir.parent / name, run_dir / name)
+        run_analysis(run_dir, tag)
+        return score_run(run_dir, pair["labels"], time.monotonic() - t0)
     except Exception as e:  # noqa: BLE001 — one failed run is a row in the report, not the end of the eval
-        spent = sum(x.get("cost_usd") or 0.0 for x in ledger.read(run_dir) if x.get("purpose"))
-        _log(f"{tag}: the analysis failed: {str(e)[:200]}")
-        return {"status": "failed", "reason": str(e)[:300], "cost_usd": round(spent, 4), "views": {}}
-    elapsed = time.monotonic() - t0
-    if result.get("status") == "failed":
-        spent = sum(x.get("cost_usd") or 0.0 for x in ledger.read(run_dir) if x.get("purpose"))
-        return {"status": "failed", "reason": "every group of files failed", "cost_usd": round(spent, 4), "views": {}}
-    return score_run(run_dir, pair["labels"], elapsed)
+        reason = str(e) if isinstance(e, RunFailed) else f"{type(e).__name__}: {str(e)[:300]}"
+        _log(f"{tag}: {reason}")
+        return {"status": "failed", "reason": reason, "cost_usd": _run_spend(run_dir), "views": {}}
 
 
 def _add_totals(report: dict, runs: int) -> None:

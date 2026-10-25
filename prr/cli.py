@@ -359,6 +359,12 @@ def cmd_eval(args: argparse.Namespace, cfg: Config) -> int:
     return 0 if report and report["status"] == "complete" else 1
 
 
+def cmd_eval_run(args: argparse.Namespace, cfg: Config) -> int:
+    from .evalrun import child_run
+
+    return child_run(Path(args.run_dir), cfg, args.tag)
+
+
 def cmd_supervise(args: argparse.Namespace, cfg: Config) -> int:
     supervise.supervise(Path(args.pr_dir))
     return 0
@@ -425,6 +431,9 @@ def main(argv: list[str] | None = None) -> None:
     s.add_argument("--max-usd", type=float, default=None, help="start no new run once this much has been spent")
     s.add_argument("--yes", action="store_true", help="don't ask before spending (needed without a terminal)")
     s.add_argument("--keep", action="store_true", help="keep the eval folders (worktrees and each run's files)")
+    s = sub.add_parser("_eval-run", help=argparse.SUPPRESS)  # one eval analysis, in its own process group
+    s.add_argument("run_dir")
+    s.add_argument("tag")
     s = sub.add_parser("_serve", help=argparse.SUPPRESS)  # the supervisor
     s.add_argument("pr_dir")
     s = sub.add_parser("_mcp", help=argparse.SUPPRESS)  # the chat's comment tools (an MCP server on stdio)
@@ -437,7 +446,7 @@ def main(argv: list[str] | None = None) -> None:
     cfg = load_config()
     handlers = {"doctor": cmd_doctor, "fetch": cmd_fetch, "serve": cmd_serve, "analyze": cmd_analyze,
                 "status": cmd_status, "stop": cmd_stop, "clean": cmd_clean, "labels": cmd_labels, "eval": cmd_eval,
-                "_serve": cmd_supervise, "_serve-child": cmd_serve_child, "_mcp": cmd_mcp}
+                "_eval-run": cmd_eval_run, "_serve": cmd_supervise, "_serve-child": cmd_serve_child, "_mcp": cmd_mcp}
     try:
         code = handlers[args.cmd](args, cfg)
     except (CommandError, ValueError, FileNotFoundError) as e:

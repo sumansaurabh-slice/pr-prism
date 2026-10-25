@@ -274,7 +274,7 @@ prr eval --prs 101 104 --runs 1 --max-usd 10 --yes
 - Each labelled PR commit is analyzed 3 times (`--runs`) in a temporary folder under `~/.cache/pr-prism/_eval/`, removed at the end unless `--keep`. A commit that can't be fetched any more (force-pushed away) is skipped and listed.
 - The report shows four views: deep check off or on, and a 50% confidence floor on or off ("deep check off, floor on" is the old behavior). For each: how many of your problems were found, found but hidden by the second look, findings you said aren't problems, findings no label covers (listed, not counted as wrong), cost and time, as the mean and the min-max of the runs.
 - On held-out PRs it checks the Wave 2 gate: deep check on finds 25+ points more than off, at least 40% overall, adds at most $6 per PR, and shows at most 10 unlabelled findings per PR.
-- It costs real money: about the price of one analysis per PR commit per run. `--max-usd` starts no new run once that much is spent. The report is saved as `eval-<date>.json` next to `labels.jsonl`.
+- It costs real money: about the price of one full analysis per PR commit per run (the estimate uses each PR's most expensive earlier analysis). `--max-usd` starts no new run once that much is spent, and Ctrl-C stops the run in progress at once and still saves the report so far. The report is saved as `eval-<date>.json` next to `labels.jsonl`.
 - A PR that changes a prompt should include before and after `prr eval` numbers.
 
 ## Develop

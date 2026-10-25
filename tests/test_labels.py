@@ -91,6 +91,9 @@ def test_save_never_raises(tmp_path, monkeypatch, capsys):
     monkeypatch.setattr(labels, "write", full_disk)
     assert labels.save(pr_dir, [problem()]) == "Couldn't save this answer for eval"
     assert "could not save 1 label" in capsys.readouterr().err
+    monkeypatch.undo()
+    assert labels.save(pr_dir, [problem(text="half a character: \ud800")]) == "Couldn't save this answer for eval"
+    assert "UnicodeEncodeError" in capsys.readouterr().err
 
 
 def test_only_pr_folders_in_the_cache_get_labels(tmp_path):
@@ -120,6 +123,14 @@ def test_an_import_of_a_comment_posted_without_its_id_is_the_same_label():
     out = labels.compact([posted, imported, elsewhere, other_side])
     assert [x["gh_comment_id"] for x in out] == [900, 901, 902]
     assert out[0]["origin_id"] == "s-1"
+
+
+def test_two_different_comments_on_adjacent_lines_stay_two():
+    a = problem(source="posted", gh_comment_id=10, line=10, text="Leaks the file handle")
+    b = problem(source="posted", gh_comment_id=11, line=11, text="Wrong timezone")
+    assert len(labels.compact([a, b])) == 2
+    stops = [problem(source="verdict", origin_id="s-1", line=10), problem(source="verdict", origin_id="s-2", line=11)]
+    assert len(labels.compact(stops)) == 2
 
 
 def test_the_latest_answer_wins_and_retracted_removes_it():
@@ -241,12 +252,20 @@ def test_submit_saves_a_problem_label_per_posted_comment(pr, monkeypatch):
     r = pr.client.post("/api/review/submit", json={"body": "Notes", "event": "COMMENT"}, headers=ORIGIN)
     assert r.status_code == 200 and "warning" not in r.json()
     assert asked == [("o", "r", 1, 9)]
+    assert StateStore(pr.dir).load()["drafts"] == []
     rows = labels.read(pr.repo)
     assert [(x["kind"], x["source"], x["pr"], x["commit_id"], x["path"], x["line"], x["side"], x["gh_comment_id"],
              x["origin_id"], x["author"], x["text"]) for x in rows] == [
         ("problem", "posted", 1, "h", "src/core.py", 22, "RIGHT", 501, "s-1", "me", "Check the inserted lines"),
         ("problem", "posted", 1, "h", "src/core.py", 15, "RIGHT", None, None, "me", "This line is outside the diff")]
     assert {x["merge_base_sha"] for x in rows} == {"b"}
+
+
+def test_a_review_saved_as_pending_on_github_is_not_a_label_yet(pr, monkeypatch):
+    add(pr, 22, "first")
+    r = pr.client.post("/api/review/submit", json={"body": "", "event": "PENDING"}, headers=ORIGIN)
+    assert r.status_code == 200 and labels.read(pr.repo) == []
+    assert StateStore(pr.dir).load()["drafts"] == []
 
 
 def test_a_failed_label_write_keeps_the_post_and_warns(pr, monkeypatch):
@@ -285,8 +304,10 @@ def test_chat_posts_pass_each_comment_to_record(pr, monkeypatch):
     real = chat_tools._record
 
     def spy(pr_dir, html_url, event, comments, **kw):
-        seen.append(kw.get("posted"))
-        return real(pr_dir, html_url, event, comments, **kw)
+        out = real(pr_dir, html_url, event, comments, **kw)
+        posted = kw.get("posted")
+        seen.append(posted() if callable(posted) else posted)
+        return out
 
     monkeypatch.setattr(chat_tools, "_record", spy)
     monkeypatch.setattr(github, "post_comment", lambda o, r, n, c: {"id": 77, "html_url": "u", "user": {"login": "me"}})
@@ -297,10 +318,16 @@ def test_chat_posts_pass_each_comment_to_record(pr, monkeypatch):
     pending = add(pr, 5, "Sent with the review")
     with_origin(pr, pending, "s-9")
     monkeypatch.setattr(github, "submit", lambda o, r, n, payload: {"id": 8, "html_url": "u", "user": {"login": "me"}})
-    monkeypatch.setattr(github, "review_comments", lambda o, r, n, rid: [
-        {"id": 88, "path": "src/core.py", "line": 5, "body": "Sent with the review"}])
+    states = []
+
+    def ids(o, r, n, rid):
+        states.append(StateStore(pr.dir).load())            # GitHub is asked for the ids only once state.json is safe
+        return [{"id": 88, "path": "src/core.py", "line": 5, "body": "Sent with the review"}]
+
+    monkeypatch.setattr(github, "review_comments", ids)
     text, err = chat_tools.call_tool(pr.dir, pr.cfg, "post_review", {"body": "Done", "include_pending": True})
     assert not err, text
+    assert states[0]["drafts"] == [] and states[0]["submitted"][-1]["review_id"] == 8
 
     assert seen == [
         [{"path": "src/core.py", "line": 22, "side": "RIGHT", "body": "Posted from the chat", "gh_comment_id": 77}],
@@ -403,6 +430,20 @@ def test_import_keeps_your_root_comments_where_you_wrote_them(tmp_path, tricky_r
     assert (out["imported"], out["outdated"]) == (3, 1)
     assert ("pr", "view", "1", "--repo", "o/r", "--json", "number,state,baseRefName,baseRefOid") in fake.calls
     assert ("api", "--paginate", "repos/o/r/pulls/1/comments?per_page=100", "--jq", ".[]") in fake.calls
+
+
+def test_a_merged_pr_whose_base_moved_on_starts_at_the_merge_base(tmp_path, tricky_repo, monkeypatch):
+    root, head, base = tricky_repo["root"], tricky_repo["head"], tricky_repo["base"]
+    _git(root, "checkout", "-q", "-b", "trunk", base)                         # the base branch moved on meanwhile
+    (root / "elsewhere.txt").write_text("later\n")
+    _git(root, "add", "-A")
+    _git(root, "commit", "-q", "-m", "later on the base branch")
+    later = _git(root, "rev-parse", "HEAD").strip()
+    _git(root, "checkout", "-q", "main")
+    merged = {"number": 1, "state": "MERGED", "baseRefName": "trunk", "baseRefOid": later}
+    _, rows, _ = import_into(tmp_path, tricky_repo, monkeypatch, [gh_comment(1, "me", original_commit_id=head)],
+                             merged, viewer="me")
+    assert rows[0]["merge_base_sha"] == base                                # not `later`: its changes aren't the PR's
 
 
 def test_import_of_an_open_pr_uses_git_merge_base(tmp_path, tricky_repo, monkeypatch):

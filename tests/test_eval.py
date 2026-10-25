@@ -3,6 +3,9 @@ Claude: `gh pr view` is a fake, git fetches go to a local repo, and the analysis
 
 import os
 import stat
+import subprocess
+import sys
+import time
 from datetime import datetime, timedelta, timezone
 from pathlib import Path
 
@@ -126,20 +129,19 @@ def test_pairs_are_distinct_pr_commits_and_a_pr_is_held_out_as_a_whole():
 
 
 class FakeAnalysis:
-    """Stands in for analyze._analyze. Run 2 of each pair misses the deep-check finding; the deep check costs more on
-    each run."""
+    """Stands in for one eval run's analysis process (evalrun.run_analysis). Run 2 of each pair misses the deep-check
+    finding; the deep check costs more on each run."""
 
     def __init__(self, monkeypatch):
         self.calls: list[tuple] = []
-        monkeypatch.setattr(analyze, "_analyze", self)
+        monkeypatch.setattr(evalrun, "run_analysis", self)
 
-    def __call__(self, pr_dir, ctx, cfg, focus, force, echo, mode="review"):
-        i = int(pr_dir.name.split("-")[1])
-        self.calls.append((pr_dir, ctx["pr"]["head_sha"], force, mode))
-        assert (pr_dir / "context.json").exists() and (pr_dir / "diff.patch").exists()
+    def __call__(self, run_dir, tag):
+        i = int(run_dir.name.split("-")[1])
+        self.calls.append((run_dir, read_json(run_dir / "context.json")["pr"]["head_sha"], tag))
+        assert (run_dir / "diff.patch").exists()
         final = [F1, F2] if i != 2 else [F1]
-        write_run(pr_dir, final, [F1], [call("annotate", 1.0, 10, 10), call("deepcheck", 0.5 * i, 20, 5)])
-        return {"status": "complete", "findings": final}
+        write_run(run_dir, final, [F1], [call("annotate", 1.0, 10, 10), call("deepcheck", 0.5 * i, 20, 5)])
 
 
 @pytest.fixture()
@@ -182,8 +184,9 @@ def test_eval_replays_each_pair_three_times_and_reports_the_spread(repo, monkeyp
     fake = FakeAnalysis(monkeypatch)
     report, lines = eval_now(repo)
     assert report["status"] == "complete" and report["runs_per_pair"] == 3
-    # three fresh runs of the pinned commit, in eval mode, each in its own folder
-    assert [(c[0].name, c[1], c[2], c[3]) for c in fake.calls] == [(f"run-{i}", repo.head, True, "eval") for i in (1, 2, 3)]
+    # three fresh runs of the pinned commit, each in its own folder
+    assert [(c[0].name, c[1], c[2]) for c in fake.calls] == [
+        (f"run-{i}", repo.head, f"#1 {repo.head[:7]} run {i}/3") for i in (1, 2, 3)]
     [one, gone] = report["pairs"]
     assert (one["status"], one["labels"]) == ("complete", {"problems": 2, "countable": 2, "not_problem": 0})
     assert gone["status"] == "skipped" and "couldn't fetch commit 0000000000" in gone["reason"]
@@ -254,46 +257,145 @@ def test_max_usd_stops_new_runs(repo, monkeypatch):
 
 def test_nothing_runs_without_a_yes(repo, monkeypatch):
     fake = FakeAnalysis(monkeypatch)
-    write_json(repo.folder / "pr-9" / "progress.json", {"status": "complete", "cost_usd": 2.5,
-                                                         "finished_at": "2026-10-20T10:00:00+00:00"})
     shown: list[str] = []
     out: list[str] = []
     assert evalrun.run_eval(repo.cfg, repo.root, "o", "r", confirm=lambda t: shown.append(t) or False,
                             out=out.append) is None
     assert fake.calls == [] and eval_folders(repo) == [] and out == ["Not run."]
-    assert shown == ["This replays 2 labelled PR commits × 3 runs: about $15.00 (this repo's last analysis cost $2.50)."]
+    assert shown == ["This replays 2 labelled PR commits × 3 runs: about $30.00 (no earlier analysis in this repo, so "
+                     "$5.00 each is assumed)."]
+
+
+def test_the_estimate_uses_each_prs_full_analysis(repo):
+    for n, runs in ((1, {"r1": [3.0, 1.0], "r2": [0.2]}), (9, {"r3": [2.5]})):  # r2 reused cached file notes
+        (repo.folder / f"pr-{n}").mkdir()
+        for rid, costs in runs.items():
+            for c in costs:
+                ledger.append(repo.folder / f"pr-{n}", {**call("annotate", c), "run_id": rid})
+    write_json(repo.folder / "pr-1" / "progress.json", {"status": "complete", "cost_usd": 0.2, "run_id": "r2"})
+    pairs = evalrun.pairs_from(labels.load(repo.folder))
+    assert evalrun.full_run_usd(repo.folder) == {1: 4.0, 9: 2.5}
+    usd, basis = evalrun.estimate(pairs, 3, repo.folder)
+    assert usd == 3 * (4.0 + 3.25)                  # #2 was never analyzed here: the others' average
+    assert basis == "each PR's most expensive earlier analysis, and $3.25 for 1 PR commit never analyzed here"
 
 
 def test_a_failed_run_is_a_row_not_the_end(repo, monkeypatch):
     fake = FakeAnalysis(monkeypatch)
 
-    def flaky(pr_dir, ctx, cfg, focus, force, echo, mode="review"):
-        if pr_dir.name == "run-2":
-            raise RuntimeError("claude crashed")
-        return fake(pr_dir, ctx, cfg, focus, force, echo, mode)
+    def flaky(run_dir, tag):
+        if run_dir.name == "run-2":
+            ledger.append(run_dir, call("annotate", 0.3))
+            raise evalrun.RunFailed("the analysis stopped with exit code 1 (its log is above)")
+        return fake(run_dir, tag)
 
-    monkeypatch.setattr(analyze, "_analyze", flaky)
+    monkeypatch.setattr(evalrun, "run_analysis", flaky)
     report, _ = eval_now(repo, prs=[1])
     runs = report["pairs"][0]["runs"]
-    assert [r["status"] for r in runs] == ["complete", "failed", "complete"] and "claude crashed" in runs[1]["reason"]
+    assert [r["status"] for r in runs] == ["complete", "failed", "complete"] and "exit code 1" in runs[1]["reason"]
+    assert runs[1]["cost_usd"] == 0.3 and report["spent_usd"] == 1.5 + 0.3 + 2.5
     assert report["total"]["all"]["on"]["recall"]["runs"] == 2
+
+
+def test_a_broken_run_folder_is_a_failed_run_too(repo, monkeypatch):
+    fake = FakeAnalysis(monkeypatch)
+
+    def no_findings_file(run_dir, tag):
+        fake(run_dir, tag)
+        (run_dir / "judge.json").write_text("{not json")                  # read_json treats it as missing
+        (run_dir / "analysis.json").write_text('{"findings": [{"id": "x"}]}')  # a finding without a path
+
+    monkeypatch.setattr(evalrun, "run_analysis", no_findings_file)
+    report, _ = eval_now(repo, prs=[1], runs=1)
+    [run] = report["pairs"][0]["runs"]
+    assert run["status"] == "failed" and run["reason"].startswith("KeyError") and report["status"] == "complete"
 
 
 def test_ctrl_c_writes_a_partial_report_and_cleans_up(repo, monkeypatch):
     fake = FakeAnalysis(monkeypatch)
 
-    def interrupted(pr_dir, ctx, cfg, focus, force, echo, mode="review"):
-        if pr_dir.name == "run-2":
-            ledger.append(pr_dir, call("annotate", 0.7))                     # spent before the stop
+    def interrupted(run_dir, tag):
+        if run_dir.name == "run-2":
+            ledger.append(run_dir, call("annotate", 0.7))                     # spent before the stop
             raise KeyboardInterrupt
-        return fake(pr_dir, ctx, cfg, focus, force, echo, mode)
+        return fake(run_dir, tag)
 
-    monkeypatch.setattr(analyze, "_analyze", interrupted)
-    report, lines = eval_now(repo, prs=[1])
+    monkeypatch.setattr(evalrun, "run_analysis", interrupted)
+    report, lines = eval_now(repo)
     assert report["status"] == "aborted" and report["stop_reason"] == "stopped with Ctrl-C"
-    assert report["pairs"][0]["status"] == "partial" and len(report["pairs"][0]["runs"]) == 1
+    [one, two] = report["pairs"]
+    assert one["status"] == "partial" and len(one["runs"]) == 1
+    assert (two["status"], two["reason"]) == ("skipped", "stopped with Ctrl-C")   # never reached, still listed
     assert report["spent_usd"] == 2.2 and read_json(Path(report["path"]))["status"] == "aborted"
     assert eval_folders(repo) == [] and any("aborted: stopped with Ctrl-C" in x for x in lines)
+
+
+# ---- each run in its own process group ----------------------------------------------------------
+
+
+def test_ctrl_c_stops_the_run_and_everything_it_started(monkeypatch, tmp_path):
+    started, stopped = [], []
+
+    class Proc:
+        pid = 4242
+
+        def wait(self, timeout=None):
+            raise KeyboardInterrupt
+
+    def popen(argv, **kw):
+        started.append((argv[-3:], kw["start_new_session"]))
+        return Proc()
+
+    monkeypatch.setattr(evalrun.subprocess, "Popen", popen)
+    monkeypatch.setattr(evalrun, "stop_process_group", lambda proc: stopped.append(proc.pid))
+    with pytest.raises(KeyboardInterrupt):
+        evalrun.run_analysis(tmp_path, "#1 abc run 1/3")
+    assert started == [(["_eval-run", str(tmp_path), "#1 abc run 1/3"], True)] and stopped == [4242]
+
+
+def test_stopping_a_process_group_stops_its_children(tmp_path):
+    marker = tmp_path / "grandchild.pid"
+    script = ("import subprocess, sys, time\n"
+              "p = subprocess.Popen([sys.executable, '-c', 'import time; time.sleep(60)'])\n"
+              f"open({str(marker)!r}, 'w').write(str(p.pid))\n"
+              "time.sleep(60)\n")
+    proc = subprocess.Popen([sys.executable, "-c", script], start_new_session=True)
+    deadline = time.monotonic() + 20
+    while not (marker.exists() and marker.read_text()) and time.monotonic() < deadline:
+        time.sleep(0.05)
+    grandchild = int(marker.read_text())
+    evalrun.stop_process_group(proc)
+    assert proc.poll() is not None
+    deadline = time.monotonic() + 10
+    while time.monotonic() < deadline:
+        try:
+            os.kill(grandchild, 0)
+        except ProcessLookupError:
+            break
+        time.sleep(0.05)
+    else:
+        pytest.fail("the run's own child process is still running")
+
+
+def test_a_run_process_reports_failure(tmp_path):
+    with pytest.raises(evalrun.RunFailed, match="exit code 1"):
+        evalrun.run_analysis(tmp_path, "#1 abc run 1/1")                  # no context.json: the child says so
+
+
+def test_the_run_process_analyzes_in_eval_mode(tmp_path, monkeypatch, capsys):
+    seen = []
+
+    def fake(run_dir, ctx, cfg, focus, force, echo, mode="review"):
+        seen.append((run_dir, ctx["pr"]["number"], focus, force, mode))
+        echo("Reading 3 files")
+        return {"status": "complete"}
+
+    monkeypatch.setattr(analyze, "_analyze", fake)
+    write_json(tmp_path / "context.json", {"pr": {"number": 7}})
+    assert evalrun.child_run(tmp_path, Config(), "#7 abc run 1/3") == 0
+    assert seen == [(tmp_path, 7, None, True, "eval")] and "#7 abc run 1/3: Reading 3 files" in capsys.readouterr().err
+    monkeypatch.setattr(analyze, "_analyze", lambda *a, **k: {"status": "failed"})
+    assert evalrun.child_run(tmp_path, Config(), "t") == 1
 
 
 def test_no_labels_means_nothing_to_run(tmp_path):

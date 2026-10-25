@@ -552,7 +552,8 @@ def create_app(pr_dir: Path, cfg: Config) -> FastAPI:
             return labels.for_posted(pr, labels.posted_drafts(claim.drafts, ids), commit_id=payload["commit_id"],
                                      author=info["viewer"])
 
-        warning = finish_post(store, post_id, record, posted)  # a label that can't be saved only adds a warning
+        # A PENDING review isn't published yet (it may be discarded on GitHub): `prr labels import` finds it once it is.
+        warning = finish_post(store, post_id, record, None if body.event == "PENDING" else posted)
         cache.pop("threads_at", None)
         out = {"ok": True, "review_id": record["review_id"], "html_url": record["html_url"]}
         if warning:

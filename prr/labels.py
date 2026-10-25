@@ -152,8 +152,9 @@ def save(pr_dir: Path, labels: list[dict[str, Any]]) -> str | None:
         return None
     try:
         write(folder, labels)
-    except (OSError, TimeoutError) as e:
-        print(f"[prr] could not save {len(labels)} label(s) to {folder / LABELS_FILE}: {e}", file=sys.stderr, flush=True)
+    except Exception as e:  # noqa: BLE001 — lock timeout, full disk, a body JSON can't encode: never fail the caller
+        print(f"[prr] could not save {len(labels)} label(s) to {folder / LABELS_FILE}: {type(e).__name__}: {e}",
+              file=sys.stderr, flush=True)
         return SAVE_FAILED
     return None
 
@@ -238,7 +239,10 @@ def _keys(entries: list[dict]) -> list[str]:
 
 
 def _same_place(a: dict, b: dict) -> bool:
+    """One issue told twice: the same spot (at most a line apart), and not two different comments or stops."""
     if not (isinstance(a.get("line"), int) and isinstance(b.get("line"), int)):
+        return False
+    if any(a.get(k) is not None and b.get(k) is not None and a[k] != b[k] for k in ("gh_comment_id", "origin_id")):
         return False
     return all(a.get(k) == b.get(k) for k in ("pr", "commit_id", "path", "side")) and abs(a["line"] - b["line"]) <= 1
 
@@ -294,28 +298,39 @@ def _have_commit(root: Path, sha: str) -> bool:
 
 
 def merge_base_for(root: Path, remote: str, ref: PRRef, meta: dict, commit: str) -> str | None:
-    """Where the PR's diff starts for `commit` (the fetch.py rule): the PR's recorded base commit (baseRefOid) for a
-    merged or closed PR, whose head is already in the base branch; `git merge-base <commit> <base>` for an open one,
-    asking GitHub's compare API when git can't tell. Fetches the commits it needs (fetching only reads from GitHub).
+    """Where the PR's diff starts for `commit`, by the fetch.py rule: `git merge-base <commit> <base point>`, where the
+    base point is the base branch for an open PR and the PR's recorded base commit (baseRefOid) for a merged or closed
+    one, whose head is already in the base branch. Asks GitHub's compare API when git can't tell; a merged or closed
+    PR then falls back to baseRefOid itself. Fetches the commits it needs (fetching only reads from GitHub).
     None when nothing works."""
-    if meta.get("state") != "OPEN":
-        return meta.get("baseRefOid")
-    if not SHA.fullmatch(commit or ""):  # only a full commit id ever reaches git's command line
-        return None
-    base_ref = f"refs/pr-prism/{ref.number}/base"
+    closed = meta.get("state") != "OPEN"
+    recorded = meta.get("baseRefOid") if SHA.fullmatch(meta.get("baseRefOid") or "") else None
+    if not SHA.fullmatch(commit or ""):  # only full commit ids ever reach git's command line
+        return recorded if closed else None
     try:
         if not _have_commit(root, commit):
             git("fetch", "--no-tags", "--quiet", remote, commit, cwd=root)
-        git("fetch", "--no-tags", "--quiet", "--force", remote, f"+refs/heads/{meta['baseRefName']}:{base_ref}", cwd=root)
-        return git("merge-base", commit, base_ref, cwd=root).strip()
+        if closed:
+            if not recorded:
+                return None
+            if not _have_commit(root, recorded):
+                git("fetch", "--no-tags", "--quiet", remote, recorded, cwd=root)
+            point = recorded
+        else:
+            point = f"refs/pr-prism/{ref.number}/base"
+            git("fetch", "--no-tags", "--quiet", "--force", remote, f"+refs/heads/{meta['baseRefName']}:{point}", cwd=root)
+        return git("merge-base", commit, point, cwd=root).strip()
     except CommandError:
         pass
     try:
-        data = gh_json("api", f"repos/{ref.slug}/compare/{meta['baseRefName']}...{commit}",
+        data = gh_json("api", f"repos/{ref.slug}/compare/{recorded if closed else meta['baseRefName']}...{commit}",
                        "--jq", "{sha: .merge_base_commit.sha}")
-        return (data or {}).get("sha") or None
+        found = (data or {}).get("sha")
+        if found:
+            return found
     except CommandError:
-        return None
+        pass
+    return recorded if closed else None
 
 
 def _where(c: dict) -> tuple[str | None, int | None]:
