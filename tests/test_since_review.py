@@ -8,7 +8,7 @@ from types import SimpleNamespace
 import pytest
 from fastapi.testclient import TestClient
 
-from prr import analyze, bots, chat_tools, ci, cli, config, github, merge, recheck, server, since
+from prr import analyze, bots, chat_tools, ci, cli, config, github, merge, recheck, server, since, stops
 from prr.config import Config
 from prr.fetch import DIFF_ARGS
 from prr.gitgh import PRRef
@@ -329,10 +329,9 @@ def test_since_review_endpoint(app, monkeypatch):
     p = app.p
     alice = gh_comment(4, 30, user="alice")
     monkeypatch.setattr(github, "existing_comments", lambda *a: [OUTDATED, NEAR_FIX, UNTOUCHED, alice])
-    real_build = merge.build_analysis
-    monkeypatch.setattr(merge, "build_analysis", lambda d: {**real_build(d), "stops": [
+    monkeypatch.setattr(stops, "build_stops", lambda a, *args, **kw: a.update(stops=[   # the server builds stops itself
         {"id": "stop-near", "path": "src/core.py", "side": "RIGHT", "line": 29},
-        {"id": "stop-far", "path": "src/core.py", "side": "RIGHT", "line": 5}, "not a stop"]})
+        {"id": "stop-far", "path": "src/core.py", "side": "RIGHT", "line": 5}]))
     assert app.client.get("/api/since-review").json() == {
         "reviewed_head": None, "head": p.head, "files": [], "patch": {}, "note": None, "ok": True, "full_pr": False,
         "comments": [], "comments_error": None, "new_stop_ids": []}
@@ -477,7 +476,7 @@ def posting(tmp_path, tricky_repo, monkeypatch):
     ctx = pr_at(pr_dir, tricky_repo["root"], tricky_repo["base"], tricky_repo["head"])
     real_build = merge.build_analysis
     monkeypatch.setattr(merge, "build_analysis",
-                        lambda d: {**real_build(d), "stops": [{"id": "stop-a"}, {"id": "stop-b"}]})
+                        lambda d, **kw: {**real_build(d, **kw), "stops": [{"id": "stop-a"}, {"id": "stop-b"}]})
     client = TestClient(server.Guard(server.create_app(pr_dir, Config()), TOKEN, PORT),
                         base_url=f"http://127.0.0.1:{PORT}")
     client.cookies.set("prr_session", TOKEN)
