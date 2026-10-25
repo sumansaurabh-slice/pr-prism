@@ -12,13 +12,13 @@ from typing import Callable, Literal
 
 from pydantic import BaseModel
 
+from . import findings
 from .claude import ClaudeError, run_structured
 from .ledger import Ledger
 from .config import PROMPTS_DIR, Config
 from .models import llm_schema
 
 MAX_CHECKED = 25
-NEAR_LINES = 3
 
 _SEVERITY = [
     ("blocker", re.compile(r"⛔|\bcatastrophic\b|\bblocker\b", re.I)),
@@ -113,7 +113,5 @@ def same_spot(finding: dict, bot: dict) -> bool:
     file_level = not bot["line"] or bot["line"] <= 1  # the tool couldn't place it on a line
     if file_level and len(shared) >= 3 and len(shared) / min(len(title_a), len(title_b)) >= 0.5:
         return True  # same issue in other words, posted at file level
-    if not bot["line"] or abs(bot["line"] - finding["line"]) > NEAR_LINES:
-        return False
-    a, b = _words(finding["title"] + " " + finding["impact"]), _words(bot["title"] + " " + bot["body"][:600])
-    return bot["line"] == finding["line"] or (bool(a) and len(a & b) / len(a) >= 0.25)
+    return findings.near_same(finding["path"], finding["line"], finding["title"] + " " + finding["impact"],
+                              bot["path"], bot["line"], bot["title"] + " " + bot["body"][:600])
