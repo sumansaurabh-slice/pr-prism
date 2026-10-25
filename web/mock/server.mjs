@@ -104,7 +104,7 @@ async function api(req, res, url) {
     const b = await readBody(req);
     const d = {
       id: `d${++seq}`, path: b.path, side: b.side, line: b.line, start_line: b.start_line ?? null, body: b.body,
-      source: b.source, suggestion_id: b.suggestion_id ?? null, anchored: inHunk(b.path, b.side, b.line),
+      source: b.source, suggestion_id: b.suggestion_id ?? null, origin_id: null, anchored: inHunk(b.path, b.side, b.line),
       outdated: false, commit_id: analysis.pr.head_sha, created_at: now(),
     };
     state.drafts.push(d);
