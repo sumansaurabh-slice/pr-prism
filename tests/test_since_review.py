@@ -231,14 +231,17 @@ def test_comments_over_recheck_max_are_not_checked():
     ]
 
 
-def test_your_comments_are_thread_starters_by_you_or_posted_for_you():
+def test_your_comments_are_the_thread_starters_you_wrote():
     alice = gh_comment(4, 30, user="alice")
     reply = gh_comment(5, 31, reply_to=2)
-    via_app = {**gh_comment(6, 12, user="someone-else"), "review_id": 77}
     bot = {**gh_comment(7, 12), "is_bot": True}
-    found = since.mine([OUTDATED, alice, reply, via_app, bot], "ME", [{"review_id": 77}, {"review_id": 0}])
-    assert [c["id"] for c in found] == [1, 6]
-    assert [c["id"] for c in since.mine([OUTDATED, via_app], None, [])] == []
+    in_a_review = {**gh_comment(8, 12), "review_id": 77}
+    lone = {**gh_comment(9, 12), "review_id": 78}
+    everything = [OUTDATED, alice, reply, bot, in_a_review, lone]
+    assert [c["id"] for c in since.mine(everything, "ME", [])] == [1, 8, 9]
+    # Your login couldn't be read: the comments PR Prism posted for you (a review's id, or a lone comment's own id).
+    submitted = [{"review_id": 77}, {"review_id": 9}, {"review_id": 0}]
+    assert [c["id"] for c in since.mine(everything, None, submitted)] == [8, 9]
 
 
 def test_recheck_max_is_a_config_key(tmp_path, monkeypatch):

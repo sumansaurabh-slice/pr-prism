@@ -219,11 +219,13 @@ def is_new_stop(stop: dict, interdiff_files: list[dict]) -> bool:
 
 
 def mine(comments: list[dict], viewer: str | None, submitted: list[dict]) -> list[dict]:
-    """Your earlier comments on the PR (thread starters, not replies): written by you, or posted by PR Prism for you."""
-    me = (viewer or "").lower()
+    """Your earlier comments on the PR (thread starters, not replies): written by your GitHub login. When the login
+    can't be read, the ones PR Prism posted for you (state.submitted: a review's id, or a lone comment's own id)."""
+    starters = [c for c in comments if not c.get("in_reply_to_id") and not c.get("is_bot")]
+    if viewer:
+        return [c for c in starters if str(c.get("user") or "").lower() == viewer.lower()]
     ids = {r.get("review_id") for r in submitted if r.get("review_id")}
-    return [c for c in comments if not c.get("in_reply_to_id") and not c.get("is_bot") and (
-        (me and str(c.get("user") or "").lower() == me) or c.get("id") in ids or c.get("review_id") in ids)]
+    return [c for c in starters if c.get("review_id") in ids or c.get("id") in ids]
 
 
 def comment_lines(c: dict) -> tuple[int, int] | None:
