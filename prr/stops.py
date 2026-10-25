@@ -249,7 +249,10 @@ def _candidates(analysis: dict, diffs: dict[str, FileDiff] | None) -> list[dict]
     found = (_from_findings(analysis, files, diffs) + _from_bots(analysis, files, diffs)
              + _from_notes(analysis["files"], diffs) + _from_ci(analysis))
     taken = {s["path"] for s in found if s["path"] and not s["low_confidence"]}
-    return found + _from_look_for(analysis["files"], taken, diffs)
+    out = found + _from_look_for(analysis["files"], taken, diffs)
+    for i, s in enumerate(out):
+        s["_seq"] = i
+    return out
 
 
 # --------------------------------------------------------------------------------------
@@ -320,10 +323,11 @@ def _reading_positions(analysis: dict) -> dict[str, tuple[int, int, str | None]]
 
 
 def _reading_key(s: dict, pos: dict[str, tuple[int, int, str | None]]) -> tuple:
+    tie = (_KIND_ORDER[s["kind"]], s.get("_seq", _GONE), s["id"])  # then the order the analysis lists them in
     if s["path"] is None:
-        return (0, 0, 0, "", 0, _KIND_ORDER[s["kind"]], s["id"])
+        return (0, 0, 0, "", 0, *tie)
     ci, fi, _ = pos.get(s["path"], (_GONE, 0, None))
-    return (1, ci, fi, s["path"], s["line"] or 0, _KIND_ORDER[s["kind"]], s["id"])
+    return (1, ci, fi, s["path"], s["line"] or 0, *tie)
 
 
 def _apply_cap(stops: list[dict], pinned: set[str], max_stops: int) -> None:
@@ -413,8 +417,8 @@ def build_stops(analysis: dict, state: dict | None = None, *, max_stops: int = M
         s["chapter"] = pos[s["path"]][2] if s["path"] in pos else None
     _apply_cap(stops, pinned, max_stops)
     stops.sort(key=lambda s: s["_read"])
-    out = [Stop.model_validate({k: v for k, v in s.items() if not k.startswith("_")} | {"order": i}).model_dump(mode="json")
-           for i, s in enumerate(stops)]
+    out = [Stop.model_validate({**{k: v for k, v in s.items() if not k.startswith("_")}, "order": i})
+           .model_dump(mode="json") for i, s in enumerate(stops)]
     analysis["stops"] = out
     analysis["review_summary"] = ReviewSummary.model_validate(
         _summary(out, analysis["files"], done_ids(out, state))).model_dump(mode="json")
