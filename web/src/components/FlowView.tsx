@@ -7,7 +7,7 @@ import "@xyflow/react/dist/style.css";
 import { useEffect, useMemo, useRef, useState } from "react";
 import { Markdown } from "../markdown";
 import { goFile, navigate } from "../router";
-import { fileMap, splitPath, useStore } from "../store";
+import { fileMap, splitPath, summaryPending, useStore } from "../store";
 import type { Flow, FlowNodeKind } from "../types";
 
 const NODE_W = 210;
@@ -141,7 +141,7 @@ export function FlowView({ id }: { id: string | null }) {
 
   if (!analysis) return <div className="blankslate">Loading…</div>;
   if (!flow) {
-    const pending = analysis.status !== "complete" && analysis.status !== "failed";
+    const pending = summaryPending(analysis);
     return (
       <div className="blankslate">
         {pending ? "The data flow diagrams will show up when Claude has finished reading the PR." : "Claude did not find a data flow to draw for this PR."}

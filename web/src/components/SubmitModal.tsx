@@ -67,6 +67,7 @@ export function SubmitModal() {
       setBody("");
       await loadState();
       toast("success", event === "PENDING" ? "Review saved on GitHub (not sent yet)" : "Review sent");
+      if (res.warning) toast("error", res.warning);
     } catch (e) {
       setSubmitError((e as Error).message);
     } finally {

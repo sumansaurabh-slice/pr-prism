@@ -2,7 +2,7 @@ import { useState } from "react";
 import { Avatar, DiffStat, IconCheck, IconChevronDown, IconChevronRight } from "../icons";
 import { InlineText, Markdown, RefLink } from "../markdown";
 import { goFile } from "../router";
-import { fileMap, fmtMinutes, splitPath, totalMinutes, useStore } from "../store";
+import { fileMap, fmtMinutes, splitPath, summaryPending, totalMinutes, useStore } from "../store";
 import type { Ref } from "../types";
 import { RiskBadge } from "./Header";
 import { BlockerBanner, CIBox, FindingsBox, OtherToolsBox, RecheckedBox } from "./ReviewSignals";
@@ -23,6 +23,23 @@ export function RefList({ refs }: { refs: Ref[] }) {
   );
 }
 
+/** What didn't run fully, e.g. a deep-check area that failed or was skipped. Muted: the review still works. */
+export function AnalysisWarnings({ warnings }: { warnings: string[] }) {
+  if (!warnings.length) return null;
+  return (
+    <div className="flash flash-muted analysis-warnings" role="status">
+      <div>
+        <div className="analysis-warnings-title">Some checks didn't run fully</div>
+        <ul>
+          {warnings.map((w, i) => (
+            <li key={i}>{w}</li>
+          ))}
+        </ul>
+      </div>
+    </div>
+  );
+}
+
 function SidebarItem({ title, children }: { title: string; children: React.ReactNode }) {
   return (
     <div className="sidebar-item">
@@ -39,13 +56,14 @@ export function Overview() {
   if (!analysis) return <div className="blankslate">Loading…</div>;
   const { pr, summary } = analysis;
   const files = fileMap(analysis);
-  const pending = analysis.status !== "complete" && analysis.status !== "failed";
+  const pending = summaryPending(analysis);
   const viewed = analysis.files.filter((f) => f.path in reviewed).length;
 
   return (
     <div className="overview">
       <div className="overview-main">
         <BlockerBanner />
+        <AnalysisWarnings warnings={analysis.warnings ?? []} />
         {summary ? (
           <section className="timeline-comment">
             <div className="tc-head">

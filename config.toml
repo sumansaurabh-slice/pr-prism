@@ -11,6 +11,7 @@ chat = "opus"         # deep-dive chat in the web app
 blockers = "sonnet"   # the blocker-rule pass (SQL/shell from request input, secrets, removed auth checks, destructive migrations)
 judge = "haiku"       # the second look that scores every finding
 ci = "sonnet"         # explaining CI failures, checking other review tools' comments, re-checking earlier findings
+deepcheck = "opus"    # the deep check: asks "what could break?" in the riskiest areas, after the summary
 
 [analysis]
 concurrency = 6            # parallel `claude -p` review calls
@@ -19,6 +20,10 @@ cluster_max_files = 8
 retries = 2
 annotate_timeout_s = 900
 synthesize_timeout_s = 1200
+deepcheck = true                 # run the deep check after the summary (adds a few minutes and roughly $2-5 per PR)
+deepcheck_max_targets = 4        # areas checked per PR, riskiest first; skipped risky areas are listed as warnings
+deepcheck_target_timeout_s = 600  # time limit for one area (a failed area retries once if the budget allows)
+deepcheck_budget_s = 900         # no area starts after this many seconds; areas still running stop 60 s later
 
 [chat]
 can_post = true       # the chat may post comments (and comment-only reviews) to GitHub when you ask it to

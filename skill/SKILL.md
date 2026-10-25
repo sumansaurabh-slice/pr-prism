@@ -56,7 +56,7 @@ Run this command **with `run_in_background: true`**:
 ${CLAUDE_SKILL_DIR}/bin/prr analyze <PR> --focus '<focus>'
 ```
 
-- It takes about 2–10 minutes depending on PR size.
+- It takes about 5–20 minutes depending on PR size. The last part, the deep check, asks "what could break?" in the riskiest areas and takes most of that time; its findings show up in the app as each area finishes.
 - Put the focus in single quotes, and escape any single quote inside it as `'\''`. Omit `--focus` if the focus is empty.
 - Do not poll or sleep; you will be notified when it finishes.
 - While it runs, tell the user they can start reading in the browser now. Also tell them that the chat panel on the right answers deep-dive questions using Claude Code inside the PR's checkout.
@@ -68,7 +68,8 @@ When the background task completes, read its output. It ends with a "Review read
 - any problem that blocks the merge, and any failing CI check with its likely cause;
 - the summary;
 - the reading order as a numbered list of chapters with file counts and minutes;
-- the number of suggested comments Claude drafted. Say clearly that nothing is posted to GitHub until they press **Submit review** in the app;
+- the number of suggested comments Claude drafted, and how many came from the deep check. Say clearly that nothing is posted to GitHub until they press **Submit review** in the app;
+- any warning lines (for example, a deep-check area that couldn't finish or was skipped);
 - the app URL.
 
 If the analysis failed or some batches failed, say so plainly and suggest rerunning `/pr-prism <PR>`. Cached batches are reused, so a rerun is cheap.

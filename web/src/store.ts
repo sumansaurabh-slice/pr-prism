@@ -217,11 +217,12 @@ export const useStore = create<Store>((set, get) => ({
   },
   deleteDraft: async (id) => {
     try {
-      await api.deleteDraft(id);
+      const res = await api.deleteDraft(id);
       set((s) => ({
         state: { ...s.state, drafts: s.state.drafts.filter((d) => d.id !== id) },
         replacing: s.replacing?.draftId === id ? null : s.replacing,
       }));
+      if (res.warning) get().toast("error", res.warning);
     } catch (e) {
       get().toast("error", (e as Error).message);
     }
@@ -391,6 +392,11 @@ export function hiddenByPrefs(f: FileEntry, prefs: ViewPrefs, reviewed: Record<s
 export function isStaleReview(reviewed: Record<string, string>, f: FileEntry): boolean {
   const blob = reviewed[f.path];
   return blob !== undefined && blob !== "" && f.head_blob !== null && blob !== f.head_blob;
+}
+
+/** The summary, flows and impact may still arrive: the analysis hasn't reached the deep check (or the end) yet. */
+export function summaryPending(analysis: Analysis): boolean {
+  return ["fetched", "annotating", "synthesizing"].includes(analysis.status);
 }
 
 export function totalMinutes(analysis: Analysis | null): number {

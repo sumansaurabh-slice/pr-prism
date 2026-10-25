@@ -31,9 +31,9 @@ The SPA never handles the token. It uses relative URLs, and `fetch` sends the co
 | `GET /api/diff?path=` | | `{path, patch}`: the unified diff for one file, with `diff --git` header lines, ready for `parseDiff` |
 | `GET /api/file?path=&at=head\|base` | | `{path, at, content}`: full file text at the PR head or merge-base |
 | `PUT /api/reviewed` | `{path, reviewed: bool}` | `{reviewed: Record<path, blob>}` |
-| `POST /api/drafts` | `{path, side, line, start_line?, body, source, suggestion_id?}` | `Draft`. Comments outside a hunk are accepted with `anchored: false`. |
+| `POST /api/drafts` | `{path, side, line, start_line?, body, source, suggestion_id?}` | `Draft`. Comments outside a hunk are accepted with `anchored: false`. `origin_id` is the guided-review stop the draft came from (null until guided review sets it). |
 | `PATCH /api/drafts/{id}` | `{body}` | `Draft`. 409 `{detail}` while a post is sending this draft ("…being posted…"), or while the draft is `outdated` (read-only until re-placed) |
-| `DELETE /api/drafts/{id}` | | `{ok: true}`, or 409 `{detail}` ("…being posted…") while a post is sending this draft |
+| `DELETE /api/drafts/{id}` | | `{ok: true}`, or 409 `{detail}` ("…being posted…") while a post is sending this draft. Deleting a draft with an `origin_id` takes back that "Real problem" answer in `labels.jsonl`; if that write fails the draft is still deleted and the reply adds `warning: "Couldn't save this answer for eval"` (shown as a toast). |
 | `POST /api/drafts/{id}/replace` | `{side, line, start_line?, start_side?}` | `Draft` on the new line, with `outdated: false` and `commit_id` = the analyzed head. Checked like `POST /api/drafts` (400 with `{detail}`); 404 for an unknown id; 409 while it is being posted. |
 | `POST /api/restored/dismiss` | | `{ok: true}`: removes `restored` (the one-time "Restored your work" summary) from the state |
 | `POST /api/suggestions/{id}/dismiss` | | `{dismissed_suggestions}` |
@@ -42,7 +42,7 @@ The SPA never handles the token. It uses relative URLs, and `fetch` sends the co
 | `POST /api/ci/refresh` | | `CIInfo`: reads the CI checks again and explains new failures; the next `/api/analysis` includes them |
 | `POST /api/review/preview` | `{body, event}` | `ReviewPreview`, built from the drafts Submit would send now (not outdated, not being posted) |
 | `POST /api/review/draft-summary` | | `{body}`: Claude drafts the overall review body from the drafts and the analysis |
-| `POST /api/review/submit` | `{body, event, commit: "analyzed"\|"current"}` | `{ok, review_id, html_url}`, or 4xx `{detail}`. Only the drafts this post sent are removed; outdated drafts aren't sent and stay. 409 "Nothing new to post: …" when every draft is already being posted by another post (the chat's). |
+| `POST /api/review/submit` | `{body, event, commit: "analyzed"\|"current"}` | `{ok, review_id, html_url}`, or 4xx `{detail}`. Only the drafts this post sent are removed; outdated drafts aren't sent and stay. 409 "Nothing new to post: …" when every draft is already being posted by another post (the chat's). Each posted comment is saved as a problem label for `prr eval`; if that write fails the review still counts and the reply adds `warning: "Couldn't save this answer for eval"` (shown as a toast). |
 | `GET /api/chat/threads` | | `ChatThread[]` |
 | `POST /api/chat/threads` | `{title?}` | `ChatThread` |
 | `DELETE /api/chat/threads/{id}` | | `{ok: true}` |

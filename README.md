@@ -194,7 +194,8 @@ Put team rules under "Team context" in `skill/review-guidelines.md`. Claude foll
 - `prr/prompts/*.md` holds the detailed instructions for annotation, synthesis and chat.
 - `prr/prompts/rubrics/*.md` are the per-language checklists. Edit them, or add a file for a new language and map it in `prr/rubrics.py`.
 - `config.toml` sets:
-  - the models for each step (`annotate`, `synthesize`, `chat`, `blockers`, `judge`, `ci`);
+  - the models for each step (`annotate`, `synthesize`, `chat`, `blockers`, `judge`, `ci`, `deepcheck`);
+  - the deep check under `[analysis]`: on or off, how many areas, and its time limits;
   - concurrency, batch size and cache location;
   - the chat's switches under `[chat]`;
   - an optional spend warning per PR under `[budget]` (`warn_usd`; a warning only).
@@ -219,6 +220,7 @@ Put team rules under "Team context" in `skill/review-guidelines.md`. Claude foll
 4. **Second look.** A separate, cheaper model scores every finding against its code. It can only veto. Findings that score low are hidden as **low confidence**, not deleted. The first reviewer's own "% sure" never hides a finding by itself. If the second look fails, the finding stays shown, marked "not second-checked", and is checked again on the next run.
 5. **CI, other tools, re-checks.** These run side by side (see above).
 6. **Summary.** The summary, reading order, data flows and impact take all of the above into account.
+7. **Deep check.** An Opus agent takes the riskiest parts of the reading order (at most 4) and asks "what could break?". It follows the code across files: callers outside the diff, odd inputs, error paths, old data, two requests at once, frontend and backend contracts, units and missing values. Each finding gives the steps of how it could happen, with example values, and one yes/no question for you. The second look checks each one against the code at the spots it cites. Findings show up as each area finishes. An area that fails, runs out of time or is skipped is listed at the top of the Overview.
 
 ## How it works
 
@@ -228,6 +230,7 @@ Put team rules under "Team context" in `skill/review-guidelines.md`. Claude foll
                       ─► prr analyze ─► N × `claude -p --json-schema` (per batch of related files, parallel)
                                      ─► impact (codegraph / git grep, no LLM)
                                      ─► 1 × `claude -p --json-schema` synthesis
+                                     ─► ≤ 4 × `claude -p --json-schema` deep check (3 at a time, time budget)
                                      ─► analysis.json   (repaired, never rejected)
 browser chat ─► POST /api/chat/... ─► `claude -p --resume <session>` (read-only tools, cwd = worktree) ─► SSE
 Submit       ─► POST /api/review/submit ─► `gh api POST /repos/{o}/{r}/pulls/{n}/reviews`
@@ -258,6 +261,24 @@ Submit       ─► POST /api/review/submit ─► `gh api POST /repos/{o}/{r}/p
   - `can_post = false` keeps the chat to pending comments only.
 - **Git:** worktree checkouts run with `core.hooksPath=/dev/null` and `core.symlinks=false`, so a symbolic link in the PR is checked out as a small file holding its target and can't lead a read outside the PR.
 - **GitHub:** nothing is posted until you confirm the previewed payload.
+
+## Measure the analysis (`prr eval`)
+
+Every comment you post, from Submit review or from the chat, is saved as a label: "this is a real problem". Labels live in `~/.cache/pr-prism/<owner>__<repo>/labels.jsonl`, outside the PR folders, so `prr clean` keeps them. `prr eval` re-runs the analysis on those PRs at the commit you commented on and counts how many of your problems it finds.
+
+```bash
+prr labels import 101 102 103                  # your comments already on past PRs (only reads GitHub)
+prr labels import 104 105 --split holdout      # PRs kept out of prompt work; the Wave 2 gate is measured on them
+prr labels import 106 --reviewers all          # every human reviewer's comments, not only yours (never bots)
+prr eval                                       # shows the estimated cost and asks before it starts
+prr eval --prs 101 104 --runs 1 --max-usd 10 --yes
+```
+
+- Each labelled PR commit is analyzed 3 times (`--runs`) in a temporary folder under `~/.cache/pr-prism/_eval/`, removed at the end unless `--keep`. A commit that can't be fetched any more (force-pushed away) is skipped and listed.
+- The report shows four views: deep check off or on, and a 50% confidence floor on or off ("deep check off, floor on" is the old behavior). For each: how many of your problems were found, found but hidden by the second look, findings you said aren't problems, findings no label covers (listed, not counted as wrong), cost and time, as the mean and the min-max of the runs.
+- On held-out PRs it checks the Wave 2 gate: deep check on finds 25+ points more than off, at least 40% overall, adds at most $6 per PR, and shows at most 10 unlabelled findings per PR.
+- It costs real money: about the price of one full analysis per PR commit per run (the estimate uses each PR's most expensive earlier analysis). `--max-usd` starts no new run once that much is spent, and Ctrl-C stops the run in progress at once and still saves the report so far. The report is saved as `eval-<date>.json` next to `labels.jsonl`.
+- A PR that changes a prompt should include before and after `prr eval` numbers.
 
 ## Develop
 

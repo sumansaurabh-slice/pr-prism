@@ -20,6 +20,11 @@ SEVERITY_TEXT = {"blocker": "Blocks merge", "major": "Must fix", "minor": "Shoul
 MIN_ANCHOR = 6          # shorter anchors ("}", "end") match too much to be useful
 NEAR_LINES = 3          # two findings this close, same file and category, about the same thing, are one finding
 MIN_IDENT_OVERLAP = 0.2  # suggested code must share this much vocabulary with the code it replaces
+SOURCE_ORDER = ["annotate", "blockers", "deep-check"]  # the passes that find problems, in the order they run
+DEEP_FIELDS = ("scenario", "question", "evidence_refs")  # what the deep check adds to a finding
+MAX_STEPS = 6           # scenario steps kept
+MAX_REFS = 4            # evidence spots kept
+NEAR_WORDS = 0.25       # near_same: this share of the first text's words must appear in the second
 
 _IDENT = re.compile(r"[A-Za-z_][A-Za-z0-9_]*")
 _WORD = re.compile(r"[a-z0-9]+")
@@ -86,11 +91,40 @@ def _overlap(a: set[str], b: set[str]) -> float:
     return len(a & b) / len(a | b) if a and b else 0.0
 
 
+def near_same(path_a: str, line_a: int | None, text_a: str, path_b: str, line_b: int | None, text_b: str) -> bool:
+    """Two comments about the same issue: same file, at most NEAR_LINES lines apart, and either on the same line or
+    sharing at least NEAR_WORDS of the first text's words. A comment without a line never matches here.
+
+    The one "same issue" rule: the app's "also flagged by" (bots.same_spot) and eval's label matching
+    (labels.match_label) both call it, so eval scores a finding exactly the way the app links it.
+    """
+    if path_a != path_b or not line_a or not line_b or abs(line_a - line_b) > NEAR_LINES:
+        return False
+    if line_a == line_b:
+        return True
+    a, b = _words(text_a), _words(text_b)
+    return bool(a) and len(a & b) / len(a) >= NEAR_WORDS
+
+
 def _better(a: dict, b: dict) -> dict:
     """Of two findings about the same thing, keep the more severe, then the more confident."""
     ka = (SEVERITY_RANK.get(a["severity"], 9), -(a.get("confidence") or 0))
     kb = (SEVERITY_RANK.get(b["severity"], 9), -(b.get("confidence") or 0))
     return a if ka <= kb else b
+
+
+def _merge_twins(a: dict, b: dict) -> dict:
+    """The better of two twins, also listing every pass that found it. When the kept one has no deep-check text
+    (scenario, question, evidence spots), it takes the other's."""
+    best = _better(a, b)
+    other = b if best is a else a
+    keep = dict(best)
+    found = {*keep.get("sources", []), *other.get("sources", [])}
+    keep["sources"] = sorted(found, key=lambda s: (SOURCE_ORDER.index(s) if s in SOURCE_ORDER else 9, s))
+    for key in DEEP_FIELDS:
+        if not keep.get(key) and other.get(key):
+            keep[key] = other[key]
+    return keep
 
 
 def dedupe(findings: list[dict]) -> tuple[list[dict], int]:
@@ -110,7 +144,7 @@ def dedupe(findings: list[dict]) -> tuple[list[dict], int]:
         if twin is None:
             kept.append(f)
         else:
-            kept[kept.index(twin)] = _better(twin, f)
+            kept[kept.index(twin)] = _merge_twins(twin, f)
             removed += 1
     return kept, removed
 
@@ -148,6 +182,15 @@ def comment_body(f: dict) -> str:
     return "\n\n".join(parts)
 
 
+def _refs(raw: object) -> list[dict]:
+    """Evidence spots as {path, line}; malformed ones are left out."""
+    out = []
+    for r in raw if isinstance(raw, list) else []:
+        if isinstance(r, dict) and isinstance(r.get("path"), str) and r["path"].strip() and isinstance(r.get("line"), int):
+            out.append({"path": r["path"].strip(), "line": r["line"]})
+    return out[:MAX_REFS]
+
+
 def place(raw: dict, path: str, fl: FileLines | None) -> dict:
     """One raw finding (from the reviewer) → a placed finding dict (without scores or status yet)."""
     side = raw.get("side") if raw.get("side") in ("LEFT", "RIGHT") else "RIGHT"
@@ -178,6 +221,11 @@ def place(raw: dict, path: str, fl: FileLines | None) -> dict:
         "suggestion": raw.get("suggestion") or None, "why": raw.get("why") or "", "evidence": raw.get("evidence") or "",
         "confidence": raw.get("confidence") if isinstance(raw.get("confidence"), int) else None,
         "source": raw.get("source") or "claude", "note": raw.get("note"),
+        "scenario": [str(x).strip() for x in raw.get("scenario") or [] if str(x).strip()][:MAX_STEPS],
+        "question": str(raw.get("question") or "").strip() or None,
+        "evidence_refs": _refs(raw.get("evidence_refs")),
+        "sources": list(raw.get("sources") or (["blockers"] if str(raw.get("source") or "").startswith("rule:")
+                                                else ["annotate"])),
     }
     f["one_click"] = bool(fl) and anchored and one_click_ok(fl, side, start or line, line, f["suggestion"])  # type: ignore[arg-type]
     return f

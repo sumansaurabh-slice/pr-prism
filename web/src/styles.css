@@ -2828,6 +2828,47 @@ tr.line-flash > td,
   font-size: 12px;
   color: var(--text-muted);
 }
+.finding-deep {
+  margin: 6px 0;
+}
+.finding-question {
+  margin: 0 0 6px;
+}
+.finding-scenario-box {
+  margin: 6px 0;
+  font-size: 13px;
+}
+.finding-scenario-title,
+.finding-scenario-box summary {
+  font-weight: 600;
+  color: var(--text-muted);
+}
+.finding-scenario-box summary {
+  cursor: pointer;
+}
+.finding-scenario {
+  margin: 4px 0 0;
+  padding-left: 1.6em;
+}
+.finding-row-deep {
+  margin-top: -6px;
+  padding: 0 16px 12px;
+  font-size: 13px;
+}
+.finding-row-deep .finding-deep {
+  margin: 0;
+}
+.analysis-warnings {
+  align-items: flex-start;
+  margin-bottom: 16px;
+}
+.analysis-warnings-title {
+  font-weight: 600;
+}
+.analysis-warnings ul {
+  margin: 4px 0 0;
+  padding-left: 1.2em;
+}
 .ci-note {
   border-left: 3px solid var(--attention);
 }

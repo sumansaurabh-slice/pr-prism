@@ -14,7 +14,7 @@ import hcl from "refractor/hcl";
 import docker from "refractor/docker";
 import { api } from "../api";
 import { registerFileNav, stepFile } from "../keyboard";
-import { Markdown } from "../markdown";
+import { InlineText, Markdown } from "../markdown";
 import { goFile, navigate, fileHref, useNavTick } from "../router";
 import { fileByPath, fmtMinutes, isStaleReview, readLS, splitPath, useStore, writeLS, type Selection } from "../store";
 import type { CIAnnotation, Draft, ExistingComment, FileEntry, Finding, Note, SecondLook, Severity, Side } from "../types";
@@ -169,6 +169,57 @@ export function SecondLookLabel({ look, small }: { look: SecondLook | undefined;
   );
 }
 
+/** "deep check" on findings the deep check found (alone, or as a twin of another pass's finding). */
+export function DeepCheckLabel({ f, small }: { f: Finding; small?: boolean }) {
+  if (!(f.sources ?? []).includes("deep-check")) return null;
+  return (
+    <span
+      className={`Label Label--done${small ? " Label--small" : ""}`}
+      title="Found by the deep check, which asks what could break and follows the code across files."
+    >
+      deep check
+    </span>
+  );
+}
+
+/** A deep-check finding's yes/no question (bold) and its numbered "How it could happen" steps. */
+export function DeepCheckDetail({ f, collapsed }: { f: Finding; collapsed?: boolean }) {
+  const steps = f.scenario ?? [];
+  if (!f.question && !steps.length) return null;
+  const list = (
+    <ol className="finding-scenario">
+      {steps.map((s, i) => (
+        <li key={i}>
+          <InlineText text={s} />
+        </li>
+      ))}
+    </ol>
+  );
+  return (
+    <div className="finding-deep">
+      {f.question && (
+        <p className="finding-question">
+          <strong>
+            <InlineText text={f.question} />
+          </strong>
+        </p>
+      )}
+      {steps.length > 0 &&
+        (collapsed ? (
+          <details className="finding-scenario-box">
+            <summary>How it could happen</summary>
+            {list}
+          </details>
+        ) : (
+          <div className="finding-scenario-box">
+            <div className="finding-scenario-title">How it could happen</div>
+            {list}
+          </div>
+        ))}
+    </div>
+  );
+}
+
 const VERDICT_TEXT = { agree: "Claude agrees", disagree: "Claude disagrees", unsure: "Claude isn't sure" } as const;
 const VERDICT_VARIANT = { agree: "success", disagree: "danger", unsure: "secondary" } as const;
 
@@ -210,6 +261,7 @@ function FindingCard({ f }: { f: Finding }) {
         <Avatar name="Claude" kind="claude" />
         <SeverityLabel severity={f.severity} />
         <span className="Label Label--secondary">{f.category}</span>
+        <DeepCheckLabel f={f} />
         <SecondLookLabel look={f.second_look} />
         {f.status === "still-open" && <span className="Label Label--attention" title="Also found in the previous review round">Still open</span>}
         {f.also_flagged_by.map((b) => (
@@ -226,6 +278,7 @@ function FindingCard({ f }: { f: Finding }) {
           <>
             <div className="finding-title">{f.title}</div>
             {f.impact && <Markdown className="finding-impact" text={f.impact} />}
+            <DeepCheckDetail f={f} />
             {f.fix && (
               <div className="finding-fix">
                 <strong>Fix:</strong> <Markdown className="inline-md" text={f.fix} />
