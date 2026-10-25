@@ -1,0 +1,4 @@
+# The sha256 of web-dist.tar.gz on the GitHub release v0.2.0, written by scripts/release.sh.
+# bin/prr (bootstrap.py) uses a download only when it matches.
+version=0.2.0
+sha256=c11b88afc3889d4ab75d3b6031ef34e66602f9445433cb74479ac659f1ba2c2c

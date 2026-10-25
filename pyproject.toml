@@ -1,6 +1,6 @@
 [project]
 name = "prr"
-version = "0.1.0"
+version = "0.2.0"
 description = "Interactive, Claude-guided GitHub PR review (backend for the /pr-prism Claude Code skill)"
 requires-python = ">=3.11"
 dependencies = [
