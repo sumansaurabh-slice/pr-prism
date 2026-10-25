@@ -551,6 +551,26 @@ button {
   padding: 8px 12px;
   font-size: 13px;
 }
+/* the outside-author notice: full width under the chat header */
+.chat-trust {
+  flex: none;
+  padding: 8px 12px;
+  font-size: 13px;
+  border-width: 0 0 1px;
+  border-radius: 0;
+}
+/* read by screen readers only (the chat's live region) */
+.sr-only {
+  position: absolute;
+  width: 1px;
+  height: 1px;
+  padding: 0;
+  margin: -1px;
+  overflow: hidden;
+  clip: rect(0, 0, 0, 0);
+  white-space: nowrap;
+  border: 0;
+}
 
 .input {
   width: 100%;
@@ -2240,13 +2260,86 @@ tr.line-flash > td,
   border-color: var(--border);
   border-left-color: var(--border);
 }
-.approval-head {
-  display: flex;
-  flex-wrap: wrap;
-  align-items: center;
-  gap: 8px;
+/* reason-first card: the action, why it asks, what it would send, then the buttons */
+.approval-action {
+  margin: 0;
   padding: 8px 12px 0;
   font-size: 13px;
+  font-weight: 600;
+  overflow-wrap: anywhere;
+}
+.approval-why {
+  display: flex;
+  flex-wrap: wrap;
+  align-items: baseline;
+  gap: 4px 8px;
+  padding: 6px 12px 0;
+  font-size: 12px;
+  color: var(--text-muted);
+}
+.approval-reason.Label {
+  white-space: normal;
+  overflow-wrap: anywhere;
+}
+.approval-reason-detail {
+  min-width: 0;
+  overflow-wrap: anywhere;
+}
+.approval-causes {
+  flex-basis: 100%;
+  margin: 0;
+  padding: 0;
+  list-style: none;
+  overflow-wrap: anywhere;
+}
+.approval-body {
+  max-height: 260px;
+  margin: 8px 12px;
+  padding: 8px 10px;
+  overflow: auto;
+  font-size: 13px;
+  border: 1px solid var(--border-muted);
+  border-radius: var(--radius);
+}
+.approval-url {
+  margin: 8px 12px;
+  padding: 6px 10px;
+  font-size: 12px;
+  overflow-wrap: anywhere;
+  background: var(--bg-subtle);
+  border-radius: var(--radius);
+}
+.approval-input {
+  padding: 6px 12px 0;
+}
+.approval-input .approval-detail {
+  margin: 6px 0 8px;
+}
+.approval-status {
+  margin: 0;
+  padding: 8px 12px 10px;
+}
+.approval-records {
+  display: flex;
+  flex-direction: column;
+  gap: 2px;
+  margin: 0 0 6px;
+  padding: 0;
+  list-style: none;
+  font-size: 12px;
+  color: var(--text-muted);
+}
+.approval-record {
+  overflow-wrap: anywhere;
+}
+.approval-verdict {
+  font-weight: 600;
+}
+.approval-verdict-yes {
+  color: var(--success);
+}
+.approval-verdict-no {
+  color: var(--danger);
 }
 .approval-detail {
   max-height: 220px;
@@ -2265,7 +2358,7 @@ tr.line-flash > td,
   justify-content: flex-end;
   align-items: center;
   gap: 6px;
-  padding: 0 12px 10px;
+  padding: 8px 12px 10px;
 }
 .thinking {
   display: flex;

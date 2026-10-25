@@ -24,6 +24,7 @@ export interface PRInfo {
   state: string; is_draft: boolean; base_ref: string; head_ref: string;
   base_sha: string; merge_base_sha: string; head_sha: string;
   additions: number; deletions: number; changed_files: number; labels: string[]; commits: Commit[];
+  author_association?: string | null; // OWNER, MEMBER, COLLABORATOR, CONTRIBUTOR, …; null: the check failed
 }
 
 export interface HunkInfo {
@@ -146,6 +147,7 @@ export interface ChatMessage {
   // had no cost) is counted in this one
   includes_stopped?: boolean;
   session_total_usd?: number | null;
+  approvals?: ApprovalRecord[];  // the turn's approval cards, shown as one line each once the turn ends
 }
 
 export interface ChatThread {
@@ -191,11 +193,51 @@ export type ChatEvent =
       thread: ThreadCost;
     }
   | { type: "error"; message: string }
-  | { type: "approval"; id: string; tool: string; title: string; summary: string; detail: string; always_label: string }
-  | { type: "approval_done"; id: string; decision: ApprovalDecision }
+  | ({ type: "approval" } & ApprovalRequest)
+  | { type: "approval_done"; id: string; decision: ApprovalDecision; why: ApprovalWhy }
   | { type: "done" };
 
 export type ApprovalDecision = "allow" | "always" | "deny";
+// answered: by the reviewer; covered: by an "Always allow" on another card ("Allowed by your earlier choice");
+// timeout: nobody answered in time ("Timed out · Claude was told no"); closed: the chat ended while it waited
+export type ApprovalWhy = "answered" | "covered" | "timeout" | "closed";
+
+/** Why a card asks (prr/policy.py). */
+export interface ApprovalReason {
+  kind: "outside_read" | "outside_author" | "marked_turn" | "env" | "action";
+  text: string;     // "Outside this PR's code", "Outside author (@x)", "This comment may include …. Post it?"
+  detail?: string;  // what it touches: "~/code/billing", "a Jira, Slack or other lookup"
+}
+
+/** What marked the turn, on guard cards: "Earlier this turn Claude read: …" / "Earlier this turn you approved: …". */
+export interface ApprovalCause { kind: "lookup" | "outside_read" | "approved"; text: string }
+
+/** One approval card, from the server's `approval_card` (prr/server.py). */
+export interface ApprovalRequest {
+  id: string; tool: string;
+  title: string;            // "Read a file", "Run a command", "Post a comment on GitHub"
+  summary: string;          // what it touches: "~/code/billing/config.py", "npm test", "src/a.py:42"
+  detail: string;           // the raw input: the command for Bash, else JSON
+  reason: ApprovalReason;
+  causes: ApprovalCause[];  // filled only on guard cards
+  guard: boolean;           // stands between outside data and a way out: only Deny and Post / Allow once
+  body: string | null;      // a post's Markdown (post cards only)
+  always: boolean;          // may offer "Always allow" (never on guard cards)
+  always_text: string;      // the button's label, e.g. "Always allow reads in ~/code"; "" when not offered
+  always_title: string;     // its tooltip
+  always_label: string;
+}
+
+/** A card once its turn ends, saved with the answer: "Allowed: Read ~/code/billing/config.py". */
+export interface ApprovalRecord {
+  id: string; tool: string; title: string; summary: string;
+  decision: ApprovalDecision | null; why: ApprovalWhy | null;
+}
+
+/** GET /api/trust: is the PR's author a member or collaborator? unknown = the check failed (treated as outside). */
+export interface Trust {
+  author: string; association: string | null; trusted: boolean; state: "trusted" | "outside" | "unknown";
+}
 
 // ---- GET /api/cost (every total comes from the PR's calls.jsonl) ----
 

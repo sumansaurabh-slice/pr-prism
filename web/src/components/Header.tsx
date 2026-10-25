@@ -2,6 +2,7 @@ import { breakdownText, overLimitText, spentText } from "../cost";
 import { IconMerged, IconPullRequest } from "../icons";
 import { fmtMinutes, totalMinutes, useStore } from "../store";
 import type { PRInfo } from "../types";
+import { OutsideAuthorLabel } from "./OutsideAuthor";
 
 const RISK_VARIANT: Record<string, string> = { high: "danger", medium: "attention", low: "success" };
 
@@ -96,7 +97,7 @@ export function Header() {
       <div className="gh-meta">
         <StateLabel pr={pr} />
         <span className="gh-meta-text">
-          <strong>{pr.author}</strong> {verb} {commits} commit{commits === 1 ? "" : "s"} into{" "}
+          <strong>{pr.author}</strong> <OutsideAuthorLabel /> {verb} {commits} commit{commits === 1 ? "" : "s"} into{" "}
           <span className="branch-name">{pr.base_ref}</span> from <span className="branch-name">{pr.head_ref}</span>
         </span>
         <RiskBadge risk={analysis.summary?.risk} />

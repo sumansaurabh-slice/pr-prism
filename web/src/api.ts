@@ -1,6 +1,6 @@
 import type {
   Analysis, ApprovalDecision, CIInfo, ChatEvent, ChatThread, ContextChip, CostSummary, Draft, DraftPlace, ExistingComment,
-  ReviewEvent, ReviewPreview, ReviewState, Side,
+  ReviewEvent, ReviewPreview, ReviewState, Side, Trust,
 } from "./types";
 
 export class ApiError extends Error {
@@ -71,6 +71,7 @@ export const api = {
   decideApproval: (id: string, decision: ApprovalDecision) =>
     request<{ ok: boolean }>("POST", `/api/chat/approvals/${q(id)}`, { decision }),
   refreshCI: () => request<CIInfo>("POST", "/api/ci/refresh"),
+  getTrust: () => request<Trust>("GET", "/api/trust"),
 };
 
 /** POST a chat message and stream SSE `data: <json>` frames back to `onEvent`. */

@@ -19,6 +19,11 @@ function isTyping(target: EventTarget | null): boolean {
   return tag === "INPUT" || tag === "TEXTAREA" || tag === "SELECT" || target.isContentEditable;
 }
 
+/** Keys pressed on a chat approval card stay there: no shortcut acts from it, and no key approves anything. */
+function onApprovalCard(target: EventTarget | null): boolean {
+  return target instanceof Element && target.closest(".approval") !== null;
+}
+
 /** Next/previous file in the reading order, skipping files the "Hide …" checkboxes hide. */
 export function stepFile(delta: 1 | -1) {
   const { analysis, prefs, state } = useStore.getState();
@@ -48,7 +53,7 @@ export function useGlobalKeys() {
         return;
       }
       if (e.metaKey || e.ctrlKey || e.altKey) return;
-      if (isTyping(e.target)) return;
+      if (isTyping(e.target) || onApprovalCard(e.target)) return;
       if (st.submitOpen) return;
       const route = parseHash(window.location.hash);
       switch (e.key) {
