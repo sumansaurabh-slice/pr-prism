@@ -1,55 +1,23 @@
 import { useEffect, useMemo, useRef, useState } from "react";
 import { api, streamChat } from "../api";
+import { atLeast, threadSoFar, threadTotalText, usd, type SoFar } from "../cost";
 import { Avatar, IconSparkle, IconX } from "../icons";
 import { Markdown } from "../markdown";
 import { goFile, useRoute } from "../router";
 import { chipLabel, fileByPath, splitPath, useStore } from "../store";
-import type { ApprovalDecision, ChatMessage, ChatThread, ContextChip, ToolEvent } from "../types";
+import type { ApprovalDecision, ChatEvent, ChatMessage, ChatThread, ContextChip, ToolEvent } from "../types";
+import { announceText, ApprovalCard, ApprovalRecords, toRecord, type LiveApproval } from "./ApprovalCard";
+import { OutsideAuthorStrip } from "./OutsideAuthor";
 
-interface Approval {
-  id: string; title: string; summary: string; detail: string; tool: string; always_label: string;
-  decision: ApprovalDecision | null;
-}
+type ResultEvent = Extract<ChatEvent, { type: "result" }>;
 
 interface Live {
   threadId: string;
   text: string;
   tools: ToolEvent[];
-  approvals: Approval[];
+  approvals: LiveApproval[]; // in arrival order
   thinking: boolean;
   error: string | null;
-}
-
-const DECISION_TEXT: Record<ApprovalDecision, string> = { allow: "Allowed", always: "Allowed for this chat", deny: "Denied" };
-
-/** "Claude wants to run a command" with Allow / Always allow / Deny, shown in the stream while Claude waits. */
-function ApprovalCard({ a, onDecide }: { a: Approval; onDecide: (decision: ApprovalDecision) => void }) {
-  return (
-    <div className={`approval${a.decision ? " decided" : ""}`}>
-      <div className="approval-head">
-        <strong>Claude wants to: {a.title}</strong>
-        {a.decision && <span className={`Label Label--${a.decision === "deny" ? "danger" : "success"}`}>{DECISION_TEXT[a.decision]}</span>}
-      </div>
-      <pre className="approval-detail">{a.tool === "Bash" ? `$ ${a.detail}` : a.detail}</pre>
-      {!a.decision && (
-        <div className="approval-actions">
-          <button className="btn btn-sm" onClick={() => onDecide("deny")}>
-            Deny
-          </button>
-          <button
-            className="btn btn-sm"
-            onClick={() => onDecide("always")}
-            title={`Don't ask again in this chat for ${a.tool === "Bash" ? `commands that use only: ${a.always_label}` : "this tool"}`}
-          >
-            {a.tool === "Bash" && a.always_label.length <= 24 ? `Always allow ${a.always_label}` : "Always allow"}
-          </button>
-          <button className="btn btn-sm btn-primary" onClick={() => onDecide("allow")}>
-            Allow
-          </button>
-        </div>
-      )}
-    </div>
-  );
 }
 
 const QUICK_PROMPTS: { label: string; prompt: string }[] = [
@@ -113,9 +81,26 @@ function ToolList({ tools, live }: { tools: ToolEvent[]; live?: boolean }) {
   );
 }
 
+/** "$0.42" (tooltip "This answer · thread so far $5.42"), or "cost unknown". */
+function AnswerCost({ m, soFar }: { m: ChatMessage; soFar: SoFar | null }) {
+  if (m.cost_usd != null) {
+    return (
+      <span className="cost" title={`This answer${soFar ? ` · thread so far ${atLeast(soFar.usd, soFar.unknown)}` : ""}`}>
+        {usd(m.cost_usd)}
+        {m.includes_stopped && <span> (includes the earlier answer's cost)</span>}
+      </span>
+    );
+  }
+  if (m.cost_unknown) return <span className="cost">cost unknown</span>;
+  return null;
+}
+
 function MessageView({
-  m, prevUser, onComment,
-}: { m: ChatMessage; prevUser: ChatMessage | null; onComment: (text: string, chips: ContextChip[]) => void }) {
+  m, prevUser, soFar, onComment,
+}: {
+  m: ChatMessage; prevUser: ChatMessage | null; soFar: SoFar | null;
+  onComment: (text: string, chips: ContextChip[]) => void;
+}) {
   const [copied, setCopied] = useState(false);
   if (m.role === "user") {
     return (
@@ -138,6 +123,7 @@ function MessageView({
         <strong>Claude</strong>
       </div>
       <ToolList tools={m.tools} />
+      <ApprovalRecords records={m.approvals} />
       {m.text && <Markdown text={m.text} />}
       {m.error && <div className="msg-error">{m.error}</div>}
       <div className="msg-actions">
@@ -162,7 +148,7 @@ function MessageView({
             </button>
           </>
         )}
-        {m.cost_usd != null && <span className="cost">${m.cost_usd.toFixed(3)}</span>}
+        <AnswerCost m={m} soFar={soFar} />
       </div>
     </div>
   );
@@ -178,12 +164,18 @@ export function ChatPanel() {
   const input = useStore((s) => s.chatInput);
   const activeId = useStore((s) => s.activeThreadId);
   const selection = useStore((s) => s.selection);
+  const threadCosts = useStore((s) => s.cost?.threads);
   const {
-    setChatOpen, setActiveThread, upsertThread, setThreads, removeChip, clearChips, dismissAutoChip, setChatInput,
+    setChatOpen, setActiveThread, upsertThread, setThreads, addChip, removeChip, clearChips, dismissAutoChip, setChatInput,
     addDraft, toast,
   } = useStore.getState();
   const route = useRoute();
   const [live, setLive] = useState<Live | null>(null);
+  const liveRef = useRef<Live | null>(null); // the streaming answer, so a card's decision survives the next event
+  // Read out (aria-live="polite") when a card arrives; a card never takes focus from the message box.
+  const [announce, setAnnounce] = useState("");
+  // The long-thread hint, set after the answer that makes a thread long (15 answers or $3). Never mid-stream.
+  const [longHint, setLongHint] = useState<{ threadId: string; cost: number | null } | null>(null);
   const abortRef = useRef<AbortController | null>(null);
   const scrollRef = useRef<HTMLDivElement>(null);
   const inputRef = useRef<HTMLTextAreaElement>(null);
@@ -206,7 +198,7 @@ export function ChatPanel() {
   useEffect(() => {
     const el = scrollRef.current;
     if (el && stickToBottom.current) el.scrollTop = el.scrollHeight;
-  }, [thread?.messages.length, live?.text, live?.tools.length, thread?.id]);
+  }, [thread?.messages.length, live?.text, live?.tools.length, live?.approvals.length, thread?.id]);
 
   useEffect(() => {
     const el = inputRef.current;
@@ -239,7 +231,8 @@ export function ChatPanel() {
     clearChips();
     stickToBottom.current = true;
     const acc: Live = { threadId: base.id, text: "", tools: [], approvals: [], thinking: false, error: null };
-    let cost: number | null = null;
+    let result = null as ResultEvent | null;
+    liveRef.current = acc;
     setLive({ ...acc });
     const ctrl = new AbortController();
     abortRef.current = ctrl;
@@ -262,17 +255,22 @@ export function ChatPanel() {
               acc.thinking = false;
               break;
             case "result":
-              cost = ev.cost_usd;
+              result = ev;
+              void useStore.getState().loadCost(); // the header and thread totals now include this answer
               break;
             case "error":
               acc.error = ev.message;
               break;
-            case "approval":
-              acc.approvals = [...acc.approvals, { ...ev, decision: null }];
+            case "approval": {
+              const { type: _type, ...card } = ev;
+              acc.approvals = [...acc.approvals, { ...card, decision: null, why: null }];
               acc.thinking = false;
+              setAnnounce(announceText(card));
               break;
+            }
             case "approval_done":
-              acc.approvals = acc.approvals.map((a) => (a.id === ev.id ? { ...a, decision: ev.decision } : a));
+              // answered, covered ("Allowed by your earlier choice"), timeout (read-only) or closed
+              acc.approvals = acc.approvals.map((a) => (a.id === ev.id ? { ...a, decision: ev.decision, why: ev.why } : a));
               break;
             case "done":
               break;
@@ -286,11 +284,17 @@ export function ChatPanel() {
       else acc.error = acc.error ?? "You stopped this answer.";
     }
     const assistant: ChatMessage = {
-      role: "assistant", text: acc.text, context: [], tools: acc.tools, cost_usd: cost, error: acc.error, ts: now(),
+      role: "assistant", text: acc.text, context: [], tools: acc.tools, error: acc.error, ts: now(),
+      cost_usd: result?.cost_usd ?? null, cost_unknown: result ? result.cost_unknown : true,
+      includes_stopped: result?.includes_stopped ?? false, session_total_usd: result?.session_total_usd ?? null,
+      ...(acc.approvals.length ? { approvals: acc.approvals.map(toRecord) } : {}), // each card becomes one line
     };
     upsertThread({ ...base, messages: [...base.messages, userMsg, assistant] });
+    liveRef.current = null;
     setLive(null);
+    setAnnounce("");
     abortRef.current = null;
+    if (result?.thread?.long && !base.long_hint_dismissed) setLongHint({ threadId: base.id, cost: result.cost_usd });
     // The server persists the turn — reconcile with its copy. Claude may also have added pending comments or
     // posted to GitHub, so reload those too.
     api.threads().then(
@@ -299,6 +303,18 @@ export function ChatPanel() {
     );
     void useStore.getState().loadState();
     void useStore.getState().loadGithubComments();
+  };
+
+  // A card's button: show the choice at once, tell the server, and give focus back to the message box (the button
+  // goes away). The server's approval_done confirms it, or says it had already timed out.
+  const decide = (id: string, decision: ApprovalDecision) => {
+    const acc = liveRef.current;
+    if (acc) {
+      acc.approvals = acc.approvals.map((x) => (x.id === id && !x.decision ? { ...x, decision, why: "answered" } : x));
+      setLive({ ...acc });
+    }
+    inputRef.current?.focus();
+    api.decideApproval(id, decision).catch((e) => toast("error", (e as Error).message));
   };
 
   const stop = () => {
@@ -331,6 +347,37 @@ export function ChatPanel() {
     if (d) goFile(d.path, d.start_line ?? d.line, d.side);
   };
 
+  // "New thread" on the long-thread hint: a fresh thread that keeps the context chips. Chips still in the box stay
+  // (they belong to the box, not the thread), and the code the last question was about comes back as chips.
+  const startFresh = async (from: ChatThread) => {
+    const lastAsk = [...from.messages].reverse().find((m) => m.role === "user");
+    try {
+      const t = await api.createThread();
+      upsertThread(t);
+      setActiveThread(t.id);
+    } catch (e) {
+      toast("error", `Could not start a new thread: ${(e as Error).message}`);
+      return;
+    }
+    for (const c of lastAsk?.context ?? []) {
+      const isAuto = !c.start && autoChip?.path === c.path; // the open file is added anyway
+      if (!isAuto) addChip(c);
+    }
+    setLongHint(null);
+    inputRef.current?.focus();
+  };
+
+  // "Keep going": hide the hint for this thread, for good (the server keeps the choice).
+  const keepGoing = async (from: ChatThread) => {
+    setLongHint(null);
+    upsertThread({ ...from, long_hint_dismissed: true });
+    try {
+      await api.dismissLongHint(from.id);
+    } catch (e) {
+      toast("error", (e as Error).message);
+    }
+  };
+
   if (!chatOpen) {
     return (
       <aside className="chat-collapsed">
@@ -342,7 +389,9 @@ export function ChatPanel() {
   }
 
   const messages = thread?.messages ?? [];
+  const soFar = threadSoFar(messages);
   const contextChips = [...(autoChip ? [autoChip] : []), ...chips];
+  const hint = !busy && thread && longHint?.threadId === thread.id && !thread.long_hint_dismissed ? longHint : null;
 
   return (
     <aside className="pane chat-panel" aria-label="Chat with Claude">
@@ -357,11 +406,14 @@ export function ChatPanel() {
           disabled={!threads.length || busy}
         >
           {!threads.length && <option value="">New chat</option>}
-          {threads.map((t) => (
-            <option key={t.id} value={t.id}>
-              {t.title || "Untitled"}
-            </option>
-          ))}
+          {threads.map((t) => {
+            const total = threadTotalText(threadCosts?.[t.id]);
+            return (
+              <option key={t.id} value={t.id}>
+                {`${t.title || "Untitled"}${total ? ` · ${total}` : ""}`}
+              </option>
+            );
+          })}
         </select>
         <button
           className="btn btn-sm"
@@ -401,6 +453,10 @@ export function ChatPanel() {
           <IconX />
         </button>
       </div>
+      <OutsideAuthorStrip />
+      <div className="sr-only" aria-live="polite">
+        {announce}
+      </div>
 
       <div
         className="chat-scroll"
@@ -429,6 +485,7 @@ export function ChatPanel() {
             key={`${m.ts}-${i}`}
             m={m}
             prevUser={m.role === "assistant" ? ([...messages.slice(0, i)].reverse().find((x) => x.role === "user") ?? null) : null}
+            soFar={soFar[i]}
             onComment={(text, c) => void turnIntoComment(text, c)}
           />
         ))}
@@ -440,14 +497,7 @@ export function ChatPanel() {
             </div>
             <ToolList tools={live.tools} live />
             {live.approvals.map((a) => (
-              <ApprovalCard
-                key={a.id}
-                a={a}
-                onDecide={(decision) => {
-                  setLive((cur) => cur && { ...cur, approvals: cur.approvals.map((x) => (x.id === a.id ? { ...x, decision } : x)) });
-                  api.decideApproval(a.id, decision).catch((e) => toast("error", (e as Error).message));
-                }}
-              />
+              <ApprovalCard key={a.id} a={a} onDecide={(decision) => decide(a.id, decision)} />
             ))}
             {live.text ? <Markdown text={live.text} /> : null}
             {(live.thinking || (!live.text && !live.error)) && (
@@ -470,6 +520,22 @@ export function ChatPanel() {
       </div>
 
       <div className="chat-compose">
+        {hint && thread && (
+          <div className="flash flash-info strip" role="status">
+            <span className="strip-text">
+              This thread is long: each answer re-reads it{hint.cost != null ? ` (this one cost ${usd(hint.cost)})` : ""}.
+              Start a fresh one? Your current thread stays in the list.
+            </span>
+            <span className="strip-actions">
+              <button className="btn btn-sm" onClick={() => void startFresh(thread)}>
+                New thread
+              </button>
+              <button className="btn btn-sm btn-invisible" onClick={() => void keepGoing(thread)}>
+                Keep going
+              </button>
+            </span>
+          </div>
+        )}
         {contextChips.length > 0 && (
           <div className="chips">
             {autoChip && <ChipView chip={autoChip} auto onRemove={() => dismissAutoChip(autoChip.path)} />}

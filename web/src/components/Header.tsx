@@ -1,6 +1,8 @@
+import { breakdownText, overLimitText, spentText } from "../cost";
 import { IconMerged, IconPullRequest } from "../icons";
 import { fmtMinutes, totalMinutes, useStore } from "../store";
 import type { PRInfo } from "../types";
+import { OutsideAuthorLabel } from "./OutsideAuthor";
 
 const RISK_VARIANT: Record<string, string> = { high: "danger", medium: "attention", low: "success" };
 
@@ -40,6 +42,25 @@ function StateLabel({ pr }: { pr: PRInfo }) {
   );
 }
 
+/** What Claude has cost on this PR so far: "$12.40 spent", with the analysis / chat / other split as a tooltip.
+ * Over the [budget] limit it also shows a lasting "over your $10 limit" label. */
+function Spend() {
+  const cost = useStore((s) => s.cost);
+  if (!cost) return null;
+  return (
+    <>
+      <span className="gh-meta-muted" title={breakdownText(cost)}>
+        {spentText(cost)}
+      </span>
+      {cost.over_budget && (
+        <span className="Label Label--attention" title="A warning only: nothing is stopped. The limit is warn_usd under [budget] in config.toml.">
+          {overLimitText(cost.warn_usd)}
+        </span>
+      )}
+    </>
+  );
+}
+
 export function Header() {
   const analysis = useStore((s) => s.analysis);
   const drafts = useStore((s) => s.state.drafts.length);
@@ -76,7 +97,7 @@ export function Header() {
       <div className="gh-meta">
         <StateLabel pr={pr} />
         <span className="gh-meta-text">
-          <strong>{pr.author}</strong> {verb} {commits} commit{commits === 1 ? "" : "s"} into{" "}
+          <strong>{pr.author}</strong> <OutsideAuthorLabel /> {verb} {commits} commit{commits === 1 ? "" : "s"} into{" "}
           <span className="branch-name">{pr.base_ref}</span> from <span className="branch-name">{pr.head_ref}</span>
         </span>
         <RiskBadge risk={analysis.summary?.risk} />
@@ -93,6 +114,7 @@ export function Header() {
         <span className="gh-meta-muted" title="Rough time to review every file">
           {fmtMinutes(totalMinutes(analysis))} to review
         </span>
+        <Spend />
       </div>
     </header>
   );

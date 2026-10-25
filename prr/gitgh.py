@@ -37,8 +37,9 @@ def git_ok(*args: str, cwd: Path | str) -> bool:
     return subprocess.run(["git", *args], cwd=cwd, capture_output=True).returncode == 0
 
 
-def gh(*args: str, cwd: Path | str | None = None, input: str | None = None, check: bool = True) -> str:
-    return run(["gh", *args], cwd=cwd, input=input, check=check, env=gh_env())
+def gh(*args: str, cwd: Path | str | None = None, input: str | None = None, check: bool = True,
+       timeout: float | None = None) -> str:
+    return run(["gh", *args], cwd=cwd, input=input, check=check, env=gh_env(), timeout=timeout)
 
 
 def gh_json(*args: str, cwd: Path | str | None = None, input: str | None = None) -> Any:

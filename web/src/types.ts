@@ -12,6 +12,10 @@ export type ImpactKind =
 export type FlowNodeKind = "entry" | "logic" | "store" | "external" | "test";
 export type ProgressStatus = "fetched" | "annotating" | "synthesizing" | "complete" | "failed";
 export type ReviewEvent = "COMMENT" | "APPROVE" | "REQUEST_CHANGES" | "PENDING";
+// judge = scored by the second look; rule = a blocker the code check confirmed ("confirmed by rule");
+// carried = from the previous round, keeping its verdict; pending = waiting for its second look;
+// none = the second look failed ("not second-checked"; never hidden)
+export type SecondLook = "judge" | "rule" | "carried" | "pending" | "none";
 
 export interface Commit { sha: string; headline: string; author: string }
 
@@ -20,6 +24,7 @@ export interface PRInfo {
   state: string; is_draft: boolean; base_ref: string; head_ref: string;
   base_sha: string; merge_base_sha: string; head_sha: string;
   additions: number; deletions: number; changed_files: number; labels: string[]; commits: Commit[];
+  author_association?: string | null; // OWNER, MEMBER, COLLABORATOR, CONTRIBUTOR, …; null: the check failed
 }
 
 export interface HunkInfo {
@@ -59,7 +64,8 @@ export interface Finding {
   suggestion: string | null; one_click: boolean;
   why: string; evidence: string;
   confidence: number | null; judge_score: number | null; judge_reason: string | null;
-  low_confidence: boolean;      // hidden by default
+  low_confidence: boolean;      // hidden by default: only the second look hides (drop, or a score under 5)
+  second_look: SecondLook;
   source: string;               // "claude" | "rule:<id>"
   note: string | null;
   status: "new" | "still-open";
@@ -95,6 +101,7 @@ export interface Rechecked {
 export interface Progress {
   status: ProgressStatus; clusters_total: number; clusters_done: number; clusters_failed: number;
   message: string; started_at: string | null; finished_at: string | null; log: string[];
+  cost_usd: number;             // this analysis run's spend so far
 }
 
 export interface Analysis {
@@ -112,8 +119,20 @@ export interface Draft {
   start_side: Side | null;   // set only when the range starts on the other side (a deleted line → RIGHT)
   source: "user" | "suggestion" | "chat"; suggestion_id: string | null;
   anchored: boolean;   // false → cannot be an inline comment; goes into the review body as a permalink
-  outdated: boolean;   // the PR moved and this line no longer maps
+  outdated: boolean;   // from an older commit (restored after `prr clean`): read-only and never sent until re-placed
   commit_id: string; created_at: string;
+  posting?: string;    // set while a post is sending it: edits and deletes get 409 "being posted"
+  posting_at?: string;
+}
+
+/** POST /api/drafts/{id}/replace: the new line for an outdated comment (same shape as a new comment's lines). */
+export interface DraftPlace { side: Side; line: number; start_line?: number | null; start_side?: Side | null }
+
+/** state.restored: the one-time "Restored your work from …" summary after `prr clean` + `prr fetch`. */
+export interface RestoredSummary {
+  archived_at: string; restored_at: string; archive: string;
+  chats: number; pending_comments: number; need_replacing: number; viewed_marks: number;
+  message: string;     // the banner text, from prr/archive.py message(); added by GET /api/state
 }
 
 export interface ContextChip { path: string; side: Side; start: number; end: number; text: string; label: string }
@@ -121,10 +140,20 @@ export interface ToolEvent { name: string; summary: string }
 
 export interface ChatMessage {
   role: "user" | "assistant"; text: string; context: ContextChip[]; tools: ToolEvent[];
-  cost_usd: number | null; error: string | null; ts: string;
+  cost_usd: number | null;       // this answer's own cost (null: unknown, or a stopped answer)
+  error: string | null; ts: string;
+  cost_unknown?: boolean;        // "cost unknown"
+  // "(includes the earlier answer's cost)": an earlier answer whose cost wasn't known (it stopped, or its result
+  // had no cost) is counted in this one
+  includes_stopped?: boolean;
+  session_total_usd?: number | null;
+  approvals?: ApprovalRecord[];  // the turn's approval cards, shown as one line each once the turn ends
 }
 
-export interface ChatThread { id: string; title: string; session_id: string; messages: ChatMessage[]; created_at: string }
+export interface ChatThread {
+  id: string; title: string; session_id: string; messages: ChatMessage[]; created_at: string;
+  long_hint_dismissed?: boolean; // "Keep going" on the long-thread hint
+}
 
 export interface SubmittedReview {
   review_id: number | null; html_url: string; event: ReviewEvent; comments: number; at: string;
@@ -137,6 +166,7 @@ export interface ReviewState {
   drafts: Draft[];
   threads: ChatThread[];
   submitted: SubmittedReview[];
+  restored?: RestoredSummary;
 }
 
 export interface ExistingComment {
@@ -157,10 +187,80 @@ export type ChatEvent =
   | { type: "text"; text: string }
   | { type: "thinking" }
   | { type: "tool"; name: string; summary: string }
-  | { type: "result"; session_id: string; cost_usd: number | null; duration_ms: number | null }
+  | {
+      type: "result"; session_id: string; duration_ms: number | null;
+      cost_usd: number | null; cost_unknown: boolean; includes_stopped: boolean; session_total_usd: number | null;
+      thread: ThreadCost;
+    }
   | { type: "error"; message: string }
-  | { type: "approval"; id: string; tool: string; title: string; summary: string; detail: string; always_label: string }
-  | { type: "approval_done"; id: string; decision: ApprovalDecision }
+  | ({ type: "approval" } & ApprovalRequest)
+  | { type: "approval_done"; id: string; decision: ApprovalDecision; why: ApprovalWhy }
   | { type: "done" };
 
 export type ApprovalDecision = "allow" | "always" | "deny";
+// answered: by the reviewer; covered: by an "Always allow" on another card ("Allowed by your earlier choice");
+// timeout: nobody answered in time ("Timed out · Claude was told no"); closed: the chat ended while it waited
+export type ApprovalWhy = "answered" | "covered" | "timeout" | "closed";
+
+/** Why a card asks (prr/policy.py). */
+export interface ApprovalReason {
+  kind: "outside_read" | "outside_author" | "marked_turn" | "env" | "action";
+  text: string;     // "Outside this PR's code", "Outside author (@x)", "This comment may include …. Post it?"
+  detail?: string;  // what it touches: "~/code/billing", "a Jira, Slack or other lookup"
+}
+
+/** What marked the turn, on guard cards: "Earlier this turn Claude read: …" / "Earlier this turn you approved: …". */
+export interface ApprovalCause { kind: "lookup" | "outside_read" | "approved"; text: string }
+
+/** One approval card, from the server's `approval_card` (prr/server.py). */
+export interface ApprovalRequest {
+  id: string; tool: string;
+  title: string;            // "Read a file", "Run a command", "Post a comment on GitHub"
+  summary: string;          // what it touches: "~/code/billing/config.py", "npm test", "src/a.py:42"
+  detail: string;           // the raw input: the command for Bash, else JSON
+  reason: ApprovalReason;
+  causes: ApprovalCause[];  // filled only on guard cards
+  guard: boolean;           // stands between outside data and a way out: only Deny and Post / Allow once
+  body: string | null;      // a post's Markdown (post cards only)
+  always: boolean;          // may offer "Always allow" (never on guard cards)
+  always_text: string;      // the button's label, e.g. "Always allow reads in ~/code"; "" when not offered
+  always_title: string;     // its tooltip
+  always_label: string;
+}
+
+/** A card once its turn ends, saved with the answer: "Allowed: Read ~/code/billing/config.py". */
+export interface ApprovalRecord {
+  id: string; tool: string; title: string; summary: string;
+  decision: ApprovalDecision | null; why: ApprovalWhy | null;
+}
+
+/** GET /api/trust: is the PR's author a member or collaborator? unknown = the check failed (treated as outside). */
+export interface Trust {
+  author: string; association: string | null; trusted: boolean; state: "trusted" | "outside" | "unknown";
+}
+
+// ---- GET /api/cost (every total comes from the PR's calls.jsonl) ----
+
+export interface ThreadCost {
+  total_usd: number;   // the thread so far
+  turns: number;       // answers in the thread
+  unknown: boolean;    // part of its cost isn't counted (yet): show "≥"
+  long: boolean;       // 15+ answers or $3+: the "start a fresh thread" hint may show
+}
+
+export interface CostRun {
+  run_id: string; started_at: string | null; cost_usd: number; calls: number;
+  unknown: boolean; running: boolean;
+}
+
+export interface CostSummary {
+  total_usd: number;                                         // analysis + chat + other
+  unknown: boolean;                                          // some cost is unknown: show "≥ $X"
+  running: boolean;                                          // the analysis is still running: show "so far"
+  breakdown: { analysis: number; chat: number; other: number };
+  runs: CostRun[];                                           // analysis runs, oldest first (killed runs included)
+  threads: Record<string, ThreadCost>;                       // by thread id
+  warn_usd: number;                                          // [budget] warn_usd; 0 = off
+  over_budget: boolean;                                      // total_usd > warn_usd: "over your $N limit"
+  long_thread: { turns: number; usd: number };               // the hint's thresholds (15, 3.0)
+}

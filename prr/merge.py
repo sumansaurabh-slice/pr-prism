@@ -148,13 +148,18 @@ def build_findings(pr_dir: Path, ctx: dict) -> tuple[list[dict], list[dict], lis
                  for b in saved_bots.get("found", [])]
     results = (read_json(pr_dir / "recheck.json") or {}).get("results", {})
     current = {f["id"] for f in placed}
-    placed += [_carry_over(r, fls) for rid, r in results.items()
+    carried = [_carry_over(r, fls) for rid, r in results.items()
                if r["kind"] == "finding" and r["status"] == "still-open" and rid not in current]
+    placed += carried
+    carried_ids = {f["id"] for f in carried}
+    done = (read_json(pr_dir / "progress.json") or {}).get("status") in ("complete", "failed")
     for f in placed:
         v = scores.get(f["id"])
-        f["judge_score"] = v["score"] if v else None
-        f["judge_reason"] = v["reason"] if v else None
+        scored = v if v and not judge.failed(v) else None
+        f["judge_score"] = scored["score"] if scored else None
+        f["judge_reason"] = scored["reason"] if scored else None
         f["low_confidence"] = judge.is_low(f, v)
+        f["second_look"] = judge.second_look(f, v, carried=f["id"] in carried_ids, done=done)
         f["status"] = "still-open" if f["id"] in results and results[f["id"]]["status"] == "still-open" else "new"
         f["also_flagged_by"] = sorted({b["bot"] for b in bot_found if bots.same_spot(f, b)})
         f["comment_body"] = findings.comment_body(f)
@@ -333,7 +338,8 @@ def build_analysis(pr_dir: Path) -> dict[str, Any]:
         "ci": ci.public(read_json(pr_dir / "ci.json")),
         "rechecked": rechecked,
         "progress": {k: progress.get(k) for k in ("status", "clusters_total", "clusters_done", "clusters_failed",
-                                                   "message", "started_at", "finished_at", "log") if k in progress},
+                                                   "message", "started_at", "finished_at", "log", "cost_usd")
+                     if k in progress},
         "repair_log": ctx.get("warnings", []) + log,
     }
     return Analysis.model_validate(analysis).model_dump(mode="json")

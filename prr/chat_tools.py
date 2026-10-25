@@ -7,26 +7,24 @@ Comment tools for this one PR:
 config.toml [chat] can_post turns the two posting tools off; can_approve allows APPROVE / REQUEST_CHANGES.
 
 And `approve`, Claude Code's permission prompt tool (`--permission-prompt-tool`): for every action that is not
-on the auto-allow list, it asks the reviewer in the browser (through the review server) and waits for
-Allow / Always allow / Deny. Shell commands that only read (see shellsafe.py) and connector lookups run
-without asking.
+on the auto-allow list, policy.py decides; when it needs the reviewer, the review server shows a card in the
+browser and this waits for Allow / Always allow / Deny. Connector lookups run without asking, except on PRs from
+outside authors; posting asks only in a turn that already touched outside data.
 """
 
 from __future__ import annotations
 
 import json
 import os
-import re
 import sys
 import threading
-import urllib.error
-import urllib.request
+import uuid
 from pathlib import Path
 from typing import Any
 
-from . import anchors, github, shellsafe
+from . import anchors, github, policy
 from .config import Config
-from .drafts import new_draft
+from .drafts import claim_for_post, finish_post, new_draft, release
 from .gitgh import viewer_login
 from .state import StateStore
 from .util import now_iso, read_json
@@ -47,60 +45,18 @@ _LINE_ARGS = {
 _COMMENT_SCHEMA = {"type": "object", "properties": _LINE_ARGS, "required": ["path", "line", "body"]}
 
 
-APPROVAL_WAIT_S = 15 * 60
-# Connector tools that only look things up (getJiraIssue, searchJiraIssuesUsingJql, slack_read_channel, …) run without asking.
-_READ_ONLY_MCP = re.compile(r"(^|_)(get|search|list|read|fetch|lookup|query|find|view)([A-Z_]|$)")
-
-
-def approval_keys(tool: str, inp: dict) -> list[str]:
-    """What "Always allow in this chat" covers: a whole tool, or for shell commands each program that isn't
-    read-only (`awk`, `npm test`), so the next command using only those programs doesn't ask again."""
-    if tool == "Bash":
-        return ["Bash:" + k for k in shellsafe.approval_keys(str(inp.get("command", "")))]
-    return [tool]
-
-
-def auto_allowed(tool: str, inp: dict | None = None) -> bool:
-    if tool.startswith("mcp__"):
-        parts = tool.split("__")
-        return len(parts) >= 3 and bool(_READ_ONLY_MCP.search(parts[2]))
-    if tool == "Bash":
-        return shellsafe.is_read_only(str((inp or {}).get("command", "")))
-    return False
-
-
-def _ask_reviewer(pr_dir: Path, tool: str, inp: dict) -> dict:
-    """Ask through the review server (which shows the card in the chat) and wait for the answer."""
-    info = read_json(pr_dir / "server.json") or {}
-    if not info.get("port"):
-        return {"decision": "deny", "message": "The review app is not running, so nobody can approve this."}
-    base = f"http://127.0.0.1:{info['port']}"
-    data = json.dumps({"thread_id": os.environ.get("PRR_THREAD_ID", ""), "tool_name": tool, "input": inp}).encode()
-    req = urllib.request.Request(f"{base}/api/internal/approvals", data=data, method="POST", headers={
-        "Content-Type": "application/json", "Cookie": f"prr_session={info['token']}", "Origin": base})
-    try:
-        with urllib.request.urlopen(req, timeout=APPROVAL_WAIT_S + 30) as resp:
-            return json.loads(resp.read())
-    except (urllib.error.URLError, OSError, json.JSONDecodeError) as e:
-        return {"decision": "deny", "message": f"Could not ask the reviewer: {e}"}
-
-
 def approve(pr_dir: Path, args: dict) -> dict:
-    """Claude Code's permission prompt. Returns {"behavior": "allow", "updatedInput": …} or a deny with a message."""
+    """Claude Code's permission prompt. Returns {"behavior": "allow", "updatedInput": …} or a deny with a message.
+    policy.decide says what needs a card. Shell commands are decided by the PreToolUse hook; one that still gets
+    here is asked about. Any error denies (fails closed), never a tool error."""
     tool, inp = str(args.get("tool_name", "")), args.get("input") or {}
-    allow = {"behavior": "allow", "updatedInput": inp}
-    if auto_allowed(tool, inp):
-        return allow
-    thread_id = os.environ.get("PRR_THREAD_ID", "")
-    state = StateStore(pr_dir).load()
-    thread = next((t for t in state["threads"] if t["id"] == thread_id), {})
-    if set(approval_keys(tool, inp)) <= set(thread.get("always_allow", [])):
-        return allow
-    answer = _ask_reviewer(pr_dir, tool, inp)
-    if answer.get("decision") in ("allow", "always"):
-        return allow
-    return {"behavior": "deny", "message": answer.get("message") or
-            "The reviewer said no. Don't try this again; ask them what they want instead."}
+    try:
+        out = policy.resolve(tool, inp, pr_dir=pr_dir, thread_id=os.environ.get("PRR_THREAD_ID", ""))
+    except Exception as e:  # noqa: BLE001 — a bug here must never let the action through
+        return {"behavior": "deny", "message": policy.CHECK_FAILED.format(f"{type(e).__name__}: {e}")}
+    if out["decision"] == "allow":
+        return {"behavior": "allow", "updatedInput": inp}
+    return {"behavior": "deny", "message": out.get("message") or policy.DENIED}
 
 
 def tool_list(cfg: Config) -> list[dict]:
@@ -139,14 +95,10 @@ def tool_list(cfg: Config) -> list[dict]:
     return tools
 
 
-def _record(pr_dir: Path, html_url: str, event: str, comments: int, review_id: Any = None, clear_drafts: bool = False) -> None:
-    def apply(s: dict) -> None:
-        s["submitted"].append({"review_id": review_id, "html_url": html_url, "event": event, "comments": comments,
-                               "at": now_iso(), "source": "chat"})
-        if clear_drafts:
-            s["drafts"] = []
-
-    StateStore(pr_dir).update(apply)
+def _record(pr_dir: Path, html_url: str, event: str, comments: int, review_id: Any = None, post_id: str = "") -> None:
+    """Note the post in state.json. For a review with pending comments, also remove the ones it claimed (only those)."""
+    finish_post(StateStore(pr_dir), post_id, {"review_id": review_id, "html_url": html_url, "event": event,
+                                              "comments": comments, "at": now_iso(), "source": "chat"})
 
 
 def call_tool(pr_dir: Path, cfg: Config, name: str, args: dict) -> tuple[str, bool]:
@@ -200,16 +152,28 @@ def call_tool(pr_dir: Path, cfg: Config, name: str, args: dict) -> tuple[str, bo
                 return "GitHub doesn't let the PR author approve or request changes on their own PR.", True
         except Exception:  # noqa: BLE001 — if gh can't tell, let GitHub decide
             pass
-    include = bool(args.get("include_pending"))
-    drafts = StateStore(pr_dir).load()["drafts"] if include else []
+    # Pending comments are claimed first (see drafts.py): one that another post is already sending, or one added
+    # while this one posts, isn't sent twice or lost. When none are left to claim, only the summary goes.
+    store, post_id = StateStore(pr_dir), uuid.uuid4().hex[:12]
+    claim = claim_for_post(store, post_id) if args.get("include_pending") else None
     try:
-        payload, _ = github.build_payload(ctx, drafts, args.get("body", ""), event, pr["head_sha"])
+        payload, _ = github.build_payload(ctx, claim.drafts if claim else [], args.get("body", ""), event, pr["head_sha"])
         res = github.submit(pr["owner"], pr["repo"], pr["number"], payload)
-    except github.ReviewError as e:
-        return str(e), True
-    _record(pr_dir, res.get("html_url", ""), event, len(payload["comments"]), review_id=res.get("id"), clear_drafts=include)
+    except BaseException as e:
+        if claim:
+            release(store, post_id)  # the claimed comments are pending again
+        if isinstance(e, github.ReviewError):
+            return str(e), True
+        raise
+    _record(pr_dir, res.get("html_url", ""), event, len(payload["comments"]), review_id=res.get("id"), post_id=post_id)
     kind = {"COMMENT": "comment", "APPROVE": "approval", "REQUEST_CHANGES": "request for changes"}[event]
-    return (f"Posted the review ({kind}, {len(payload['comments'])} line comments) to GitHub: {res.get('html_url', '')}", False)
+    text = f"Posted the review ({kind}, {len(payload['comments'])} line comments) to GitHub: {res.get('html_url', '')}"
+    if claim and claim.busy:
+        text += f" {claim.busy} pending comments were left out because another post is already sending them."
+    if claim and claim.outdated:
+        text += (f" {claim.outdated} pending comments are from an older commit and were not sent; the reviewer can "
+                 "re-place or delete them in the app.")
+    return text, False
 
 
 def serve_stdio(pr_dir: Path, cfg: Config) -> None:

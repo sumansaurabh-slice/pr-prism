@@ -53,8 +53,10 @@ export function SubmitModal() {
   if (!open) return null;
 
   const close = () => setOpen(false);
+  // Comments from an older commit stay pending and are never sent (the preview leaves them out).
+  const outdated = drafts.filter((d) => d.outdated).length;
   // GitHub requires a body or at least one comment for everything except a bare approval.
-  const empty = event !== "APPROVE" && !body.trim() && drafts.length === 0;
+  const empty = event !== "APPROVE" && !body.trim() && drafts.length - outdated === 0;
 
   const submit = async () => {
     setSubmitting(true);
@@ -111,6 +113,7 @@ export function SubmitModal() {
                         toast("error", `Claude could not write it: ${(e as Error).message}`);
                       } finally {
                         setDrafting(false);
+                        void useStore.getState().loadCost(); // that Claude call costs money too
                       }
                     }}
                   >
@@ -165,6 +168,11 @@ export function SubmitModal() {
                     )}{" "}
                     Posting as <strong>@{preview.viewer}</strong>.
                   </p>
+                  {outdated > 0 && (
+                    <p className="color-muted" title="They are from an older commit. Re-place them in Pending comments to send them.">
+                      {outdated} outdated comment{outdated === 1 ? "" : "s"} won't be sent
+                    </p>
+                  )}
                   {preview.unanchored.length > 0 && (
                     <ul className="unanchored">
                       {preview.unanchored.map((d) => (

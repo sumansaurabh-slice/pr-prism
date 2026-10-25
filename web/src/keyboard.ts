@@ -19,6 +19,11 @@ function isTyping(target: EventTarget | null): boolean {
   return tag === "INPUT" || tag === "TEXTAREA" || tag === "SELECT" || target.isContentEditable;
 }
 
+/** Keys pressed on a chat approval card stay there: no shortcut acts from it, and no key approves anything. */
+function onApprovalCard(target: EventTarget | null): boolean {
+  return target instanceof Element && target.closest(".approval") !== null;
+}
+
 /** Next/previous file in the reading order, skipping files the "Hide …" checkboxes hide. */
 export function stepFile(delta: 1 | -1) {
   const { analysis, prefs, state } = useStore.getState();
@@ -42,12 +47,13 @@ export function useGlobalKeys() {
         if (st.helpOpen) st.setHelpOpen(false);
         else if (st.submitOpen) st.setSubmitOpen(false);
         else if (st.draftsOpen) st.setDraftsOpen(false);
+        else if (st.replacing) st.cancelReplace();
         else if (st.composer) st.closeComposer();
         else if (st.selection) st.setSelection(null);
         return;
       }
       if (e.metaKey || e.ctrlKey || e.altKey) return;
-      if (isTyping(e.target)) return;
+      if (isTyping(e.target) || onApprovalCard(e.target)) return;
       if (st.submitOpen) return;
       const route = parseHash(window.location.hash);
       switch (e.key) {
@@ -100,5 +106,5 @@ export const SHORTCUTS: [string, string][] = [
   ["r", "Mark this file as viewed, or not viewed"],
   ["o", "Go to the overview"],
   ["?", "Show or hide this list"],
-  ["Esc", "Close a window or clear the picked lines"],
+  ["Esc", "Close a window, stop moving a comment, or clear the picked lines"],
 ];

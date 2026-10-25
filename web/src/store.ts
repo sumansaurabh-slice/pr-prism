@@ -1,7 +1,8 @@
 import { create } from "zustand";
 import { api, type NewDraft } from "./api";
 import type {
-  Analysis, ChatThread, ContextChip, Draft, ExistingComment, FileEntry, ReviewState, Side,
+  Analysis, ChatThread, ContextChip, CostSummary, Draft, DraftPlace, ExistingComment, FileEntry, ReviewState, Side,
+  Trust,
 } from "./types";
 
 /** Picked lines. `start` is on `startSide`, `end` is on `side`; they differ only for a range that starts on a
@@ -30,8 +31,13 @@ interface Store {
   analysisError: string | null;
   state: ReviewState;
   githubComments: ExistingComment[];
+  cost: CostSummary | null;      // GET /api/cost: the header total and each chat thread's total
+  trust: Trust | null;           // GET /api/trust: the outside-author notice in the chat and the header
 
   selection: Selection | null;
+  // Re-place pick mode for an outdated comment: the next line picked in this file's diff becomes its new line.
+  replacing: { draftId: string; path: string } | null;
+  replaceErrors: Record<string, string>; // draft id → why its last re-place failed (shown on the card)
   chips: ContextChip[];
   dismissedAutoChip: Record<string, boolean>;
   chatOpen: boolean;
@@ -48,10 +54,16 @@ interface Store {
   loadAnalysis: () => Promise<void>;
   loadState: () => Promise<void>;
   loadGithubComments: () => Promise<void>;
+  loadCost: () => Promise<void>;
+  loadTrust: () => Promise<void>;
   setReviewed: (path: string, reviewed: boolean) => Promise<void>;
   addDraft: (d: NewDraft) => Promise<Draft | null>;
-  updateDraft: (id: string, body: string) => Promise<void>;
+  updateDraft: (id: string, body: string) => Promise<boolean>;
   deleteDraft: (id: string) => Promise<void>;
+  startReplace: (d: Draft) => void;
+  cancelReplace: () => void;
+  placeDraft: (id: string, place: DraftPlace) => Promise<boolean>;
+  dismissRestored: () => Promise<void>;
   dismissSuggestion: (id: string) => Promise<void>;
   restoreSuggestion: (id: string) => Promise<void>;
   setThreads: (threads: ChatThread[]) => void;
@@ -103,8 +115,12 @@ export const useStore = create<Store>((set, get) => ({
   analysisError: null,
   state: emptyState,
   githubComments: [],
+  cost: null,
+  trust: null,
 
   selection: null,
+  replacing: null,
+  replaceErrors: {},
   chips: [],
   dismissedAutoChip: {},
   chatOpen: readLS("prr.chatOpen") !== "0",
@@ -123,11 +139,26 @@ export const useStore = create<Store>((set, get) => ({
   },
 
   loadAnalysis: async () => {
+    void get().loadCost(); // the header total moves with the analysis ("so far" while it runs)
     try {
       const analysis = await api.analysis();
       set({ analysis, analysisError: null });
     } catch (e) {
       set({ analysisError: (e as Error).message });
+    }
+  },
+  loadCost: async () => {
+    try {
+      set({ cost: await api.cost() });
+    } catch {
+      /* optional data: the header just shows no total */
+    }
+  },
+  loadTrust: async () => {
+    try {
+      set({ trust: await api.getTrust() });
+    } catch {
+      /* optional data: no notice (the server still asks before outsider lookups) */
     }
   },
   loadState: async () => {
@@ -173,19 +204,62 @@ export const useStore = create<Store>((set, get) => ({
       return null;
     }
   },
+  // A 409 (the comment is being posted, or is outdated) shows the server's own words in an error toast.
   updateDraft: async (id, body) => {
     try {
       const draft = await api.updateDraft(id, body);
       set((s) => ({ state: { ...s.state, drafts: s.state.drafts.map((d) => (d.id === id ? draft : d)) } }));
+      return true;
     } catch (e) {
       get().toast("error", (e as Error).message);
+      return false;
     }
   },
   deleteDraft: async (id) => {
     try {
       await api.deleteDraft(id);
-      set((s) => ({ state: { ...s.state, drafts: s.state.drafts.filter((d) => d.id !== id) } }));
+      set((s) => ({
+        state: { ...s.state, drafts: s.state.drafts.filter((d) => d.id !== id) },
+        replacing: s.replacing?.draftId === id ? null : s.replacing,
+      }));
     } catch (e) {
+      get().toast("error", (e as Error).message);
+    }
+  },
+  startReplace: (d) =>
+    set((s) => ({
+      replacing: { draftId: d.id, path: d.path },
+      replaceErrors: withoutKey(s.replaceErrors, d.id),
+      selection: null,
+      composer: null,
+    })),
+  cancelReplace: () => set({ replacing: null }),
+  placeDraft: async (id, place) => {
+    try {
+      const draft = await api.replaceDraft(id, place);
+      set((s) => ({
+        state: { ...s.state, drafts: s.state.drafts.map((d) => (d.id === id ? draft : d)) },
+        replacing: null,
+        replaceErrors: withoutKey(s.replaceErrors, id),
+        selection: null,
+      }));
+      get().toast(
+        "success",
+        draft.anchored ? "Comment moved. It will be sent with your review." : "Comment moved. Its line is not in the diff, so it will go in your review summary.",
+      );
+      return true;
+    } catch (e) {
+      set((s) => ({ replacing: null, replaceErrors: { ...s.replaceErrors, [id]: (e as Error).message }, selection: null }));
+      return false;
+    }
+  },
+  dismissRestored: async () => {
+    const prev = get().state.restored;
+    set((s) => ({ state: { ...s.state, restored: undefined } }));
+    try {
+      await api.dismissRestored();
+    } catch (e) {
+      set((s) => ({ state: { ...s.state, restored: prev } }));
       get().toast("error", (e as Error).message);
     }
   },
@@ -259,6 +333,13 @@ export const useStore = create<Store>((set, get) => ({
 }));
 
 // ---------- derived helpers ----------
+
+function withoutKey<T>(rec: Record<string, T>, key: string): Record<string, T> {
+  if (!(key in rec)) return rec;
+  const rest = { ...rec };
+  delete rest[key];
+  return rest;
+}
 
 const fileMapCache = new WeakMap<Analysis, Map<string, FileEntry>>();
 

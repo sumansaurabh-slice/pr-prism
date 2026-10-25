@@ -1,6 +1,6 @@
 import type {
-  Analysis, ApprovalDecision, CIInfo, ChatEvent, ChatThread, ContextChip, Draft, ExistingComment, ReviewEvent, ReviewPreview,
-  ReviewState, Side,
+  Analysis, ApprovalDecision, CIInfo, ChatEvent, ChatThread, ContextChip, CostSummary, Draft, DraftPlace, ExistingComment,
+  ReviewEvent, ReviewPreview, ReviewState, Side, Trust,
 } from "./types";
 
 export class ApiError extends Error {
@@ -42,6 +42,7 @@ export interface NewDraft {
 export const api = {
   analysis: () => request<Analysis>("GET", "/api/analysis"),
   state: () => request<ReviewState>("GET", "/api/state"),
+  cost: () => request<CostSummary>("GET", "/api/cost"),
   diff: (path: string) => request<{ path: string; patch: string }>("GET", `/api/diff?path=${q(path)}`),
   file: (path: string, at: "head" | "base") =>
     request<{ path: string; at: string; content: string }>("GET", `/api/file?path=${q(path)}&at=${at}`),
@@ -50,6 +51,8 @@ export const api = {
   createDraft: (d: NewDraft) => request<Draft>("POST", "/api/drafts", d),
   updateDraft: (id: string, body: string) => request<Draft>("PATCH", `/api/drafts/${q(id)}`, { body }),
   deleteDraft: (id: string) => request<{ ok: boolean }>("DELETE", `/api/drafts/${q(id)}`),
+  replaceDraft: (id: string, place: DraftPlace) => request<Draft>("POST", `/api/drafts/${q(id)}/replace`, place),
+  dismissRestored: () => request<{ ok: boolean }>("POST", "/api/restored/dismiss"),
   dismissSuggestion: (id: string) =>
     request<{ dismissed_suggestions: string[] }>("POST", `/api/suggestions/${q(id)}/dismiss`),
   restoreSuggestion: (id: string) =>
@@ -64,9 +67,11 @@ export const api = {
   createThread: (title?: string) => request<ChatThread>("POST", "/api/chat/threads", { title }),
   deleteThread: (id: string) => request<{ ok: boolean }>("DELETE", `/api/chat/threads/${q(id)}`),
   stopChat: (id: string) => request<{ ok: boolean }>("POST", `/api/chat/threads/${q(id)}/stop`),
+  dismissLongHint: (id: string) => request<{ ok: boolean }>("POST", `/api/chat/threads/${q(id)}/long-hint/dismiss`),
   decideApproval: (id: string, decision: ApprovalDecision) =>
     request<{ ok: boolean }>("POST", `/api/chat/approvals/${q(id)}`, { decision }),
   refreshCI: () => request<CIInfo>("POST", "/api/ci/refresh"),
+  getTrust: () => request<Trust>("GET", "/api/trust"),
 };
 
 /** POST a chat message and stream SSE `data: <json>` frames back to `onEvent`. */

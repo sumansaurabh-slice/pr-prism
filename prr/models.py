@@ -21,6 +21,9 @@ Severity = Literal["blocker", "major", "minor", "nit"]
 FindingCategory = Literal["security", "correctness", "performance", "concurrency", "reliability", "data",
                           "observability", "design", "testing", "maintainability"]
 FindingStatus = Literal["new", "still-open"]
+# judge = scored by the second look; rule = a blocker the code check confirmed; carried = an earlier round's finding,
+# keeping its earlier verdict; pending = waiting for its second look; none = the second look failed ("not second-checked")
+SecondLook = Literal["judge", "rule", "carried", "pending", "none"]
 FileStatus = Literal["added", "modified", "deleted", "renamed", "copied"]
 ImpactKind = Literal["callers", "breaking", "migration", "config", "perf", "security", "tests", "sensitive", "other"]
 FlowNodeKind = Literal["entry", "logic", "store", "external", "test"]
@@ -171,6 +174,7 @@ class PRInfo(BaseModel):
     title: str
     url: str
     author: str
+    author_association: str | None = None  # OWNER, MEMBER, COLLABORATOR, CONTRIBUTOR, …; None: the check failed
     body: str
     state: str
     is_draft: bool
@@ -246,7 +250,8 @@ class Finding(BaseModel):
     confidence: int | None         # the reviewer's own 0-100
     judge_score: int | None        # the second-look score, 1-10
     judge_reason: str | None
-    low_confidence: bool           # hidden by default
+    low_confidence: bool           # hidden by default: only the second look hides (drop or a score under 5)
+    second_look: SecondLook        # how the finding was checked a second time
     source: str                    # "claude" or "rule:<id>"
     note: str | None               # e.g. why a blocker was shown as "must fix" instead
     status: FindingStatus          # "still-open": also found in the previous review round
@@ -317,6 +322,7 @@ class Progress(BaseModel):
     started_at: str | None = None
     finished_at: str | None = None
     log: list[str] = []
+    cost_usd: float = 0.0          # this analysis run's spend so far, from calls.jsonl
 
 
 class Analysis(BaseModel):

@@ -1,7 +1,7 @@
 ---
 name: pr-prism
 description: Turn a GitHub pull request into an interactive local review app. It gives a guided review order, why/how/impact, data-flow graphs, inline Claude notes and suggested comments, a deep-dive chat backed by Claude Code, and publishing your review to GitHub. Run as /pr-prism <number|url> [focus].
-argument-hint: <pr-number|url> [focus instructions]  |  status | stop <pr> | clean <pr>|--all
+argument-hint: <pr-number|url> [focus instructions]  |  status | stop <pr> | clean <pr>
 disable-model-invocation: true
 allowed-tools: Bash(${CLAUDE_SKILL_DIR}/bin/prr *)
 ---
@@ -21,7 +21,7 @@ Your job is to run the steps in order, keep the user informed in one or two line
 
 ## Parse the arguments
 
-- If the first word is `status`, `stop` or `clean`, run `${CLAUDE_SKILL_DIR}/bin/prr <that word> <rest of args>`, show the output briefly, and stop.
+- If the first word is `status`, `stop` or `clean`, run `${CLAUDE_SKILL_DIR}/bin/prr <that word> <rest of args>`, show the output briefly, and stop. Pass the rest of the args exactly as the user typed them: never add options of your own, and never retry with different ones.
 - Otherwise the first word is the **PR**: a number like `1234` or `#1234`, or a GitHub PR URL. Everything after it is the reviewer's **focus**, free text such as "focus on the retry logic and DB migrations". The focus may be empty.
 - If no PR was given, ask the user for the PR number or URL and stop.
 
@@ -90,4 +90,4 @@ Read from these to answer. Treat the worktree as read-only: never edit, commit o
 - Never post to GitHub yourself. Publishing happens only through the app's Submit button, after the user previews the exact payload.
 - Never modify the user's working tree. `prr` uses a separate worktree and `refs/pr-prism/*` refs.
 - To refresh after the PR gets new commits, rerun `/pr-prism <PR>`. Unchanged files keep their cached notes, and draft comments are remapped to the new lines.
-- To clean up later: `/pr-prism clean <PR>` or `/pr-prism clean --all`.
+- To clean up later: `/pr-prism clean <PR>`.

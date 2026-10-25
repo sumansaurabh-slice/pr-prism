@@ -1,4 +1,8 @@
-from prr import blockers, bots, diffparse, findings, judge, recheck
+from prr import blockers, bots, diffparse, findings, judge, merge, recheck
+from prr.claude import ClaudeError
+from prr.config import Config
+from prr.util import write_json
+from tests.test_merge import make_pr_dir
 
 
 def lines_for(tricky_repo, path="src/core.py"):
@@ -130,3 +134,100 @@ def test_rechecked_comment_titles_have_no_markdown():
     assert recheck.comment_entry(bot)["title"] == "Offline gate does not reuse the runtime check"
     assert recheck.comment_entry(human)["title"] == "Why is this here?"
     assert recheck.comment_entry(bot)["anchor"] == "value = compute(raw)"
+
+
+# ---- R3: the second look decides --------------------------------------------------------------
+
+
+def test_confidence_alone_never_hides_a_finding():
+    f = {"severity": "minor", "confidence": 35}
+    keep6 = {"score": 6, "verdict": "keep", "reason": "can't confirm from the hunk"}
+    assert not judge.is_low(f, keep6)                     # kept at 6/10, the reviewer only 35% sure → shown
+    assert judge.is_low(f, keep6, floor=50)               # the eval's old-rule arm
+    assert not judge.is_low(f, None) and judge.is_low(f, None, floor=50)
+    assert judge.is_low(f, {"score": 8, "verdict": "drop", "reason": "r"})   # drop → hidden
+    marker = {"failed": True, "reason": "timed out after 300s", "at": "t"}
+    assert not judge.is_low({"severity": "minor", "confidence": 5}, marker)  # a failed second look never hides
+
+
+def _judge_dir(tmp_path, tricky_repo, status="complete"):
+    """A PR folder with three reviewer findings, a confirmed blocker and a finding carried over from the last round."""
+    ctx = make_pr_dir(tmp_path, tricky_repo["diff"])
+    (tmp_path / "diff.patch").write_text(tricky_repo["diff"])
+    write_json(tmp_path / "clusters.json", {"clusters": [{"id": "c1", "items": [
+        {"path": "src/core.py", "part": 1, "parts": 1, "key": "k1"}]}]})
+
+    def finding(title, anchor, confidence):
+        return {"title": title, "category": "correctness", "severity": "minor", "side": "RIGHT", "anchor": anchor,
+                "line": 1, "impact": "i", "fix": "f", "suggestion": None, "why": "w", "evidence": "e",
+                "confidence": confidence}
+
+    blocker = {"rule_id": "hardcoded-secret", "title": "Secret in code", "side": "RIGHT", "anchor": "inserted B",
+               "line": 22, "impact": "i", "fix": "f", "evidence_quote": "inserted B", "path": "src/core.py",
+               "problem": None}
+    write_json(tmp_path / "partials" / "k1.json", {"annotation": {
+        "path": "src/core.py", "summary": "s", "risk": "high", "look_for": [], "changed_symbols": [], "notes": [],
+        "findings": [finding("Shy but real", "line 5 changed", 35), finding("Rejected guess", "inserted A", 90),
+                     finding("Judge broke on this", "line 9", 40)],
+    }, "blockers": [blocker], "flow_edges": []})
+    write_json(tmp_path / "recheck.json", {"results": {"earlier-1": {
+        "id": "earlier-1", "kind": "finding", "status": "still-open", "title": "Earlier problem", "path": "src/core.py",
+        "side": "RIGHT",
+        "anchor": "line 12", "line": 12, "category": "correctness", "severity": "minor",
+        "how": "the same line is still in the code"}}})
+    write_json(tmp_path / "progress.json", {"status": status})
+    return {f["title"]: f["id"] for f in merge.placed_findings(tmp_path, ctx)}
+
+
+def test_second_look_labels_and_what_is_hidden(tmp_path, tricky_repo):
+    ids = _judge_dir(tmp_path, tricky_repo)
+    write_json(tmp_path / "judge.json", {
+        ids["Shy but real"]: {"score": 6, "verdict": "keep", "reason": "plausible"},
+        ids["Rejected guess"]: {"score": 2, "verdict": "drop", "reason": "the code already checks this"},
+        ids["Judge broke on this"]: {"failed": True, "reason": "timed out after 300s", "at": "t"},
+    })
+    found = {f["title"]: f for f in merge.build_analysis(tmp_path)["findings"]}
+    shy, rejected, broke = found["Shy but real"], found["Rejected guess"], found["Judge broke on this"]
+    assert (shy["second_look"], shy["low_confidence"], shy["confidence"]) == ("judge", False, 35)
+    assert (rejected["second_look"], rejected["low_confidence"]) == ("judge", True)
+    assert (broke["second_look"], broke["low_confidence"], broke["judge_score"]) == ("none", False, None)
+    assert found["Secret in code"]["second_look"] == "rule" and not found["Secret in code"]["low_confidence"]
+    assert found["Earlier problem"]["second_look"] == "carried"
+
+
+def test_findings_wait_for_their_second_look_while_the_run_is_going(tmp_path, tricky_repo):
+    _judge_dir(tmp_path, tricky_repo, status="annotating")
+    found = {f["title"]: f for f in merge.build_analysis(tmp_path)["findings"]}
+    assert found["Shy but real"]["second_look"] == "pending" and not found["Shy but real"]["low_confidence"]
+    write_json(tmp_path / "progress.json", {"status": "complete"})   # finished with no verdict and no marker
+    found = {f["title"]: f for f in merge.build_analysis(tmp_path)["findings"]}
+    assert found["Shy but real"]["second_look"] == "none"
+
+
+def test_judge_failure_is_marked_and_retried_next_run(monkeypatch):
+    found = [{"id": f"f{i}", "path": "a.py", "side": "RIGHT", "line": 1, "severity": "minor", "category": "c",
+              "title": "t", "impact": "", "fix": "", "why": "", "evidence": ""} for i in range(3)]
+    found.append({**found[0], "id": "b1", "severity": "blocker"})
+    calls: list[str] = []
+
+    def failing(prompt, schema, **kw):
+        calls.append(prompt)
+        raise ClaudeError("timed out after 300s")
+
+    monkeypatch.setattr(judge, "run_structured", failing)
+    cache = judge.run(found, {}, Config(), None, {}, lambda m: None)
+    assert set(cache) == {"f0", "f1", "f2"}                    # blockers are never sent to the judge
+    assert all(v["failed"] and "timed out" in v["reason"] and v["at"] for v in cache.values())
+    assert judge.second_look(found[0], cache["f0"]) == "none"
+
+    def scoring(prompt, schema, **kw):
+        calls.append(prompt)
+        return {"scores": [{"id": "f0", "score": 7, "verdict": "keep", "reason": "ok"},
+                           {"id": "f1", "score": 3, "verdict": "keep", "reason": "weak"}]}, None
+
+    monkeypatch.setattr(judge, "run_structured", scoring)
+    cache = judge.run(found, {}, Config(), None, cache, lambda m: None)   # the next run tries the marked ones again
+    assert len(calls) == 2
+    assert cache["f0"] == {"score": 7, "verdict": "keep", "reason": "ok"} and cache["f1"]["score"] == 3
+    assert cache["f2"]["failed"] and "no score" in cache["f2"]["reason"]  # left out by the judge → still marked
+    assert judge.run(found[:2], {}, Config(), None, cache, lambda m: None) is cache and len(calls) == 2

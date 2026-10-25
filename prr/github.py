@@ -4,12 +4,14 @@ from __future__ import annotations
 
 import json
 import os
+import subprocess
 from typing import Any
 
 from . import anchors
 from .gitgh import CommandError, gh, gh_json
 
 EVENTS = ("COMMENT", "APPROVE", "REQUEST_CHANGES", "PENDING")
+POST_TIMEOUT_S = 120  # well under drafts.CLAIM_EXPIRY_S, so a hung post gives its drafts back before the claim expires
 
 
 class ReviewError(RuntimeError):
@@ -23,7 +25,9 @@ def build_payload(ctx: dict, drafts: list[dict], body: str, event: str, commit_i
     files = {f["path"]: f for f in ctx["files"]}
     comments, unanchored = [], []
     for d in drafts:
-        if d.get("outdated") or not d.get("anchored"):
+        if d.get("outdated"):  # from an older commit: never sent until the reviewer re-places it
+            continue
+        if not d.get("anchored"):
             unanchored.append(d)
             continue
         c: dict[str, Any] = {"path": d["path"], "body": d["body"], "line": d["line"], "side": d["side"]}
@@ -39,7 +43,7 @@ def build_payload(ctx: dict, drafts: list[dict], body: str, event: str, commit_i
             link = anchors.permalink(ctx["pr"], files.get(d["path"]), d["path"], d["side"], d["line"], start)
             loc = f"{d['path']}#L{start}-L{d['line']}" if start else f"{d['path']}#L{d['line']}"
             quoted = d["body"].strip().replace("\n", "\n  ")
-            lines.append(f"- [`{loc}`]({link}){' (outdated)' if d.get('outdated') else ''}:\n  {quoted}")
+            lines.append(f"- [`{loc}`]({link}):\n  {quoted}")
         full_body = (full_body + "\n" + "\n".join(lines)).strip()
     payload: dict[str, Any] = {"commit_id": commit_id, "body": full_body, "comments": comments}
     if event != "PENDING":
@@ -58,7 +62,10 @@ def _post(endpoint: str, payload: dict, what: str) -> dict:
     if _dry_run():
         return {"id": 0, "html_url": f"https://github.com/dry-run/{endpoint}"}
     try:
-        out = gh("api", "-X", "POST", endpoint, "--input", "-", input=json.dumps(payload))
+        out = gh("api", "-X", "POST", endpoint, "--input", "-", input=json.dumps(payload), timeout=POST_TIMEOUT_S)
+    except subprocess.TimeoutExpired as e:
+        raise ReviewError(f"GitHub didn't answer within {POST_TIMEOUT_S} seconds, so the {what} may or may not be "
+                          "on the PR. Check the PR on GitHub before posting again.") from e
     except CommandError as e:
         detail = e.stdout.strip() or e.stderr.strip()
         try:
