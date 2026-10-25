@@ -12,11 +12,13 @@ is gone (or is now hidden by the second look) stays listed as `dropped`, the end
   2. deep-check findings
   3. failing CI checks this PR caused or may have caused (and failures Claude couldn't explain)
   4. other review tools' findings Claude agrees with
-  5. minor findings
+  5. minor findings, and questions for the author (category `intent`, always minor)
   6. risk notes in high-risk files
   7. risk notes in medium-risk files
   8. "things to check" (look_for) of high-risk files that have no other stop
   9. nit findings
+A finding's question is its own `question` (the deep check's yes/no question), else "Is this a real problem? <title>";
+a question for the author is asked as it is: its title.
 Findings the second look hides are stops too, marked `low_confidence`. They sit outside the cap and the counts: the
 Review view lists them only when its "Include low-confidence findings" switch is on.
 
@@ -51,7 +53,7 @@ from typing import Any
 from . import anchors
 from .diffparse import FileDiff
 from .drafts import is_posting, new_draft
-from .findings import norm
+from .findings import INTENT, norm
 from .models import ReviewSummary, Stop
 
 MAX_STOPS = 12
@@ -149,6 +151,8 @@ def first_change(file: dict, diffs: dict[str, FileDiff] | None) -> tuple[str, in
 
 
 def _finding_prio(f: dict) -> int:
+    if f["category"] == INTENT:
+        return 5  # a question for the author ranks with minor findings, whoever found it
     if f["severity"] in ("blocker", "major"):
         return 1
     if "deep-check" in (f.get("sources") or []):
@@ -156,12 +160,18 @@ def _finding_prio(f: dict) -> int:
     return 5 if f["severity"] == "minor" else 9
 
 
+def _finding_question(f: dict) -> str:
+    if f["category"] == INTENT:
+        return f["title"]  # already the question, e.g. "Why was the retry removed?"
+    return f.get("question") or f"Is this a real problem? {f['title']}"
+
+
 def _from_findings(analysis: dict, files: dict[str, dict], diffs: dict[str, FileDiff] | None) -> list[dict]:
     out = []
     for f in analysis["findings"]:
         out.append(_new(
             "finding", f["path"], f["side"], f["line"], anchor=f["anchor"], key=f"{f['category']}|{norm(f['anchor'])}",
-            question=f.get("question") or f"Is this a real problem? {f['title']}", prio=_finding_prio(f),
+            question=_finding_question(f), prio=_finding_prio(f),
             start_line=f["start_line"], scenario=list(f.get("scenario") or []),
             claude_view=_join(f.get("impact"), f.get("why")), confidence=f.get("confidence"),
             judge_score=f.get("judge_score"), second_look=f.get("second_look"), severity=f["severity"],

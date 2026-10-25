@@ -16,7 +16,7 @@ import {
 import { REVIEW_END, fileHref, navigate, reviewHref } from "../router";
 import { fmtMinutes, splitPath, useStore, type ToastAction } from "../store";
 import type { Draft, Severity, Side, Stop, Verdict } from "../types";
-import { DraftCard, SEVERITY_TEXT, SeverityLabel, diffCache, diffKey, languageOf, refractorAdapter } from "./FileView";
+import { DraftCard, FindingLabel, INTENT, SEVERITY_TEXT, diffCache, diffKey, languageOf, refractorAdapter } from "./FileView";
 
 // ------------------------------------------------------------------ shared actions (keys, toasts, the end screen)
 
@@ -594,8 +594,8 @@ export function ReviewStop({
           <InlineText text={stop.question} />
         </h2>
         <div className="label-list">
-          {severity && <SeverityLabel severity={severity} />}
-          {stop.category && <span className="Label Label--secondary">{stop.category}</span>}
+          {severity && <FindingLabel severity={severity} category={stop.category} />}
+          {stop.category && stop.category !== INTENT && <span className="Label Label--secondary">{stop.category}</span>}
           <span className="Label Label--secondary">{KIND_TEXT[stop.kind]}</span>
           {droppedHere && (
             <span className="Label Label--attention" title="Claude's second look no longer lists this. You can still answer it or skip it.">

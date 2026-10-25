@@ -7,7 +7,8 @@ import { splitPath, useStore } from "../store";
 import type { CICheck, Finding, Severity } from "../types";
 import { findingAnswer, type FindingAnswer } from "../answers";
 import {
-  AnswerLabel, commentHref, DeepCheckDetail, DeepCheckLabel, openComment, SecondLookLabel, SeverityLabel,
+  AnswerLabel, commentHref, DeepCheckDetail, DeepCheckLabel, FindingLabel, INTENT, openComment,
+  SecondLookLabel, SeverityLabel,
 } from "./FileView";
 import { RefList } from "./Overview";
 
@@ -47,7 +48,7 @@ function FindingRow({ f, answer, muted }: { f: Finding; answer: FindingAnswer; m
   return (
     <>
       <div className={`Box-row finding-row${muted ? " answered-not" : ""}`}>
-        <SeverityLabel severity={f.severity} />
+        <FindingLabel severity={f.severity} category={f.category} />
         <a className="finding-row-title finding-row-link" href={fileHref(f.path, f.line, f.side)}>
           {f.title}
         </a>
@@ -92,7 +93,10 @@ export function FindingsBox() {
   const low = findings.length - shown.length;
   if (!findings.length) return null;
   const open = shown.filter((f) => !saidNot(f));
-  const counts = (["blocker", "major", "minor", "nit"] as Severity[]).map((s) => [s, open.filter((f) => f.severity === s).length] as const);
+  // Questions for the author are counted on their own, not as "Should fix".
+  const problems = open.filter((f) => f.category !== INTENT);
+  const counts = (["blocker", "major", "minor", "nit"] as Severity[]).map((s) => [s, problems.filter((f) => f.severity === s).length] as const);
+  const asks = open.length - problems.length;
   const list = [...shown].sort((a, b) => Number(saidNot(a)) - Number(saidNot(b)) || RANK[a.severity] - RANK[b.severity]);
   const visible = showAll ? list : list.slice(0, 8);
   return (
@@ -104,6 +108,11 @@ export function FindingsBox() {
             <SeverityLabel severity={s} /> {n}
           </span>
         ))}
+        {asks > 0 && (
+          <span className="finding-count">
+            <FindingLabel severity="minor" category={INTENT} /> {asks}
+          </span>
+        )}
         {low > 0 && <span className="color-muted small">+{low} low confidence (hidden)</span>}
       </div>
       {visible.map((f) => (

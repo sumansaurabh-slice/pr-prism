@@ -66,6 +66,8 @@ export interface Finding {
   anchored: boolean;            // on a diff line; false = shown at file level, posted inside the review summary
   anchor: string;
   severity: Severity;           // blocker = blocks merge (rule-checked), major = must fix, minor = should fix, nit = could improve
+  // "intent" = a question for the author ("Why was X removed?"): always minor, shown as "Question for the author";
+  // its title is the question and comment_body the polite question to post
   category: string; title: string; impact: string; fix: string;
   suggestion: string | null; one_click: boolean;
   why: string; evidence: string;

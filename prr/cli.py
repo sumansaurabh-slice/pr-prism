@@ -16,6 +16,7 @@ from pathlib import Path
 
 from . import cost, install, supervise
 from .config import REPO_DIR, WEB_DIST, Config, load_config, pr_dir, version
+from .findings import INTENT
 from .gitgh import CommandError, PRRef, git, parse_pr_arg, repo_root
 from .util import read_json
 
@@ -185,9 +186,12 @@ def _print_summary(a: dict, d: Path) -> None:
         mins = sum(next((f["minutes"] for f in a["files"] if f["path"] == cf["path"]), 0) for cf in ch["files"])
         print(f"  {i}. {ch['title']} ({len(ch['files'])} files, ~{mins:.0f} min)")
     shown = [f for f in a["findings"] if not f["low_confidence"]]
-    count = {s: sum(1 for f in shown if f["severity"] == s) for s in ("blocker", "major", "minor", "nit")}
+    asks = sum(1 for f in shown if f["category"] == INTENT)
+    count = {s: sum(1 for f in shown if f["severity"] == s and f["category"] != INTENT)
+             for s in ("blocker", "major", "minor", "nit")}
     print(f"Findings: {count['blocker']} blocking merge, {count['major']} must fix, {count['minor']} should fix, "
-          f"{count['nit']} could improve ({len(a['findings']) - len(shown)} more hidden by the second look).")
+          f"{count['nit']} could improve, {asks} question{'s' if asks != 1 else ''} for the author "
+          f"({len(a['findings']) - len(shown)} more hidden by the second look).")
     prog = a["progress"]
     if prog.get("deepcheck_total"):
         deep = sum(1 for f in shown if "deep-check" in f.get("sources", []))

@@ -136,7 +136,8 @@ def build(ctx: dict, diffs: dict[str, FileDiff], budget_tokens: int, max_files: 
     return clusters
 
 
-def cache_key(ctx_file: dict, item: Item, prompt_version: str, focus: str | None) -> str:
+def cache_key(ctx_file: dict, item: Item, prompt_version: str, focus: str | None, rules: str = "") -> str:
+    """sha256 of the file and its blobs, the part, the prompt version, the focus and the repo rules' hash."""
     raw = "|".join([ctx_file["path"], ctx_file["base_blob"] or "", ctx_file["head_blob"] or "",
-                    f"{item.part}/{item.parts}", prompt_version, focus or ""])
+                    f"{item.part}/{item.parts}", prompt_version, focus or "", rules])
     return hashlib.sha256(raw.encode()).hexdigest()[:32]

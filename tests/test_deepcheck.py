@@ -13,7 +13,7 @@ from pathlib import Path
 import pytest
 
 import prr.claude
-from prr import analyze, cli, deepcheck, diffparse, findings, judge, ledger, merge
+from prr import analyze, cli, deepcheck, diffparse, findings, judge, ledger, merge, reporules
 from prr.cluster import CHARS_PER_TOKEN
 from prr.config import Config
 from prr.models import Analysis, Finding
@@ -219,6 +219,40 @@ def test_without_chapters_the_file_groups_are_the_areas():
         assert chosen[0].title == "Group 2: a.py, d.py" and skipped == []
 
 
+def test_removed_behavior_and_contracts_between_modules_score_higher():
+    ctx = ctx_of("api/orders.py", "web/orders.ts", "api/tax.py", "api/cart.py", "api/old.py", "api/util.py",
+                 "api/flag.py")
+    hunk = {"id": "h1", "old_start": 10, "old_lines": 14, "new_start": 10, "new_lines": 4}   # removes 10 lines
+    files = {f["path"]: f for f in ctx["files"]}
+    files["api/cart.py"]["hunks"] = [hunk]
+    files["api/flag.py"]["hunks"] = [{**hunk, "old_lines": 10, "new_lines": 4}]            # 6: under the bar
+    files["api/old.py"]["status"] = "deleted"
+    assert [deepcheck.removes_behavior(f) for f in ctx["files"]] == [False, False, False, True, True, False, False]
+
+    risk = {p: "medium" for p in files}
+    impact = {"symbols": [{"symbol": "rate", "defined_in": "api/tax.py", "count": 3, "too_common": False},
+                          {"symbol": "id", "defined_in": "api/util.py", "count": 900, "too_common": True},
+                          {"symbol": "nobody", "defined_in": "api/flag.py", "count": 0, "too_common": False}]}
+    synthesis = {"chapters": [chapter("plain", "api/util.py"),                     # 1
+                              chapter("ends", "api/orders.py", "web/orders.ts"),   # 1 + 1, two top folders: +2
+                              chapter("tax", "api/tax.py"),                        # 1, used outside the PR: +2
+                              chapter("cart", "api/cart.py"),                      # 1, removes 10 lines: +2
+                              chapter("gone", "api/old.py"),                       # 1, deleted: +2
+                              chapter("flag", "api/flag.py")]}                     # 1
+    chosen, skipped = deepcheck.pick_targets([], synthesis, ctx, risk=risk, impact=impact)
+    assert [(t.id, t.score) for t in chosen] == [("chapter:ends", 4), ("chapter:tax", 3), ("chapter:cart", 3),
+                                                 ("chapter:gone", 3), ("chapter:plain", 1)]
+    assert [(t.id, t.score) for t in skipped] == [("chapter:flag", 1)]           # 5 areas by default
+    without, _ = deepcheck.pick_targets([], synthesis, ctx, risk=risk)            # no impact.json: no "tax" bonus
+    assert dict((t.id, t.score) for t in without)["chapter:tax"] == 1
+
+    calm = {p: "low" for p in files}                                           # nothing risky: never an area,
+    assert deepcheck.pick_targets([], synthesis, ctx, risk=calm, impact=impact) == ([], [])   # whatever it removes
+    calm["api/util.py"] = "medium"
+    two = {"chapters": [chapter("both", "api/util.py", "api/cart.py")]}        # … but a risky one gets the points
+    assert [(t.id, t.score) for t in deepcheck.pick_targets([], two, ctx, risk=calm)[0]] == [("chapter:both", 3)]
+
+
 def test_skipped_risky_areas_are_named_in_the_warnings(tmp_path, tricky_repo, monkeypatch):
     fake = FakeClaude(monkeypatch)
     pr, ctx = setup_pr(tmp_path, tricky_repo, areas=("core", "rename", "crlf"))
@@ -270,14 +304,44 @@ def test_the_area_prompt(tmp_path, tricky_repo):
     view = {f["path"]: f for f in merge.build_analysis(pr)["files"]}
     already = [{"severity": "major", "path": "src/core.py", "line": 5, "title": "Line 5 can be empty"}]
     text = deepcheck.target_prompt(ctx, t, view, diffs, {"src/core.py": "high"}, already, "the retry logic",
-                                   "Use tabs.")
+                                   "The rules are in `/x/repo_rules.md`.")
     assert analyze.style_rules() in text and "10th-class" in text
     assert re.findall(r"\{\{([A-Z_]+)\}\}", text) == []
     assert "example values" in text and "yes/no question" in text
     for part in ("## The area to check: Core logic", "Goal: Know the core change.", "then to the database",
-                 "the retry logic", "Use tabs.", "R5 +line 5 changed", "- [major] src/core.py:5 Line 5 can be empty",
-                 "→ src/core.py", "Changes src/core.py."):
+                 "the retry logic", "The rules are in `/x/repo_rules.md`.", "R5 +line 5 changed",
+                 "- [major] src/core.py:5 Line 5 can be empty", "→ src/core.py", "Changes src/core.py."):
         assert part in text, part
+    assert reporules.NONE in deepcheck.target_prompt(ctx, t, view, diffs, {}, [], None)
+
+
+def test_the_area_prompt_asks_about_copies_hand_offs_steps_old_data_and_removals(tmp_path, tricky_repo):
+    pr, ctx = setup_pr(tmp_path, tricky_repo, areas=("core",))
+    t = deepcheck.Target("chapter:core", "Core logic", ["src/core.py"])
+    diffs = {f.path: f for f in diffparse.parse(tricky_repo["diff"])}
+    text = deepcheck.target_prompt(ctx, t, {}, diffs, {}, [], None)
+    steps = text.split("## How to check", 1)[1].split("## How the diff is shown", 1)[0]
+    for part in (
+            "**Read the repo's own rules first**",
+            # copies of the same rule, across languages, found by their values, cited in evidence_refs
+            "**Copies of the same rule.** For each rule, list, constant, limit, formula, format or check",
+            "Grep the whole folder for other copies", "in other languages", "a backend and its frontend",
+            "in tests, fixtures, prompt text, config files, docs and scripts", "by its distinctive values",
+            "Report a copy that now differs", "a later change would have to remember to update both",
+            "Put each other copy's `path` and `line` in `evidence_refs`",
+            # data handed between modules
+            "**Data handed between modules.** List each producer and consumer pair the PR changes",
+            "Does the producer still give every one",
+            # multi-step flows
+            "**Steps that follow each other.**", "refusal, error, default value or partial result reach a later step",
+            # old data
+            "**Old data.**", "What happens to each one under the new rules?",
+            # removed behavior
+            "**Removed behavior.**", "find what relied on it"):
+        assert part in steps, part
+    assert "`repo-rule`" in text
+    annotate = analyze._template("annotate.md", None)
+    assert "**Look for copies of what changed.**" in annotate and "the other copy's `path:line` in `evidence`" in annotate
 
 
 # --------------------------------------------------------------------------------------
@@ -341,17 +405,18 @@ def test_twins_merge_their_sources_and_keep_the_deep_check_text(tricky_repo):
 # --------------------------------------------------------------------------------------
 
 
-def test_cache_key_changes_with_model_focus_prompt_and_code(monkeypatch):
+def test_cache_key_changes_with_model_focus_prompt_rules_and_code(monkeypatch):
     ctx = ctx_of("a.py", "b.py")
     t = deepcheck.Target("chapter:x", "X", ["a.py", "b.py"])
     key = deepcheck.cache_key(t, ctx, "opus", None)
     assert deepcheck.cache_key(deepcheck.Target("other", "Y", ["b.py", "a.py"]), ctx, "opus", None) == key
     assert deepcheck.cache_key(t, ctx, "sonnet", None) != key
     assert deepcheck.cache_key(t, ctx, "opus", "retries") != key
+    assert deepcheck.cache_key(t, ctx, "opus", None, "rules-hash") != key   # the repo's rules changed
     ctx["files"][1]["head_blob"] = "h1"
     assert deepcheck.cache_key(t, ctx, "opus", None) != key
     ctx["files"][1]["head_blob"] = "h0"
-    monkeypatch.setattr(deepcheck, "PROMPT_VERSION", "2")
+    monkeypatch.setattr(deepcheck, "PROMPT_VERSION", deepcheck.PROMPT_VERSION + "-next")
     assert deepcheck.cache_key(t, ctx, "opus", None) != key
 
 
@@ -516,10 +581,10 @@ def test_parallel_second_looks_never_lose_each_others_scores(tmp_path, tricky_re
     snapshots: dict[str, set[str]] = {}
     real_run, real_merge = judge.run, deepcheck.JudgeStore.merge
 
-    def judge_run(found, diffs, cfg, cwd, cache, echo, ledger=None):
+    def judge_run(found, diffs, cfg, cwd, cache, echo, ledger=None, **kw):
         who = "A" if found[0]["title"] == "A problem" else "B"
         snapshots[who] = set(cache)
-        out = real_run(found, diffs, cfg, cwd, cache, echo, ledger=ledger)
+        out = real_run(found, diffs, cfg, cwd, cache, echo, ledger=ledger, **kw)
         if who == "A":
             a_judged.set()
         return out
@@ -632,12 +697,12 @@ def test_deep_check_settings_are_read_from_config(tmp_path, monkeypatch):
     assert config.load_config().analysis.deepcheck is False
     defaults = Config()
     assert (defaults.models.deepcheck, defaults.analysis.deepcheck, defaults.analysis.deepcheck_max_targets,
-            defaults.analysis.deepcheck_target_timeout_s, defaults.analysis.deepcheck_budget_s) == ("opus", True, 4, 600, 900)
+            defaults.analysis.deepcheck_target_timeout_s, defaults.analysis.deepcheck_budget_s) == ("opus", True, 5, 600, 900)
 
 
 def test_the_repo_config_lists_every_deep_check_key():
     text = (Path(__file__).resolve().parents[1] / "config.toml").read_text()
-    for key in ('deepcheck = "opus"', "deepcheck = true", "deepcheck_max_targets = 4",
+    for key in ('deepcheck = "opus"', "deepcheck = true", "deepcheck_max_targets = 5",
                 "deepcheck_target_timeout_s = 600", "deepcheck_budget_s = 900"):
         assert key in text, key
 
