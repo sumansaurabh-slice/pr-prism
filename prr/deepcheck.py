@@ -2,6 +2,9 @@
 
 - `pick_targets` ranks the summary's chapters, plus flows that touch high-risk files, by risk. Areas that share most
   of their files are checked as one, and only the riskiest few are kept. Without chapters, the file groups are used.
+  Besides each file's risk, a risky area scores higher when it removes behavior (a big removal, or a deleted file)
+  and when it is a contract between modules (files in two or more top-level folders, or a changed name that code
+  outside the PR uses).
 - Each area is one structured call with Read/Grep/Glob inside the worktree, plus the repo's own rules
   (<pr_dir>/repo_rules.md, read at the merge-base by prr/reporules.py), which it is told to Read. A finding must give
   a concrete scenario with example values, one yes/no question for the reviewer, and the spots it read
@@ -16,9 +19,9 @@
 
 Files in the PR folder:
 - deepcheck.json: `cache` (area results by prompt version, focus, model, the repo rules' hash and the area's file
-  blobs) and `run`, this
-  analysis run's areas. An area's status is waiting | running | checked | nothing-found | failed | stopped |
-  skipped; checked and nothing-found both count as checked, and an area past the cap is skipped with `capped`.
+  blobs) and `run`, this analysis run's areas. An area's status is waiting | running | checked | nothing-found |
+  failed | stopped | skipped; checked and nothing-found both count as checked, and an area past the cap is skipped
+  with `capped`.
 - placed_pre_deepcheck.json: the findings just before the deep check merged, shaped like analysis.json findings.
   Eval's "deep check off" view comes from it.
 """
@@ -31,7 +34,7 @@ import threading
 import time
 from collections import Counter
 from concurrent.futures import ThreadPoolExecutor, wait
-from dataclasses import dataclass
+from dataclasses import dataclass, field
 from pathlib import Path
 from typing import Any
 
@@ -55,6 +58,9 @@ DIFF_TOKENS = 30_000    # the diff shown per area; the rest is listed by path
 RISK_POINTS = {"high": 3, "medium": 1}
 RISK_ORDER = {"high": 0, "medium": 1, "low": 2}
 SENSITIVE_POINTS = 2
+REMOVED_LINES = 8       # a hunk that removes at least this many more lines than it adds removes behavior
+REMOVED_POINTS = 2      # … per file with such a hunk, or deleted outright
+CONTRACT_POINTS = 2     # once per area that is a contract between modules
 MERGE_OVERLAP = 0.5     # two areas sharing this share of the smaller one's files are checked as one
 SKIP_CATEGORIES = ("docs", "test", "generated")
 CHECKED = ("checked", "nothing-found")
@@ -78,11 +84,38 @@ class Target:
     high: bool = False      # has a high-risk file
 
 
-def _score(t: Target, risk: dict[str, str | None], sensitive: set[str], shown: Counter) -> Target:
-    """High-risk file 3, medium 1, sensitive path +2, each finding shown on it +1."""
-    t.score = sum(RISK_POINTS.get(risk.get(p) or "", 0) + (SENSITIVE_POINTS if p in sensitive else 0) + shown[p]
-                  for p in t.files)
-    t.high = any(risk.get(p) == "high" for p in t.files)
+@dataclass
+class Signals:
+    """What makes a file, or an area, worth a deep check."""
+    risk: dict[str, str | None]
+    sensitive: set[str] = field(default_factory=set)
+    shown: Counter = field(default_factory=Counter)       # findings shown per file
+    removed: set[str] = field(default_factory=set)        # files that remove behavior
+    used_outside: set[str] = field(default_factory=set)   # files that change a name code outside the PR uses
+
+
+def removes_behavior(f: dict) -> bool:
+    """A deleted file, or a hunk that removes REMOVED_LINES or more lines than it adds (context.json's hunks)."""
+    return f.get("status") == "deleted" or any(
+        (h.get("old_lines") or 0) - (h.get("new_lines") or 0) >= REMOVED_LINES for h in f.get("hunks") or [])
+
+
+def _top(path: str) -> str:
+    return path.split("/", 1)[0] if "/" in path else ""
+
+
+def _score(t: Target, sig: Signals) -> Target:
+    """Per file: high risk 3, medium 1, sensitive path +2, each finding shown on it +1. Then, only for an area that
+    already has points (an area with nothing risky is never checked): +2 per file that removes behavior, and +2 once
+    when the area is a contract between modules (files in 2+ top-level folders, or a changed name used outside the
+    PR)."""
+    t.score = sum(RISK_POINTS.get(sig.risk.get(p) or "", 0) + (SENSITIVE_POINTS if p in sig.sensitive else 0)
+                  + sig.shown[p] for p in t.files)
+    if t.score:
+        t.score += REMOVED_POINTS * len(sig.removed & set(t.files))
+        if len({_top(p) for p in t.files}) > 1 or sig.used_outside & set(t.files):
+            t.score += CONTRACT_POINTS
+    t.high = any(sig.risk.get(p) == "high" for p in t.files)
     return t
 
 
@@ -153,23 +186,28 @@ def _unique_ids(targets: list[Target]) -> list[Target]:
 
 
 def pick_targets(placed: list[dict], synthesis: dict | None, ctx: dict, *, risk: dict[str, str | None],
-                 clusters: dict | None = None, max_targets: int = 4) -> tuple[list[Target], list[Target]]:
+                 clusters: dict | None = None, impact: dict | None = None,
+                 max_targets: int = 5) -> tuple[list[Target], list[Target]]:
     """(the areas to check, riskiest first; the risky areas past the cap). Areas with nothing risky are left out.
 
     `placed` are the findings so far (annotate and blockers, after the first second look); `risk` is each file's
-    risk from the file notes; `clusters` is clusters.json, used when the summary has no chapters."""
+    risk from the file notes; `clusters` is clusters.json, used when the summary has no chapters; `impact` is
+    impact.json (changed names, and how often code outside the PR uses them)."""
     from .merge import PathResolver
 
     resolve = PathResolver([f["path"] for f in ctx["files"]])
     eligible = {f["path"] for f in ctx["files"]
                 if f["category"] not in SKIP_CATEGORIES and not f["generated"] and not f["binary"] and f["hunks"]}
-    sensitive = {f["path"] for f in ctx["files"] if f["sensitive"]}
-    shown = Counter(f["path"] for f in placed if not f.get("low_confidence"))
+    sig = Signals(risk, sensitive={f["path"] for f in ctx["files"] if f["sensitive"]},
+                  shown=Counter(f["path"] for f in placed if not f.get("low_confidence")),
+                  removed={f["path"] for f in ctx["files"] if removes_behavior(f)},
+                  used_outside={s["defined_in"] for s in (impact or {}).get("symbols", [])
+                                if s.get("count") and not s.get("too_common")})
     targets = _from_synthesis(synthesis or {}, resolve, eligible, risk) if (synthesis or {}).get("chapters") else []
     if not targets:
         targets = _from_clusters(clusters or {}, eligible)
-    ranked = _rank([_score(t, risk, sensitive, shown) for t in _unique_ids(targets)])
-    merged = _rank([_score(t, risk, sensitive, shown) for t in _merge_overlapping(ranked)])
+    ranked = _rank([_score(t, sig) for t in _unique_ids(targets)])
+    merged = _rank([_score(t, sig) for t in _merge_overlapping(ranked)])
     return merged[:max_targets], merged[max_targets:]
 
 
@@ -570,7 +608,7 @@ def _run(pr_dir: Path, ctx: dict, cfg: Config, diffs: dict[str, FileDiff], progr
         progress.update(f"Deep check skipped: {off}")
         return
     chosen, skipped = pick_targets(view["findings"], read_json(pr_dir / "synthesis.json"), ctx, risk=r.risk,
-                                   clusters=read_json(pr_dir / "clusters.json"),
+                                   clusters=read_json(pr_dir / "clusters.json"), impact=read_json(pr_dir / "impact.json"),
                                    max_targets=cfg.analysis.deepcheck_max_targets)
     r.start(chosen, skipped)
     if chosen:  # the repo's rules at the merge-base (analyze already wrote them; this is the same file)
