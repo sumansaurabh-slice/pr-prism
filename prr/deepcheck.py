@@ -138,6 +138,16 @@ def _rank(targets: list[Target]) -> list[Target]:
     return sorted((t for t in targets if t.score > 0), key=lambda t: -t.score)
 
 
+def _unique_ids(targets: list[Target]) -> list[Target]:
+    """The summary may give two chapters the same id; each area needs its own."""
+    seen: Counter = Counter()
+    for t in targets:
+        seen[t.id] += 1
+        if seen[t.id] > 1:
+            t.id = f"{t.id}-{seen[t.id]}"
+    return targets
+
+
 def pick_targets(placed: list[dict], synthesis: dict | None, ctx: dict, *, risk: dict[str, str | None],
                  clusters: dict | None = None, max_targets: int = 4) -> tuple[list[Target], list[Target]]:
     """(the areas to check, riskiest first; the risky areas past the cap). Areas with nothing risky are left out.
@@ -154,7 +164,7 @@ def pick_targets(placed: list[dict], synthesis: dict | None, ctx: dict, *, risk:
     targets = _from_synthesis(synthesis or {}, resolve, eligible, risk) if (synthesis or {}).get("chapters") else []
     if not targets:
         targets = _from_clusters(clusters or {}, eligible)
-    ranked = _rank([_score(t, risk, sensitive, shown) for t in targets])
+    ranked = _rank([_score(t, risk, sensitive, shown) for t in _unique_ids(targets)])
     merged = _rank([_score(t, risk, sensitive, shown) for t in _merge_overlapping(ranked)])
     return merged[:max_targets], merged[max_targets:]
 

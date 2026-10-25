@@ -200,6 +200,10 @@ def test_areas_are_ranked_merged_and_capped():
     assert [(t.id, t.high) for t in skipped] == [("chapter:three+flow:pay", True), ("chapter:four", False),
                                                  ("chapter:five", False)]
 
+    twice = {"chapters": [chapter("same", "a.py"), chapter("same", "e.py")]}   # the model reused a chapter id
+    chosen, _ = deepcheck.pick_targets([], twice, ctx, risk=risk)
+    assert [t.id for t in chosen] == ["chapter:same", "chapter:same-2"]
+
 
 def test_without_chapters_the_file_groups_are_the_areas():
     ctx = ctx_of("a.py", "d.py", "g.py", "docs.md", sensitive=("g.py",))
