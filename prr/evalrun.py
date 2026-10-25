@@ -88,6 +88,12 @@ def label_counts(rows: list[dict]) -> dict[str, int]:
             "not_problem": sum(1 for x in rows if x["kind"] == "not-problem")}
 
 
+def label_list(rows: list[dict]) -> list[dict]:
+    """The pair's labels as the report lists them; each run's views say which were found, by id."""
+    return [{"id": x["id"], "kind": x["kind"], "countable": labels.countable(x), "path": x.get("path"),
+             "line": x.get("line"), "source": x.get("source"), "text": (x.get("text") or "")[:300]} for x in rows]
+
+
 def last_analysis_usd(repo_folder: Path) -> float | None:
     """What this repo's most recent finished analysis cost (progress.json), for the estimate."""
     best: tuple[str, float] | None = None
@@ -151,12 +157,15 @@ def prepare_pair(pair: dict, meta: dict, *, root: Path, remote: str, ref: PRRef,
 
 
 def remove_folder(root: Path, folder: Path) -> None:
-    """An eval folder: its worktree (git worktree remove) and everything else."""
-    for wt in folder.glob("**/worktree"):
-        if wt.is_dir():
-            git("worktree", "remove", "--force", str(wt), cwd=root, check=False)
+    """One eval's folder: each PR commit's worktree (git worktree remove), then everything else."""
+    for wt in folder.glob("pr-*/worktree"):
+        git("worktree", "remove", "--force", str(wt), cwd=root, check=False)
     shutil.rmtree(folder, ignore_errors=True)
     git("worktree", "prune", cwd=root, check=False)
+    try:
+        folder.parent.rmdir()  # <cache>/_eval, once no other eval is kept there
+    except OSError:
+        pass
 
 
 # --------------------------------------------------------------------------------------
@@ -364,7 +373,8 @@ def run_eval(cfg: Config, root: Path, owner: str, repo: str, *, prs: list[int] |
     try:
         for pair in pairs:
             row = {k: pair[k] for k in ("pr", "commit_id", "merge_base_sha", "split")}
-            row.update(labels=label_counts(pair["labels"]), runs=[], status="skipped", reason=None)
+            row.update(labels=label_counts(pair["labels"]), label_list=label_list(pair["labels"]), runs=[],
+                       status="skipped", reason=None)
             report["pairs"].append(row)
             if report["stop_reason"]:
                 row["reason"] = report["stop_reason"]

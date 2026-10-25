@@ -129,10 +129,16 @@ def write(folder: Path, labels: list[dict[str, Any]], timeout: float = LOCK_TIME
             os.close(fd)
 
 
-def append(folder: Path, *, pr: int, kind: str, source: str, **fields: Any) -> dict[str, Any]:
-    """Add one label to the repo folder's labels.jsonl and return it. Fields as in new_label. Verdicts use
-    kind="problem" (real) or "not-problem" (not) with source="verdict", origin_id=<stop id> and stop_kind."""
-    label = new_label(pr=pr, kind=kind, source=source, **fields)
+def append(folder: Path, *, pr: int, kind: str, source: str, commit_id: str | None = None,
+           merge_base_sha: str | None = None, path: str | None = None, side: str | None = None, line: int | None = None,
+           text: str = "", author: str | None = None, origin_id: str | None = None, gh_comment_id: int | None = None,
+           finding_id: str | None = None, stop_kind: str | None = None, split: str = "train") -> dict[str, Any]:
+    """Add one label to the repo folder's labels.jsonl and return it. A guided-review verdict is
+    kind="problem" (real) or "not-problem" (not), source="verdict", origin_id=<stop id>, stop_kind=<the stop's kind>
+    and finding_id when the stop is a finding. Raises ValueError, TimeoutError (lock busy) or OSError."""
+    label = new_label(pr=pr, kind=kind, source=source, commit_id=commit_id, merge_base_sha=merge_base_sha, path=path,
+                      side=side, line=line, text=text, author=author, origin_id=origin_id, gh_comment_id=gh_comment_id,
+                      finding_id=finding_id, stop_kind=stop_kind, split=split)
     write(folder, [label])
     return label
 
