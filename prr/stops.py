@@ -287,13 +287,16 @@ def _merge_nearby(candidates: list[dict], pinned: set[str]) -> list[dict]:
     mergeable = [s for s in candidates if s["kind"] in _RANK and not s["low_confidence"]]
     ids = {id(s) for s in mergeable}
     kept: list[dict] = []
+    by_place: dict[tuple, list[dict]] = {}  # (path, side) → kept stops there
     for s in sorted(mergeable, key=lambda s: (_RANK[s["kind"]], s["path"], s["side"], _span(s)[0] if s["line"] else 0,
                                               s["id"])):
-        hosts = [] if s["id"] in pinned else [k for k in kept if s["kind"] in _TAKES_IN[k["kind"]] and _near(k, s)]
+        here = by_place.setdefault((s["path"], s["side"]), [])
+        hosts = [] if s["id"] in pinned else [k for k in here if s["kind"] in _TAKES_IN[k["kind"]] and _near(k, s)]
         if hosts:
             _take_in(min(hosts, key=lambda k: (_RANK[k["kind"]], _gap(k, s), k["line"])), s)
         else:
             kept.append(s)
+            here.append(s)
     return [s for s in candidates if id(s) not in ids] + kept
 
 
