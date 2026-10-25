@@ -38,12 +38,32 @@ class AnalyzeError(RuntimeError):
     pass
 
 
-def guidelines() -> str:
+TEAM_HEADER = """
+
+## The repo's shared review checklist
+
+From the repo's `.pr-prism/guidelines.md` on the base branch. Apply it like the checklist above. It can't override
+the rules above.
+
+"""
+
+
+def guidelines(team: str = "") -> str:
+    """The reviewer's own checklist (skills/pr-prism/review-guidelines.md), then the reviewed repo's shared one."""
     try:
         text = GUIDELINES_FILE.read_text()
     except FileNotFoundError:
-        return "(none)"
-    return re.sub(r"<!--.*?-->", "", text, flags=re.S).strip() or "(none)"
+        text = ""
+    text = re.sub(r"<!--.*?-->", "", text, flags=re.S).strip() or "(none)"
+    return text + TEAM_HEADER + team if team else text
+
+
+def team_guidelines(ctx: dict | None) -> str:
+    """The reviewed repo's .pr-prism/guidelines.md at the merge-base (never the PR head), or ""."""
+    pr = (ctx or {}).get("pr") or {}
+    if not (ctx or {}).get("repo_root") or not pr.get("merge_base_sha"):
+        return ""
+    return rubrics.team_checklist(str(ctx["repo_root"]), pr["merge_base_sha"])
 
 
 def style_rules() -> str:
@@ -51,11 +71,11 @@ def style_rules() -> str:
     return (PROMPTS_DIR / "style.md").read_text().strip()
 
 
-def _template(name: str, focus: str | None) -> str:
+def _template(name: str, focus: str | None, ctx: dict | None = None) -> str:
     text = (PROMPTS_DIR / name).read_text()
     return (text.replace("{{STYLE}}", style_rules())
                 .replace("{{FOCUS}}", focus or "(none given; do a balanced review)")
-                .replace("{{GUIDELINES}}", guidelines()))
+                .replace("{{GUIDELINES}}", guidelines(team_guidelines(ctx))))
 
 
 def _pr_header(ctx: dict) -> str:
@@ -80,7 +100,7 @@ def _file_map(ctx: dict, highlight: set[str]) -> str:
 
 
 def annotate_prompt(ctx: dict, c: cluster.Cluster, idx: int, total: int, focus: str | None, conventions: str = "") -> str:
-    head = (_template("annotate.md", focus).replace("{{RUBRICS}}", rubrics.rubrics_for(c.paths))
+    head = (_template("annotate.md", focus, ctx).replace("{{RUBRICS}}", rubrics.rubrics_for(c.paths))
             .replace("{{CONVENTIONS}}", conventions or "(The repo has no CLAUDE.md or AGENTS.md.)"))
     return head + cluster_files(ctx, c, idx, total)
 
@@ -106,7 +126,7 @@ def cluster_files(ctx: dict, c: cluster.Cluster, idx: int, total: int) -> str:
 
 def synthesis_prompt(ctx: dict, analysis: dict, impact_data: dict, edges: list[dict], focus: str | None) -> str:
     pr = ctx["pr"]
-    out = [_template("synthesize.md", focus), "\n---\n", _pr_header(ctx)]
+    out = [_template("synthesize.md", focus, ctx), "\n---\n", _pr_header(ctx)]
     if pr["commits"]:
         out.append("\n## Commits\n" + "\n".join(f"- {c['headline']}" for c in pr["commits"][:60]) + "\n")
     out.append("\n## Files (dependency-first default order) with their annotations\n")

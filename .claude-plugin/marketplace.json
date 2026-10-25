@@ -1,0 +1,14 @@
+{
+  "name": "pr-prism",
+  "description": "PR Prism: interactive, Claude-guided GitHub PR reviews.",
+  "owner": {
+    "name": "Suman Saurabh"
+  },
+  "plugins": [
+    {
+      "name": "pr-prism",
+      "source": "./",
+      "description": "Turn a GitHub pull request into an interactive local review app, guided by Claude. Run /pr-prism <number|url> in the repo the PR belongs to."
+    }
+  ]
+}

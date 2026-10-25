@@ -1,0 +1,22 @@
+#!/usr/bin/env bash
+# Launcher for the prr backend. Works through the ~/.claude/skills/pr-prism symlink and in a plugin install.
+set -euo pipefail
+
+BIN_DIR="$(cd -P "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
+REPO="$(cd "$BIN_DIR/../../.." && pwd)"
+
+# A dev checkout set up by install.sh: its .venv, as always.
+# -P: don't put the cwd on sys.path, so a "prr" folder in the user's repo can't shadow this package.
+if [ -x "$REPO/.venv/bin/python" ]; then
+  exec "$REPO/.venv/bin/python" -P -m prr "$@"
+fi
+
+# Anything else (a plugin install): bootstrap.py sets up this version's venv and web app on first run, then runs prr.
+for PY in "${PRR_PYTHON:-}" python3 python3.14 python3.13 python3.12 python3.11; do
+  if [ -n "$PY" ] && command -v "$PY" >/dev/null 2>&1 \
+    && "$PY" -c 'import sys; sys.exit(sys.version_info < (3, 11))' 2>/dev/null; then
+    exec "$PY" -I "$BIN_DIR/bootstrap.py" "$@"
+  fi
+done
+echo "prr: PR Prism needs Python 3.11+, and none is on PATH; install it (brew install python@3.12) and try again." >&2
+exit 1

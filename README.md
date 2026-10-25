@@ -24,10 +24,54 @@ A Claude Code skill that turns a large GitHub pull request (5–10k lines) into 
 
 ## Install
 
+There are two ways to install PR Prism. Use one of them, not both: each one adds a `/pr-prism` command.
+
+### As a Claude Code plugin (for teammates)
+
+In Claude Code:
+
+```
+/plugin marketplace add sumansaurabh-slice/pr-prism
+/plugin install pr-prism@pr-prism
+```
+
+Or from your shell:
+
 ```bash
-./install.sh            # creates .venv, builds web/, symlinks skill/ → ~/.claude/skills/pr-prism
+claude plugin marketplace add sumansaurabh-slice/pr-prism
+claude plugin install pr-prism@pr-prism
+```
+
+On Claude Code 2.1.292 or later, one shell command does both: `claude plugin install pr-prism --marketplace sumansaurabh-slice/pr-prism`.
+
+Then restart Claude Code (or run `/reload-plugins`) and run `/pr-prism 1234` inside any repo. The command's full name is `/pr-prism:pr-prism`; the short `/pr-prism` works too, unless another skill already uses that name.
+
+The first `/pr-prism` of each version sets itself up, usually in about a minute:
+- **Python:** a private environment in `~/.cache/pr-prism/venv-<version>`.
+- **Web app:** the prebuilt app from that version's GitHub release, unpacked into `~/.cache/pr-prism/web-<version>`. It is used only if it matches the checksum committed in the version's tag. If there is no release for the version, the app is built with Node instead.
+- **Old versions:** their folders are removed once no review server uses them.
+
+**Requirements:**
+- Python 3.11+
+- `git`
+- `gh`, logged in
+- Claude Code, logged in
+- Node 20+, only when your version has no prebuilt web app
+
+**Updates:** plugins from this marketplace don't update by themselves. Run `claude plugin update pr-prism@pr-prism` (or turn on auto-update for the `pr-prism` marketplace under `/plugin` → **Marketplaces**), then restart Claude Code. A review page that is already open keeps the old version until you run `/pr-prism stop <PR>` and `/pr-prism <PR>` again.
+
+**Your settings:** put them in `~/.config/pr-prism/config.toml`. Any key there overrides the same key in the plugin's `config.toml`, so copy only the keys you want to change. The plugin's own files are replaced on every update, so don't edit them. To share review rules with your team, commit them to your repo instead (see step 6 below).
+
+### From a clone, with `install.sh` (for development)
+
+```bash
+./install.sh            # creates .venv, builds web/, symlinks skills/pr-prism → ~/.claude/skills/pr-prism
 ./install.sh --uninstall
 ```
+
+- `install.sh` stops with a message if the plugin is also installed. Uninstall one of the two first.
+- Run it again after every `git pull`. At the end it lists the review servers that still run the old code, with the `prr stop N && prr serve N` command that restarts each one.
+- **Upgrading from before the plugin layout?** The skill moved from `skill/` to `skills/pr-prism/`, so the old `~/.claude/skills/pr-prism` link points to a folder that no longer exists. Run `./install.sh` again: it replaces the link and says so.
 
 **Coming from the old `/pr-review` name?** Run `./install.sh` again. It installs `/pr-prism` and removes the old `/pr-review` shortcut. Reviews made under the old name stay in `~/.cache/pr-review`. You can delete that folder when you no longer need them.
 
@@ -37,6 +81,8 @@ A Claude Code skill that turns a large GitHub pull request (5–10k lines) into 
 - `git`
 - `gh`, logged in
 - Claude Code, logged in
+
+`prr doctor` (or `/pr-prism`'s first step) shows which install is in use, warns if both are, and shows your Claude Code version.
 
 ## Use
 
@@ -90,7 +136,7 @@ There is no separate build or package to export. The shortcut points to this fol
 
 ### 1. Install the skill once (in this folder, not in ai-banker)
 
-Skip this if you have already run it.
+Skip this if you have already run it. Teammates who don't work on PR Prism itself can install the plugin instead (see [Install](#install)); nothing below changes, except that the plugin's `prr` lives in `~/.claude/plugins/cache/pr-prism/pr-prism/<version>/skills/pr-prism/bin/prr` instead of `~/.claude/skills/pr-prism/bin/prr`.
 
 ```bash
 cd ~/Documents/hackathon/github-pr-review
@@ -154,7 +200,11 @@ This is what happens:
 
 ### 6. Add ai-banker's own review rules (optional)
 
-Put team rules under "Team context" in `skill/review-guidelines.md`. Claude follows them in every review. Note that this file applies to **all** repos, not only ai-banker. Some example rules you might add:
+There are two places for review rules. Claude follows both in every review:
+- **The team's checklist:** commit a `.pr-prism/guidelines.md` file to ai-banker. Everyone who reviews ai-banker with PR Prism gets it, whichever way they installed it. It is read from the PR's base branch, never from the PR itself, so a PR can't change the rules it is reviewed against. A change to the file counts once it is merged.
+- **Your own checklist:** `skills/pr-prism/review-guidelines.md` in this folder (install.sh only). It applies to **all** repos you review, not only ai-banker.
+
+Some example rules you might add:
 
 ```markdown
 ## Team context
@@ -188,7 +238,7 @@ Put team rules under "Team context" in `skill/review-guidelines.md`. Claude foll
 
 ## Make it yours
 
-- `skill/review-guidelines.md` is your personal review checklist. It is injected into every analysis prompt.
+- `skills/pr-prism/review-guidelines.md` is your personal review checklist. It is injected into every analysis prompt, followed by the reviewed repo's `.pr-prism/guidelines.md` (from the base branch) when it has one.
 - `prr/filekinds.py` decides which files are tests or docs, using each language's naming rules (Go `_test.go`, Python `test_*.py` and pytest `testpaths`, JS/TS `*.test.ts`, Java `src/test/`, Rust `tests/`, `docs/`, Markdown, …). Claude adds any the rules miss. AI-agent instruction files (`CLAUDE.md`, `AGENTS.md`, `.claude/`) are never hidden. Hover the small "test" or "docs" tag on a file to see why it counts.
 - `prr/prompts/style.md` holds the plain-language writing rules (short sentences, everyday words, banned buzzwords). Every prompt includes it, so all of Claude's text follows it.
 - `prr/prompts/*.md` holds the detailed instructions for annotation, synthesis and chat.
@@ -200,6 +250,8 @@ Put team rules under "Team context" in `skill/review-guidelines.md`. Claude foll
   - the chat's switches under `[chat]`;
   - an optional spend warning per PR under `[budget]` (`warn_usd`; a warning only);
   - how many places guided review lists under `[review]` (`max_stops`, 12; the rest show as "N more places").
+
+  `~/.config/pr-prism/config.toml` overrides it key by key: inside a section such as `[models]`, only the keys you set there change.
 
 ## How a review is made
 
@@ -291,3 +343,19 @@ cd web && PRR_PORT=<port of a running prr server> npm run dev   # UI dev server 
 ```
 
 API contract: `docs/api.md`. Types: `prr/models.py` ↔ `web/src/types.ts`.
+
+`.venv/bin/python -m pytest` also runs the end-to-end chat security test with the real `claude` (about a cent). Its last result is kept in `.pytest_cache`, and `prr doctor` shows it.
+
+### Release a version for plugin users
+
+`pyproject.toml`'s `version` is the one version number. `skills/pr-prism/bin/prr` reads it, and the release stamps it into `.claude-plugin/plugin.json`.
+
+1. Bump `version` in `pyproject.toml`.
+2. Run `scripts/release.sh --dry-run` to see every command it will run, without running any.
+3. Run `scripts/release.sh` from a clean `main`. After a few checks and a confirmation, it:
+   - builds `web/dist` and packs it as `web-dist.tar.gz` with its `.sha256`;
+   - writes the checksum to `skills/pr-prism/web-dist.sha256` and the version to `.claude-plugin/plugin.json`, then commits both;
+   - tags `v<version>`, pushes, and runs `gh release create` with the two files attached.
+4. Teammates update with `claude plugin update pr-prism@pr-prism`.
+
+The plugin only uses a downloaded web app that matches the checksum committed in its own tag, never one fetched from the same release. Trusting the plugin therefore means trusting this repo's owner, nothing more.

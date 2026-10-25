@@ -27,8 +27,9 @@ Your job is to run the steps in order, keep the user informed in one or two line
 
 ## Step 1: Preflight
 
-Run `${CLAUDE_SKILL_DIR}/bin/prr doctor`.
+Run `${CLAUDE_SKILL_DIR}/bin/prr doctor` with a 10-minute timeout. The first run of a new PR Prism version sets up its Python packages and web app first and says so; that can take a few minutes.
 - If a required check shows ✗, stop and tell the user the one-line fix shown next to it.
+- If it prints a `prr:` setup error instead of the checks, stop and show that line to the user.
 - Lines marked `!` are optional; ignore them.
 
 ## Step 2: Fetch the PR

@@ -14,8 +14,8 @@ import sys
 import webbrowser
 from pathlib import Path
 
-from . import cost, supervise
-from .config import SKILL_DIR, WEB_DIST, Config, load_config, pr_dir
+from . import cost, install, supervise
+from .config import REPO_DIR, WEB_DIST, Config, load_config, pr_dir, version
 from .gitgh import CommandError, PRRef, git, parse_pr_arg, repo_root
 from .util import read_json
 
@@ -56,6 +56,7 @@ def cmd_doctor(args: argparse.Namespace, cfg: Config) -> int:
         print(f"{mark} {label}" + ("" if passed or not hint else f" ({hint})"))
         ok = ok and (passed or not required)
 
+    check(f"PR Prism {version()} ({REPO_DIR})", True)
     check(f"python {sys.version.split()[0]}", sys.version_info >= (3, 11), "need 3.11+")
     try:
         import fastapi  # noqa: F401
@@ -69,10 +70,14 @@ def cmd_doctor(args: argparse.Namespace, cfg: Config) -> int:
     if shutil.which("gh"):
         authed = subprocess.run(["gh", "auth", "status"], capture_output=True).returncode == 0
         check("gh authenticated", authed, "run: gh auth login")
-    check("web UI built", (WEB_DIST / "index.html").exists(), "run ./install.sh (needs Node)")
-    link = Path("~/.claude/skills/pr-prism").expanduser()
-    installed = link.exists() and link.resolve() == SKILL_DIR.resolve()
-    check("skill installed at ~/.claude/skills/pr-prism", installed, "run ./install.sh", required=False)
+    check("web UI built", (WEB_DIST / "index.html").exists(), "run ./install.sh (needs Node), or set PRR_WEB_DIST")
+    check(*install.install_check(), required=False)  # install.sh's symlink, the plugin, or (wrongly) both
+    claude_version = install.claude_version()
+    if claude_version:
+        check(f"Claude Code {claude_version}", True)
+    e2e = install.e2e_check(claude_version)  # the last end-to-end chat security test in this checkout
+    if e2e:
+        check(*e2e, required=False)
     check("codegraph (optional, for blast radius)", shutil.which("codegraph") is not None, "optional", required=False)
     broad = broad_allow_rules(Path("~/.claude/settings.json").expanduser())
     check("Claude Code settings ask before web fetches, any command and MCP tools", not broad,
