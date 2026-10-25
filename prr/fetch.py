@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import os
+import shutil
 import sys
 from pathlib import Path
 
@@ -19,6 +20,7 @@ _PR_FIELDS = (
 # Never run hooks from the PR's own tree (core.hooksPath=.husky would resolve inside the worktree),
 # never shell out to external diff/textconv drivers, and pin prefixes/algorithm regardless of user config.
 _SAFE = ["-c", "core.hooksPath=/dev/null"]
+_NO_LINKS = ["-c", "core.symlinks=false"]
 DIFF_ARGS = [
     "diff", "--no-ext-diff", "--no-textconv", "--no-color", "--full-index", "-M", "-U3",
     "--diff-algorithm=myers", "--src-prefix=a/", "--dst-prefix=b/", "--no-relative",
@@ -40,16 +42,43 @@ def _merge_base(root: Path, remote: str, ref: PRRef, base_ref: str, head_sha: st
         return sha
 
 
+def _has_links(wt: Path) -> bool:
+    for folder, dirs, files in os.walk(wt):
+        if any(os.path.islink(os.path.join(folder, name)) for name in dirs + files):
+            return True
+        dirs[:] = [d for d in dirs if d != ".git"]
+    return False
+
+
 def _ensure_worktree(root: Path, wt: Path, sha: str) -> None:
+    """Check out the PR head. Symbolic links come out as small files holding their target (core.symlinks=false), so
+    a link in the PR (to ~/.ssh, say) can't make a read inside the worktree land outside it. A worktree made before
+    this, which may still hold links, is made again."""
     os.environ["GIT_LFS_SKIP_SMUDGE"] = "1"  # LFS blobs aren't needed to review code; skip the download
     if (wt / ".git").exists():
         try:
-            git(*_SAFE, "checkout", "--quiet", "--detach", "--force", sha, cwd=wt)
-            return
+            git(*_SAFE, *_NO_LINKS, "checkout", "--quiet", "--detach", "--force", sha, cwd=wt)
+            if not _has_links(wt):
+                return
+            _log("The worktree still has symbolic links from an older checkout; making it again")
         except CommandError:
-            git("worktree", "remove", "--force", str(wt), cwd=root, check=False)
+            pass
+        git("worktree", "remove", "--force", str(wt), cwd=root, check=False)
+        shutil.rmtree(wt, ignore_errors=True)  # rmtree removes links themselves, never what they point to
     git("worktree", "prune", cwd=root, check=False)
-    git(*_SAFE, "worktree", "add", "--quiet", "--detach", "--force", str(wt), sha, cwd=root)
+    git(*_SAFE, *_NO_LINKS, "worktree", "add", "--quiet", "--detach", "--force", str(wt), sha, cwd=root)
+
+
+def _author_association(ref: PRRef) -> str | None:
+    """OWNER, MEMBER, COLLABORATOR, CONTRIBUTOR, NONE… from GitHub's REST API, read-only (`gh pr view --json` has no
+    such field). None when the call fails: the author then counts as an outsider until the next fetch retries."""
+    try:
+        data = gh_json("api", f"repos/{ref.slug}/pulls/{ref.number}", "--jq", "{association: .author_association}")
+    except Exception as e:  # noqa: BLE001 — never fail the fetch over this; lookups just ask first
+        _log(f"warning: couldn't check the PR author ({str(e)[:200]}); Jira, Slack and other-repo lookups ask first")
+        return None
+    value = data.get("association") if isinstance(data, dict) else None
+    return value if isinstance(value, str) and value else None
 
 
 def fetch(ref: PRRef, root: Path, cfg: Config) -> Path:
@@ -60,6 +89,7 @@ def fetch(ref: PRRef, root: Path, cfg: Config) -> Path:
 
     _log(f"Reading PR {ref.slug}#{ref.number} from GitHub")
     meta = gh_json("pr", "view", str(ref.number), "--repo", ref.slug, "--json", _PR_FIELDS)
+    association = _author_association(ref)  # an outsider's PR: connector lookups ask first (prr/policy.py)
     remote = find_remote(root, ref)
     head_ref = f"refs/pr-prism/{ref.number}/head"
     base_ref = f"refs/pr-prism/{ref.number}/base"
@@ -112,6 +142,7 @@ def fetch(ref: PRRef, root: Path, cfg: Config) -> Path:
         "pr": {
             "owner": ref.owner, "repo": ref.repo, "number": ref.number,
             "title": meta["title"], "url": meta["url"], "author": (meta.get("author") or {}).get("login", ""),
+            "author_association": association,
             "body": meta.get("body") or "", "state": meta["state"], "is_draft": meta["isDraft"],
             "base_ref": meta["baseRefName"], "head_ref": meta["headRefName"],
             "base_sha": meta["baseRefOid"], "merge_base_sha": merge_base, "head_sha": head_sha,

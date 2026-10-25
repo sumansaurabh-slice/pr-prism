@@ -1,11 +1,12 @@
 """Running `claude -p`: structured-output calls for analysis and streamed, resumable calls for chat.
 
-Analysis calls are locked down: read-only tools (`--tools`), no MCP servers except ours (`--strict-mcp-config`),
-and `--permission-mode dontAsk` refuses everything else.
+Analysis calls are locked down: read-only tools (`--tools`) allowed only inside the worktree, no MCP servers
+except ours (`--strict-mcp-config`), and `--permission-mode dontAsk` refuses everything else.
 
 Chat calls are full Claude Code: every built-in tool, the reviewer's own MCP servers and claude.ai connectors
-(Jira, Slack, …). Anything that is not on a short read-only list goes to the app's approval tool
-(`--permission-prompt-tool`), which asks the reviewer in the browser first.
+(Jira, Slack, …). A PreToolUse hook (`--settings`) checks every shell command, read, MCP call and web request
+first, and the rest goes to the app's approval tool (`--permission-prompt-tool`). prr/policy.py has the whole
+permission flow.
 
 Both use `--setting-sources user`: the PR's own .claude/settings.json (hooks, allow rules) is never loaded, and a
 PR's .mcp.json is not loaded either (it would need approval in project settings).
@@ -22,22 +23,35 @@ from dataclasses import dataclass, field
 from pathlib import Path
 from typing import Any, AsyncIterator
 
+from . import policy, shellsafe
 from .gitgh import claude_env
 from .ledger import Ledger
 
 READ_ONLY_TOOLS = ["Read", "Grep", "Glob"]
 
-# The chat runs these without asking: reading and searching, and git/shell commands that only look at things.
-CHAT_AUTO_ALLOW = [
-    "Read", "Grep", "Glob", "LS", "NotebookRead", "TodoWrite", "ToolSearch", "Task",
-    "mcp__prprism", "mcp__codegraph",
-    *(f"Bash({c} *)" for c in (
-        "git blame", "git log", "git show", "git diff", "git status", "git grep", "git rev-parse", "git ls-files",
-        "git branch", "git shortlog", "git cat-file", "rg", "grep", "ls", "wc", "tree", "file",
-    )),
-]
+# The chat runs these without asking. Reads are allowed only inside the roots (read_rules), and shell commands
+# never by a rule: an allow rule matches before any check, so `Bash(grep *)` would let `grep -r . ~/.config/gh`
+# through. The PreToolUse hook (prr/policy.py) decides every shell command and read.
+CHAT_AUTO_ALLOW = ["TodoWrite", "ToolSearch", "Task", "mcp__prprism__add_pending_comment"]
 APPROVAL_TOOL = "mcp__prprism__approve"
 STREAM_LIMIT = 64 * 1024 * 1024  # tool results can put whole files on one stream-json line
+
+
+def read_rules(roots: list[Path]) -> list[str]:
+    """`Read(//abs/root/**)` per root. Claude Code applies Read rules to Grep and Glob as well (checked with
+    claude 2.1.310: a Read rule alone let Grep and Glob search that folder)."""
+    return [f"Read(/{os.path.realpath(r)}/**)" for r in roots]
+
+
+def deny_rules(pr_dir: Path | None, ask_first: bool) -> list[str]:
+    """Reads that are refused whatever else allows them: the review server's token and pid files, and, when the chat
+    runs without asking (bypassPermissions), the places that hold credentials. Deny rules hold in bypass mode."""
+    rules = [f"Read(/{os.path.realpath(pr_dir / name)})" for name in policy.PRIVATE_FILES] if pr_dir else []
+    if not ask_first:
+        for place in (*shellsafe.SECRET_PLACES, "~/.docker/config.json"):
+            p = os.path.realpath(os.path.expanduser(place))
+            rules += [f"Read(/{p})", f"Read(/{p}/**)"]
+    return rules
 
 
 class ClaudeError(RuntimeError):
@@ -45,7 +59,9 @@ class ClaudeError(RuntimeError):
 
 
 def base_argv(model: str, tools: list[str], *, mcp_config: str | None = None, mcp_tools: list[str] | None = None,
-              add_dirs: list[Path] | None = None) -> list[str]:
+              add_dirs: list[Path] | None = None, cwd: Path | None = None) -> list[str]:
+    """With cwd, Read/Grep/Glob are allowed only inside cwd and add_dirs: a PR can't steer an analysis call into
+    reading other files (dontAsk refuses the rest)."""
     argv = [
         "claude", "-p", "--model", model,
         "--tools", ",".join(tools),
@@ -53,7 +69,9 @@ def base_argv(model: str, tools: list[str], *, mcp_config: str | None = None, mc
         "--setting-sources", "user",
         "--strict-mcp-config",
     ]
-    allowed = tools + (mcp_tools or [])
+    reads = [t for t in tools if t in READ_ONLY_TOOLS]
+    scoped = read_rules([cwd, *(add_dirs or [])]) if reads and cwd else reads
+    allowed = scoped + [t for t in tools if t not in READ_ONLY_TOOLS] + (mcp_tools or [])
     if allowed:
         argv += ["--allowedTools", *allowed]
     if mcp_config:
@@ -92,7 +110,7 @@ def run_structured(prompt: str, schema: dict[str, Any], *, cwd: Path, model: str
 
 def _run_structured(prompt: str, schema: dict[str, Any], cwd: Path, model: str, tools: list[str] | None,
                     max_turns: int, timeout: float, add_dirs: list[Path] | None, call: dict) -> tuple[dict, CallStats]:
-    argv = base_argv(model, READ_ONLY_TOOLS if tools is None else tools, add_dirs=add_dirs)
+    argv = base_argv(model, READ_ONLY_TOOLS if tools is None else tools, add_dirs=add_dirs, cwd=cwd)
     argv += ["--output-format", "json", "--json-schema", json.dumps(schema), "--max-turns", str(max_turns)]
     try:
         proc = subprocess.run(argv, input=prompt, cwd=cwd, env=claude_env(), capture_output=True, text=True, timeout=timeout)
@@ -226,8 +244,9 @@ class ChatProcess:
 
 
 def chat_argv(model: str, *, mcp_config: str, system_file: Path, add_dirs: list[Path], ask_first: bool,
-              session_id: str, resume: bool) -> list[str]:
-    """Full Claude Code for the chat. With ask_first, anything off CHAT_AUTO_ALLOW is asked about in the app."""
+              session_id: str, resume: bool, roots: list[Path] | None = None, pr_dir: Path | None = None) -> list[str]:
+    """Full Claude Code for the chat. With ask_first, anything off CHAT_AUTO_ALLOW is asked about in the app.
+    The hook (`--settings`) runs alongside `--setting-sources user` (checked with claude 2.1.310)."""
     argv = ["claude", "-p", "--model", model, "--setting-sources", "user", "--mcp-config", mcp_config,
             "--output-format", "stream-json", "--verbose", "--include-partial-messages",
             "--append-system-prompt-file", str(system_file), "--max-turns", "100"]
@@ -235,20 +254,34 @@ def chat_argv(model: str, *, mcp_config: str, system_file: Path, add_dirs: list[
         argv += ["--permission-mode", "default", "--permission-prompts", "host", "--permission-prompt-tool", APPROVAL_TOOL]
     else:
         argv += ["--permission-mode", "bypassPermissions"]
-    argv += ["--allowedTools", *CHAT_AUTO_ALLOW]
+    argv += ["--allowedTools", *CHAT_AUTO_ALLOW, *read_rules(roots or [])]
+    deny = deny_rules(pr_dir, ask_first)
+    if deny:
+        argv += ["--disallowedTools", *deny]
+    argv += ["--settings", json.dumps(policy.hook_settings(ask_first))]
     for d in add_dirs:
         argv += ["--add-dir", str(d)]
     argv += ["--resume", session_id] if resume else ["--session-id", session_id]
     return argv
 
 
+def chat_env(thread_id: str, pr_dir: Path | None, roots: list[Path]) -> dict[str, str]:
+    """The chat process's environment. Its hooks inherit it: which chat asks, its PR folder, and where it may read."""
+    env = {**claude_env(), "PRR_THREAD_ID": thread_id, "PRR_ROOTS": os.pathsep.join(str(r) for r in roots)}
+    if pr_dir:  # without it the hook denies everything it checks
+        env["PRR_PR_DIR"] = str(pr_dir)
+    return env
+
+
 async def stream_chat(prompt: str, *, cwd: Path, session_id: str, resume: bool, model: str, system_file: Path,
                       add_dirs: list[Path], mcp_config: str, ask_first: bool = True,
-                      on_start: Any = None) -> AsyncIterator[dict[str, Any]]:
+                      on_start: Any = None, thread_id: str = "", pr_dir: Path | None = None,
+                      roots: list[Path] | None = None) -> AsyncIterator[dict[str, Any]]:
+    roots = list(roots or [cwd, *add_dirs])
     argv = chat_argv(model, mcp_config=mcp_config, system_file=system_file, add_dirs=add_dirs, ask_first=ask_first,
-                     session_id=session_id, resume=resume)
+                     session_id=session_id, resume=resume, roots=roots, pr_dir=pr_dir)
     proc = await asyncio.create_subprocess_exec(
-        *argv, cwd=cwd, env=claude_env(), limit=STREAM_LIMIT,
+        *argv, cwd=cwd, env=chat_env(thread_id, pr_dir, roots), limit=STREAM_LIMIT,
         stdin=asyncio.subprocess.PIPE, stdout=asyncio.subprocess.PIPE, stderr=asyncio.subprocess.PIPE,
     )
     if on_start:

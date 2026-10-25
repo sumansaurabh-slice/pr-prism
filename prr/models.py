@@ -174,6 +174,7 @@ class PRInfo(BaseModel):
     title: str
     url: str
     author: str
+    author_association: str | None = None  # OWNER, MEMBER, COLLABORATOR, CONTRIBUTOR, …; None: the check failed
     body: str
     state: str
     is_draft: bool

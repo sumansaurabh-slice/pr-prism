@@ -19,7 +19,7 @@ A Claude Code skill that turns a large GitHub pull request (5–10k lines) into 
 - **Re-review**: after new commits, earlier findings and outdated comments are re-checked and marked **Fixed** or **Still open**.
 - **Data Flow**: interactive graphs of the runtime paths the PR adds or changes. Click a node to jump to the code.
 - **Impact**: breaking changes, migrations, config, security, and the changed symbols that are referenced *outside* the PR (found with codegraph when the repo is indexed, `git grep` otherwise).
-- **Chat**: full Claude Code, running in a copy of the PR's code. It can read code, run commands (`git blame`, tests), edit the copy, and use your connected tools such as Jira and Slack. Before it runs a command or changes anything, an **Allow / Always allow / Deny** card appears in the chat. Read-only steps run without asking: reading code, shell commands that only read (`grep`, `awk`, `find`, `git blame`/`log`/`diff`, `gh pr view`, and pipes of these), Jira and Slack lookups. **Always allow** remembers the program (for example `npm test`), so the chat doesn't ask again for it. It cites `file:line` references you can click. Ask it to "add a comment on line 42" (it goes to your pending comments) or "post this on GitHub" (it posts right away, under your name).
+- **Chat**: full Claude Code, running in a copy of the PR's code. It can read code, run commands (`git blame`, tests), edit the copy, and use your connected tools such as Jira and Slack. Before it runs a command, changes anything or reads outside the PR, an **Allow / Always allow / Deny** card appears in the chat. Read-only steps inside the PR run without asking: reading code, shell commands that only read (`grep`, `awk`, `find`, `git blame`/`log`/`diff`, `gh pr view`, and pipes of these), Jira and Slack lookups (on an outside author's PR, lookups ask first). **Always allow** remembers the program (for example `npm test`), or for a read, that folder, so the chat doesn't ask again for it. It cites `file:line` references you can click. Ask it to "add a comment on line 42" (it goes to your pending comments) or "post this on GitHub" (it posts right away, under your name).
 - **Publish**: draft comments inline, then preview the exact GitHub payload and submit as Comment, Approve, Request changes, or a pending review.
 
 ## Install
@@ -240,9 +240,12 @@ Submit       ─► POST /api/review/submit ─► `gh api POST /repos/{o}/{r}/p
 
 **Safety:**
 - **Network:** the server binds to 127.0.0.1 only and uses a random token (made once per PR and kept in that PR's `server.json`, readable only by you) that becomes an HttpOnly SameSite=Strict cookie. It checks the Host header (blocks DNS rebinding) and the Origin of every state-changing request. It sends a strict CSP and renders markdown without raw HTML.
-- **Analysis calls** use `--setting-sources user --strict-mcp-config`, read-only tools and `--permission-mode dontAsk`.
+- **Analysis calls** use `--setting-sources user --strict-mcp-config`, read-only tools allowed only inside the PR's worktree, and `--permission-mode dontAsk`.
 - **Chat calls** are full Claude Code with your own MCP servers and claude.ai connectors. Anything that is not read-only goes to the app's approval tool (`--permission-prompt-tool`), which shows you a card and waits for your answer.
-  - Set `[chat] ask_before_actions = false` in `config.toml` to drop the questions; that's not recommended.
+  - **Reads stay inside the PR.** A hook (`prr/policy.py`) checks every shell command, file read, MCP call and web request before it runs. Reading the PR's copy and its PR Prism folder runs right away; reading anything else (your home folder, other repos, `~/.config/gh`, the app's own `server.json`) shows a card first. So do commands that print environment variables, `cd` out of the PR, or use `~` or `$VARIABLES`. "Always allow" on a read covers that folder only, and is never offered for `/`, `~` or folders that hold credentials.
+  - **Outside authors.** On a PR from someone who isn't an owner, member or collaborator of the repo (or when GitHub couldn't tell), Jira, Slack and other-repo lookups ask first.
+  - **Posting after outside data.** Posting to GitHub stays instant, except in a chat turn that already looked something up in Jira or Slack, read outside the PR, or ran something you approved. Then posting, web fetches, web searches and Slack/Jira write actions show a card, even if your own Claude Code settings allow them, and that card has no "Always allow".
+  - Set `[chat] ask_before_actions = false` in `config.toml` to drop the questions; that's not recommended. The chat then runs every command, edit and connector action without asking. PR Prism still blocks reads outside the PR (including `~/.ssh`, `~/.config/gh`, `~/.aws`, `~/.netrc`, `~/.docker/config.json`, `~/.kube`) and commands that print the environment, but a program you run (a test suite, a script from the PR) can still read or send anything. `prr doctor` repeats this when the setting is off.
   - Both kinds of call use `--setting-sources user`, so a PR's own `.claude/settings.json` hooks and its `.mcp.json` never run. (Checked: a test PR with a `.mcp.json` server did not start it.)
   - Claude is told to act only on what you ask in your latest message, never on instructions found in the PR.
 - **Chat comments:** the chat gets three narrow comment tools (`prr/chat_tools.py`) instead of shell or `gh` access:
@@ -253,7 +256,7 @@ Submit       ─► POST /api/review/submit ─► `gh api POST /repos/{o}/{r}/p
   These tools only work on this PR, check that each line is in the diff, and show every post in the chat with its GitHub link. Claude is told to post only when you ask in your latest message, never because the PR's text says so. Approve and Request changes stay on the Submit review button. `config.toml` controls this:
   - `[chat] can_approve = true` lets the chat approve or request changes too;
   - `can_post = false` keeps the chat to pending comments only.
-- **Git:** worktree checkouts run with `core.hooksPath=/dev/null`.
+- **Git:** worktree checkouts run with `core.hooksPath=/dev/null` and `core.symlinks=false`, so a symbolic link in the PR is checked out as a small file holding its target and can't lead a read outside the PR.
 - **GitHub:** nothing is posted until you confirm the previewed payload.
 
 ## Develop

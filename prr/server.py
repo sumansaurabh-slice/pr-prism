@@ -26,7 +26,7 @@ from fastapi import FastAPI, HTTPException
 from fastapi.responses import Response, StreamingResponse
 from pydantic import BaseModel
 
-from . import archive, chat_tools, cost, github, merge
+from . import archive, chat_tools, cost, github, merge, policy
 from .analyze import style_rules
 from .drafts import claim_for_post, finish_post, is_posting, new_draft, postable, release
 from .claude import ChatProcess, ClaudeError, run_structured, stream_chat
@@ -146,10 +146,18 @@ class ApprovalIn(BaseModel):
     thread_id: str
     tool_name: str
     input: dict = {}
+    reason: dict | None = None  # why policy.decide asks: {kind, text, detail?}
+    cwd: str | None = None      # the shell's folder, for relative paths
 
 
 class DecisionIn(BaseModel):
     decision: str  # allow | always | deny
+
+
+class TaintIn(BaseModel):
+    thread_id: str
+    kind: str  # policy.CAUSE_KINDS
+    text: str = ""
 
 
 # --------------------------------------------------------------------------------------
@@ -221,7 +229,9 @@ def create_app(pr_dir: Path, cfg: Config) -> FastAPI:
         env = {k: os.environ[k] for k in ("PRR_GITHUB_DRY_RUN",) if k in os.environ}
         servers = {chat_tools.SERVER_NAME: {
             "type": "stdio", "command": sys.executable, "args": ["-P", "-m", "prr", "_mcp", str(pr_dir)],
-            "env": {**env, "PRR_THREAD_ID": tid},
+            # PYTHONPATH: the same copy of PR Prism as this server (and its hook), never a `prr/` in the PR
+            "env": {**env, "PRR_THREAD_ID": tid, "PRR_PR_DIR": str(pr_dir), "PYTHONPATH": policy.PACKAGE_ROOT,
+                    "PRR_ROOTS": os.pathsep.join(str(r) for r in policy.roots(pr_dir))},
         }}
         root = Path(ctx()["repo_root"])
         codegraph = (root / ".codegraph").is_dir() and shutil.which("codegraph") is not None
@@ -261,10 +271,11 @@ def create_app(pr_dir: Path, cfg: Config) -> FastAPI:
         values = {
             "HEAD_SHA": pr["head_sha"], "MERGE_BASE_SHA": pr["merge_base_sha"], "PR_DIR": str(pr_dir),
             "COMMENT_TOOLS": comment_tools_text(),
-            "ACTIONS": ("Reading, searching and read-only git commands (`git blame`, `git log`, `git show`, `git diff`) "
-                        "run right away. Anything that changes something first asks the reviewer in the app. This "
-                        "includes other commands, file edits, and creating or updating Jira issues or Slack messages. "
-                        "If they say no, don't try the same thing again; ask them what they want instead.")
+            "ACTIONS": ("Reading and searching this PR's files, and read-only commands on them (`git blame`, `git log`, "
+                        "`git show`, `git diff`), run right away. Reading anything outside the PR, and anything that "
+                        "changes something, first asks the reviewer in the app. This includes other commands, file "
+                        "edits, and creating or updating Jira issues or Slack messages. If they say no, don't try the "
+                        "same thing again; ask them what they want instead.")
                        if cfg.chat.ask_before_actions else
                        "Your actions run without asking the reviewer first, so be careful and do only what they ask.",
             "EXTRA_TOOLS": ("\n\nTo find callers and what a change affects, use the codegraph tools. Pass "
@@ -554,57 +565,110 @@ def create_app(pr_dir: Path, cfg: Config) -> FastAPI:
             raise HTTPException(502, str(e)) from e
         return {"body": out["body"]}
 
-    # ---- approvals: Claude Code asks (through the chat's MCP server), the reviewer answers in the chat ----------
+    # ---- approvals: Claude Code asks (through the chat's hook or MCP server), the reviewer answers in the chat --------
 
-    approvals: dict[str, dict] = {}            # approval id → {thread, tool, input, done: Event, answer}
+    approvals: dict[str, dict] = {}            # approval id → {thread, tool, input, keys, guard, reason, done, answer}
     live_streams: dict[str, asyncio.Queue] = {}  # thread id → the queue feeding that thread's open chat stream
+    marks: dict[str, list[dict]] = {}          # thread id → what marked its current turn (see policy.py)
+    home = str(Path("~").expanduser())
 
-    def approval_card(aid: str, tool: str, inp: dict) -> dict:
+    def tilde(text: str) -> str:
+        return text.replace(home + "/", "~/")
+
+    def approval_card(aid: str, item: dict) -> dict:
         from .claude import friendly_tool_name, tool_summary
+        tool, inp = item["tool"], item["input"]
         titles = {"Bash": "Run a command", "Edit": "Edit a file", "MultiEdit": "Edit a file", "Write": "Write a file",
-                  "NotebookEdit": "Edit a notebook", "WebFetch": "Open a web page", "WebSearch": "Search the web"}
+                  "NotebookEdit": "Edit a notebook", "WebFetch": "Open a web page", "WebSearch": "Search the web",
+                  "Read": "Read a file", "Grep": "Search files", "Glob": "List files", "LS": "List a folder",
+                  "NotebookRead": "Read a notebook", "mcp__prprism__post_comment": "Post a comment on GitHub",
+                  "mcp__prprism__post_review": "Post a review on GitHub"}
         title = titles.get(tool) or f"Use {friendly_tool_name(tool)}"
         detail = str(inp.get("command")) if tool == "Bash" else json.dumps(inp, indent=1, ensure_ascii=False)[:3000]
+        label, tip = policy.always_text(tool, item["keys"])
         return {"type": "approval", "id": aid, "tool": tool, "title": title,
-                "summary": tool_summary(tool, inp, Path(ctx()["worktree"])), "detail": detail,
-                "always_label": ", ".join(k.removeprefix("Bash:") for k in chat_tools.approval_keys(tool, inp))}
+                "summary": tilde(tool_summary(tool, inp, Path(ctx()["worktree"]))), "detail": detail,
+                "reason": item["reason"], "causes": item["causes"], "guard": item["guard"],
+                "body": str(inp.get("body") or "") if tool in policy.POST_TOOLS else None,
+                "always": bool(item["keys"]), "always_text": label, "always_title": tip,
+                "always_label": ", ".join(k.removeprefix("Bash:").removeprefix("Read:") for k in item["keys"])}
+
+    def mark(tid: str, cause: dict) -> list[dict]:
+        causes = marks.setdefault(tid, [])
+        cause = {"kind": cause["kind"], "text": tilde(str(cause.get("text", "")))[:300]}
+        if cause not in causes and len(causes) < 50:
+            causes.append(cause)
+        return causes
+
+    @app.post("/api/internal/taint")
+    def taint(body: TaintIn) -> dict:
+        """Mark the thread's current turn: a lookup, an outside read or an approved action happened (policy.py)."""
+        if body.kind not in policy.CAUSE_KINDS:
+            raise HTTPException(400, f"kind must be one of {', '.join(policy.CAUSE_KINDS)}")
+        return {"marked": True, "causes": mark(body.thread_id, {"kind": body.kind, "text": body.text})}
+
+    @app.get("/api/internal/taint")
+    def turn_mark(thread: str = "") -> dict:
+        causes = marks.get(thread, [])
+        return {"marked": bool(causes), "causes": causes}
 
     @app.post("/api/internal/approvals")
     async def ask_approval(body: ApprovalIn) -> dict:
         queue = live_streams.get(body.thread_id)
         if queue is None:
             return {"decision": "deny", "message": "The reviewer isn't watching this chat, so nobody can approve it."}
+        # The server decides what the card may offer: a guard card (posting or sending out after outside data)
+        # never offers "Always allow", and neither does a read of /, ~ or a secrets folder.
+        causes = list(marks.get(body.thread_id, []))
+        guard = policy.guard_card(body.tool_name, bool(causes))
+        keys = [] if guard else policy.approval_keys(body.tool_name, body.input, sc=policy.scope(pr_dir),
+                                                      cwd=body.cwd or ctx()["worktree"])
+        given = body.reason or {}
+        reason = ({k: str(given[k])[:300] for k in ("kind", "text", "detail") if given.get(k)}
+                  if given.get("kind") and given.get("text") else None)
         aid = uuid.uuid4().hex[:12]
-        item = {"thread": body.thread_id, "tool": body.tool_name, "input": body.input, "done": asyncio.Event(), "answer": None}
+        item = {"thread": body.thread_id, "tool": body.tool_name, "input": body.input, "keys": keys, "guard": guard,
+                "reason": policy.guard_reason(body.tool_name, causes) if guard else
+                reason or policy.default_reason(body.tool_name),
+                "causes": causes if guard else [], "done": asyncio.Event(), "answer": None}
         approvals[aid] = item
-        await queue.put(approval_card(aid, body.tool_name, body.input))
+        await queue.put(approval_card(aid, item))
         try:
-            await asyncio.wait_for(item["done"].wait(), chat_tools.APPROVAL_WAIT_S)
+            await asyncio.wait_for(item["done"].wait(), policy.APPROVAL_WAIT_S)
         except asyncio.TimeoutError:
-            item["answer"] = {"decision": "deny", "message": "Nobody answered in time."}
+            settle(aid, {"decision": "deny", "message": "Nobody answered in time."}, why="timeout")
         finally:
             approvals.pop(aid, None)
         answer = item["answer"] or {"decision": "deny"}
+        if answer["decision"] == "always" and not keys:
+            answer = {**answer, "decision": "allow"}  # once only, whatever the request asked
+        if answer["decision"] in ("allow", "always"):  # any approval marks the turn (D19, eng D9)
+            kind = {"outside_read": "outside_read", "outside_author": "lookup"}.get(item["reason"].get("kind"), "approved")
+            mark(body.thread_id, {"kind": kind, "text": policy.summary(body.tool_name, body.input)})
         if answer["decision"] == "always":
-            keys = chat_tools.approval_keys(body.tool_name, body.input)
-
-            def remember(s: dict) -> None:
+            def remember(s: dict) -> list[str]:
                 t = next((t for t in s["threads"] if t["id"] == body.thread_id), None)
-                if t is not None:
-                    allowed = t.setdefault("always_allow", [])
-                    allowed += [k for k in keys if k not in allowed]
+                if t is None:
+                    return []
+                allowed = t.setdefault("always_allow", [])
+                allowed += [k for k in keys if k not in allowed]
+                return list(allowed)
 
-            store.update(remember)
+            allowed = store.update(remember)
+            for other, waiting in list(approvals.items()):  # cards this choice covers are settled too
+                if waiting["thread"] == body.thread_id and policy.covered(waiting["keys"], allowed):
+                    settle(other, {"decision": "allow"}, why="covered")
         return answer
 
-    def settle(aid: str, answer: dict) -> None:
+    def settle(aid: str, answer: dict, why: str = "answered") -> None:
+        """why: answered | covered (by an "Always allow" on another card) | timeout | closed."""
         item = approvals.get(aid)
         if item and not item["done"].is_set():
             item["answer"] = answer
             item["done"].set()
             queue = live_streams.get(item["thread"])
             if queue is not None:
-                queue.put_nowait({"type": "approval_done", "id": aid, "decision": answer["decision"]})
+                queue.put_nowait({"type": "approval_done", "id": aid, "decision": answer["decision"], "why": why})
 
     @app.post("/api/chat/approvals/{aid}")
     def decide(aid: str, body: DecisionIn) -> dict:
@@ -612,8 +676,10 @@ def create_app(pr_dir: Path, cfg: Config) -> FastAPI:
             raise HTTPException(404, "this request is no longer waiting (it may have timed out)")
         if body.decision not in ("allow", "always", "deny"):
             raise HTTPException(400, "decision must be allow, always or deny")
+        if body.decision == "always" and not approvals[aid]["keys"]:
+            body.decision = "allow"  # this card can't be remembered (a guard card, or a folder holding secrets)
         settle(aid, {"decision": body.decision} if body.decision != "deny" else
-               {"decision": "deny", "message": "The reviewer said no. Don't try this again; ask them what they want instead."})
+               {"decision": "deny", "message": policy.DENIED})
         return {"ok": True}
 
     @app.post("/api/chat/threads/{tid}/long-hint/dismiss")
@@ -624,6 +690,12 @@ def create_app(pr_dir: Path, cfg: Config) -> FastAPI:
 
         store.update(apply)
         return {"ok": True}
+
+    @app.get("/api/trust")
+    def author_trust() -> dict:
+        """Is the PR's author a member or collaborator? {author, association, trusted, state}; state is trusted,
+        outside or unknown (the check failed). Outside and unknown: connector lookups ask first."""
+        return policy.trust(pr_dir)
 
     @app.delete("/api/chat/threads/{tid}/always-allow")
     def forget_always_allow(tid: str) -> dict:
@@ -683,6 +755,7 @@ def create_app(pr_dir: Path, cfg: Config) -> FastAPI:
 
         thread = store.update(add_user)
         running[tid] = None  # type: ignore[assignment]  # reserve the slot; the process attaches via on_start
+        marks.pop(tid, None)  # a new turn starts unmarked
         analysis_now = await asyncio.to_thread(merge.build_analysis, pr_dir)
         mcp_config, codegraph = chat_mcp(tid)
         system_file = chat_system_file(analysis_now, codegraph)
@@ -704,6 +777,7 @@ def create_app(pr_dir: Path, cfg: Config) -> FastAPI:
                         prompt, cwd=Path(c["worktree"]), session_id=thread["session_id"], resume=started,
                         model=cfg.models.chat, system_file=system_file, add_dirs=[pr_dir], mcp_config=mcp_config,
                         ask_first=cfg.chat.ask_before_actions, on_start=lambda p: running.__setitem__(tid, p),
+                        thread_id=tid, pr_dir=pr_dir, roots=policy.roots(pr_dir),
                     ):
                         await queue.put(ev)
                 except Exception as e:  # noqa: BLE001
@@ -738,7 +812,7 @@ def create_app(pr_dir: Path, cfg: Config) -> FastAPI:
             finally:
                 live_streams.pop(tid, None)
                 for aid in [a for a, item in approvals.items() if item["thread"] == tid]:
-                    settle(aid, {"decision": "deny", "message": "The reviewer closed the chat."})
+                    settle(aid, {"decision": "deny", "message": "The reviewer closed the chat."}, why="closed")
                 producer.cancel()
                 running.pop(tid, None)
                 cache.pop("threads_at", None)  # the chat may have posted comments; reload them from GitHub next time
@@ -778,6 +852,7 @@ def create_app(pr_dir: Path, cfg: Config) -> FastAPI:
         return Response(index.read_bytes(), media_type="text/html", headers={"cache-control": "no-cache"})
 
     app.state.running = running
+    app.state.live_streams, app.state.approvals, app.state.marks = live_streams, approvals, marks
     return app
 
 
