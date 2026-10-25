@@ -1,5 +1,6 @@
 import { useEffect, useMemo, useRef, useState } from "react";
-import { IconCheck, IconChevronDown, IconChevronRight, IconSearch, StatusIcon } from "../icons";
+import { riskySeenText, useCoverage, useCoverageSync } from "../coverage";
+import { IconCheck, IconChevronDown, IconChevronRight, IconEye, IconSearch, StatusIcon } from "../icons";
 import { InlineText } from "../markdown";
 import { fileHref, useRoute } from "../router";
 import { fileMap, hiddenByPrefs, isStaleReview, splitPath, useStore, type ViewPrefs } from "../store";
@@ -8,9 +9,26 @@ import type { ChapterFile, FileEntry } from "../types";
 const OTHER_ID = "_other"; // the extra group for files the reading order left out
 const RISK_TEXT = { high: "High risk", medium: "Medium risk", low: "Low risk" } as const;
 
+/** "2 of 5 risky hunks seen" on a high-risk file (design issue 22): text plus an icon, never color alone. */
+function RiskySeen({ path }: { path: string }) {
+  const v = useCoverage((s) => s.coverage?.high_risk_unseen.by_file[path]);
+  if (!v || !v.total) return null;
+  const all = v.seen >= v.total;
+  return (
+    <span
+      className={`tree-seen${all ? " done" : ""}`}
+      title="Changed blocks of this high-risk file that were on your screen for 3 seconds, or where you answered a review stop"
+    >
+      {all ? <IconCheck size={12} /> : <IconEye size={12} />}
+      {riskySeenText(v)}
+    </span>
+  );
+}
+
 function FileRow({ file, why, active }: { file: FileEntry; why: string; active: boolean }) {
   const reviewedMap = useStore((s) => s.state.reviewed);
   const drafts = useStore((s) => s.state.drafts.filter((d) => d.path === file.path).length);
+  const risky = useCoverage((s) => !!s.coverage?.high_risk_unseen.by_file[file.path]?.total);
   const ref = useRef<HTMLAnchorElement>(null);
   const viewed = file.path in reviewedMap;
   const stale = isStaleReview(reviewedMap, file);
@@ -36,7 +54,7 @@ function FileRow({ file, why, active }: { file: FileEntry; why: string; active: 
           </span>
         )}
       </span>
-      {(dir || drafts > 0 || stale || file.sensitive || file.is_test || file.is_docs) && (
+      {(dir || drafts > 0 || stale || file.sensitive || file.is_test || file.is_docs || risky) && (
         <span className="tree-line2">
           {dir && <span className="tree-dir">{dir.replace(/\/$/, "")}</span>}
           {(file.is_test || file.is_docs) && (
@@ -55,6 +73,7 @@ function FileRow({ file, why, active }: { file: FileEntry; why: string; active: 
               {drafts} pending
             </span>
           )}
+          <RiskySeen path={file.path} />
         </span>
       )}
       {active && why && (
@@ -76,6 +95,7 @@ export function ReviewPath() {
   const [closed, setClosed] = useState<Record<string, boolean>>({});
   const [openSkim, setOpenSkim] = useState<Record<string, boolean>>({});
   const activePath = route.view === "file" ? route.path : null;
+  useCoverageSync(); // "2 of 5 risky hunks seen" on high-risk files
 
   const chapters = useMemo(() => {
     if (!analysis) return [];

@@ -1,4 +1,4 @@
-import { useCallback, useEffect, useMemo, useRef, useState, type MouseEvent, type ReactNode } from "react";
+import { useCallback, useEffect, useMemo, useRef, useState, type MouseEvent, type ReactNode, type RefObject } from "react";
 import {
   Decoration, Diff, Hunk, getChangeKey, isDelete, isInsert, parseDiff, tokenize,
   type ChangeData, type FileData, type HunkData, type HunkTokens, type TokenizeOptions,
@@ -12,7 +12,8 @@ import protobuf from "refractor/protobuf";
 import graphql from "refractor/graphql";
 import hcl from "refractor/hcl";
 import docker from "refractor/docker";
-import { api } from "../api";
+import { api, hunkId } from "../api";
+import { isSeen, markHunkSeen, SEEN_AFTER_MS } from "../coverage";
 import { registerFileNav, stepFile } from "../keyboard";
 import { InlineText, Markdown } from "../markdown";
 import { goFile, navigate, fileHref, useNavTick } from "../router";
@@ -639,6 +640,61 @@ function placeOn(path: string, s: Anchor) {
     });
 }
 
+/** On screen: at least half of it, or (for a tall hunk) at least half the screen. */
+function onScreen(e: IntersectionObserverEntry): boolean {
+  if (!e.isIntersecting) return false;
+  const screenHeight = e.rootBounds?.height ?? window.innerHeight;
+  return e.intersectionRatio >= 0.5 || e.intersectionRect.height >= screenHeight / 2;
+}
+
+/**
+ * Coverage (E5): a hunk on screen for 3 s counts as seen. Each one is sent once, batched per file, with the
+ * backend's hunk id (hunkId in api.ts). The diff draws each hunk as a `tbody.diff-hunk`, in hunk order.
+ */
+function useSeenHunks(container: RefObject<HTMLDivElement | null>, path: string, hunks: HunkData[], on: boolean) {
+  useEffect(() => {
+    const root = container.current;
+    if (!on || !root || typeof IntersectionObserver === "undefined") return;
+    const ids = new Map<Element, string>();
+    root.querySelectorAll("tbody.diff-hunk").forEach((el, i) => {
+      const h = hunks[i];
+      if (!h) return;
+      const id = hunkId({ old_start: h.oldStart, old_lines: h.oldLines, new_start: h.newStart, new_lines: h.newLines });
+      if (!isSeen(path, id)) ids.set(el, id);
+    });
+    if (!ids.size) return;
+    const timers = new Map<Element, number>();
+    const observer = new IntersectionObserver(
+      (entries) => {
+        for (const e of entries) {
+          const id = ids.get(e.target);
+          if (!id) continue;
+          if (onScreen(e)) {
+            if (timers.has(e.target)) continue;
+            timers.set(
+              e.target,
+              window.setTimeout(() => {
+                timers.delete(e.target);
+                observer.unobserve(e.target);
+                markHunkSeen(path, id);
+              }, SEEN_AFTER_MS),
+            );
+          } else {
+            window.clearTimeout(timers.get(e.target));
+            timers.delete(e.target);
+          }
+        }
+      },
+      { threshold: [0, 0.25, 0.5, 0.75, 1] },
+    );
+    ids.forEach((_, el) => observer.observe(el));
+    return () => {
+      observer.disconnect();
+      timers.forEach((t) => window.clearTimeout(t));
+    };
+  }, [container, path, hunks, on]);
+}
+
 /** "Click a line in the diff to move this comment there · Esc to cancel", while Re-place waits for a pick. */
 function ReplaceBanner() {
   const cancel = useStore((s) => s.cancelReplace);
@@ -726,6 +782,7 @@ export function FileView({ path, line, side, full }: { path: string; line: numbe
 
   const showFull = !inPR || full || (file?.binary ?? false);
   const fullAt: "head" | "base" = file?.status === "deleted" ? "base" : "head";
+  useSeenHunks(containerRef, path, hunks, inPR && !showFull && hunks.length > 0);
 
   // ---- navigation to ?line=
   useEffect(() => {
