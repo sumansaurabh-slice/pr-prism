@@ -1,5 +1,5 @@
 """state.json: the reviewer's own data (reviewed files, drafts, chat threads, guided-review answers, seen hunks,
-the review summary draft). Survives re-analysis."""
+the review summary draft, "Understand this PR" progress and its background level). Survives re-analysis."""
 
 from __future__ import annotations
 
@@ -19,7 +19,8 @@ STATE_VERSION = 2
 
 def empty_state() -> dict[str, Any]:
     return {"version": STATE_VERSION, "reviewed": {}, "dismissed_suggestions": [], "drafts": [], "threads": [],
-            "submitted": [], "stop_verdicts": {}, "seen_hunks": {}, "review_body_draft": ""}
+            "submitted": [], "stop_verdicts": {}, "seen_hunks": {}, "review_body_draft": "",
+            "understand_level": "new", "understood_steps": {}}
 
 
 class StateStore:

@@ -3,7 +3,8 @@ import { create } from "zustand";
 import { api, ApiError, type NewDraft } from "./api";
 import type {
   Analysis, ChatThread, ContextChip, CostSummary, Draft, DraftPlace, ExistingComment, FileEntry, HeadStatus,
-  ReviewState, Side, SinceReview, Stop, Trust, UndoResult, Verdict, VerdictResult,
+  ReviewState, Side, SinceReview, StepExplanation, Stop, Trust, UndoResult, Understand, UnderstandLevel, Verdict,
+  VerdictResult,
 } from "./types";
 
 /** Picked lines. `start` is on `startSide`, `end` is on `side`; they differ only for a range that starts on a
@@ -23,6 +24,13 @@ export interface Selection {
 export interface ToastAction { label: string; run: () => void }
 export interface Toast { id: number; kind: "info" | "error" | "success"; text: string; actions?: ToastAction[] }
 export interface ToastOptions { actions?: ToastAction[]; ms?: number }
+
+/** A step's text at one level (POST /api/understand/steps/{id}): on its way, here, or why it failed. */
+export type Explained =
+  | { status: "loading" }
+  | { status: "done"; data: StepExplanation }
+  | { status: "error"; error: string };
+export const explainKey = (id: string, level: UnderstandLevel) => `${id}:${level}`;
 
 /** The "Hide …" checkboxes in the file list. They also decide which files j/k and "Mark viewed & next" visit. */
 export interface ViewPrefs { hideViewed: boolean; hideTests: boolean; hideDocs: boolean }
@@ -72,6 +80,15 @@ interface Store {
   loadHead: () => Promise<void>;
   setSinceOn: (on: boolean) => void;
   reanalyze: () => Promise<void>;
+
+  // ---- Understand this PR
+  understand: Understand | null;        // GET /api/understand: the steps, the level, and the steps you understood
+  understandError: string | null;
+  explained: Record<string, Explained>; // explainKey(step, level) → its text
+  loadUnderstand: () => Promise<void>;
+  explainStep: (id: string, level: UnderstandLevel, again?: boolean) => Promise<void>;
+  setUnderstandLevel: (level: UnderstandLevel) => Promise<void>;
+  setUnderstood: (id: string, understood: boolean) => Promise<void>;
 
   loadAnalysis: () => Promise<void>;
   loadState: () => Promise<void>;
@@ -177,6 +194,58 @@ export const useStore = create<Store>((set, get) => ({
   lastAnswer: null,
   keepAsk: null,
   chatRail: false,
+
+  understand: null,
+  understandError: null,
+  explained: {},
+  loadUnderstand: async () => {
+    try {
+      set({ understand: await api.understand(), understandError: null });
+    } catch (e) {
+      set({ understandError: (e as Error).message });
+    }
+  },
+  // Made on demand and cached by the server; here each step's text is fetched once per level. `again` retries one
+  // that failed (Try again, or opening a step whose fetch-ahead failed).
+  explainStep: async (id, level, again = false) => {
+    const key = explainKey(id, level);
+    const had = get().explained[key];
+    if (had && (had.status !== "error" || !again)) return;
+    set((s) => ({ explained: { ...s.explained, [key]: { status: "loading" } } }));
+    let next: Explained;
+    try {
+      next = { status: "done", data: await api.explainStep(id, level) };
+    } catch (e) {
+      next = { status: "error", error: (e as Error).message };
+    }
+    set((s) => ({ explained: { ...s.explained, [key]: next } }));
+  },
+  // "I'm new to this area" / "I know this area": remembered per PR; the step on screen re-fetches at the new level.
+  setUnderstandLevel: async (level) => {
+    const prev = get().understand;
+    if (!prev || prev.level === level) return;
+    set({ understand: { ...prev, level } });
+    try {
+      await api.setUnderstandLevel(level);
+    } catch (e) {
+      set((s) => ({ understand: s.understand && { ...s.understand, level: prev.level } }));
+      get().toast("error", `Could not save the level: ${(e as Error).message}`);
+    }
+  },
+  setUnderstood: async (id, understood) => {
+    const prev = get().understand;
+    if (!prev) return;
+    const mark = (u: Understand, at: string | undefined): Understand => ({
+      ...u, understood: at ? { ...u.understood, [id]: at } : withoutKey(u.understood, id),
+    });
+    set({ understand: mark(prev, understood ? (prev.understood[id] ?? new Date().toISOString()) : undefined) });
+    try {
+      await api.setUnderstood(id, understood);
+    } catch (e) {
+      set((s) => ({ understand: s.understand && mark(s.understand, prev.understood[id]) }));
+      get().toast("error", `Could not save "Got it": ${(e as Error).message}`);
+    }
+  },
 
   sinceReview: null,
   sinceChoice: {},

@@ -390,6 +390,61 @@ class Stop(BaseModel):
     dropped: bool = False          # an answer whose stop is gone or hidden by the second look ("earlier answer")
 
 
+UnderstandLevel = Literal["new", "familiar"]
+StepKind = Literal["file", "part", "group"]
+
+
+class StepHunk(BaseModel):
+    old_start: int
+    old_lines: int
+    new_start: int
+    new_lines: int
+
+
+class UnderstandStep(BaseModel):
+    """Understand this PR: one step of the walk (prr/understand.py `build_steps`)."""
+    id: str                        # "und-" + 40 hex: sha1(path | hunk range | head blob)
+    chapter_id: str
+    chapter_title: str
+    chapter_goal: str | None
+    path: str                      # a group's first file
+    hunks: list[StepHunk]          # the hunks this step covers ([] for a group)
+    role: str | None               # the file summary's first sentence
+    tests: list[str]               # test files that test this code ("Tested by")
+    skim: list[str]                # generated, lock, vendored, binary paths (only on a chapter's first step)
+    order: int
+    kind: StepKind                 # part: one hunk group of a big file; group: "Other changes in this chapter"
+    files: list[str]               # [path], or a group's paths
+
+
+class Connection(BaseModel):
+    path: str = Field(description="A file you read that calls this code or reads its output, relative to the repo")
+    line: int = Field(description="The line in that file")
+    text: str = Field(description="One short sentence: how it connects to this code")
+
+
+class Term(BaseModel):
+    term: str
+    meaning: str = Field(description="One plain sentence")
+
+
+class LookAt(BaseModel):
+    side: Side = Field(description="RIGHT for an added or unchanged line (new number), LEFT for a deleted line (old number)")
+    line: int
+
+
+class UnderstandOut(BaseModel):
+    before: str = Field(description="What this code did before the PR, up to 3 sentences, from the old version")
+    change: str = Field(description="What behaves differently now, before vs after, up to 3 sentences")
+    why: str | None = Field(description="Why the PR makes this change, from what the PR says; null when nothing says")
+    why_source: str | None = Field(description="Where the reason comes from: the PR description, a commit, a code "
+                                               "comment or a test; null when why is null")
+    why_missing: bool = Field(description="True when nothing in the PR says why")
+    connects: list[Connection] = Field(description="Up to 4 places that call this code or read its output")
+    terms: list[Term] = Field(description="Up to 4 repo or domain terms a newcomer needs; empty for a familiar reader")
+    look_at: list[LookAt] = Field(description="The 1-3 diff lines that matter most")
+
+
 class ReviewSummary(BaseModel):
     """The Overview's plan box: "N places need a human · M files have nothing flagged · ~K min"."""
     places: int = 0                # stops listed (not "more", not low confidence, not dropped)

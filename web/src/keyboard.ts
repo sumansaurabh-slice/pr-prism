@@ -33,6 +33,22 @@ const REVIEW_KEYS: Record<string, keyof ReviewNav> = {
   y: "real", n: "not", "?": "unsure", c: "chat", j: "next", k: "prev", u: "undo",
 };
 
+/** The Understand view registers these while mounted. Its keys apply there only; elsewhere y, c, j, k and → keep
+ * their meanings (c comments, j / k move between files, y and → do nothing). */
+export interface UnderstandNav {
+  gotIt: () => void;  // y or →: mark the step understood and go on
+  chat: () => void;   // c: ask about this step
+  next: () => void;   // j
+  prev: () => void;   // k
+}
+let understandNav: UnderstandNav | null = null;
+export function registerUnderstandNav(nav: UnderstandNav | null) {
+  understandNav = nav;
+}
+const UNDERSTAND_KEYS: Record<string, keyof UnderstandNav> = {
+  y: "gotIt", ArrowRight: "gotIt", c: "chat", j: "next", k: "prev",
+};
+
 function isTyping(target: EventTarget | null): boolean {
   if (!(target instanceof HTMLElement)) return false;
   const tag = target.tagName;
@@ -83,6 +99,13 @@ export function useGlobalKeys() {
       if (route.view === "review" && reviewNav && REVIEW_KEYS[e.key]) {
         if (st.helpOpen || st.draftsOpen) return; // a window is open over the stop: no answer from behind it
         reviewNav[REVIEW_KEYS[e.key]]();
+        e.preventDefault();
+        return;
+      }
+      const understandKey = e.key === "ArrowRight" && e.shiftKey ? undefined : UNDERSTAND_KEYS[e.key];
+      if (route.view === "understand" && understandNav && understandKey) {
+        if (st.helpOpen || st.draftsOpen) return; // a window is open over the step
+        understandNav[understandKey]();
         e.preventDefault();
         return;
       }
@@ -153,4 +176,11 @@ export const REVIEW_SHORTCUTS: [string, string][] = [
   ["j / k", "Next / previous stop"],
   ["⌘/Ctrl + Enter", "Save the comment and go to the next stop"],
   ["Esc", "Keep the comment and stay on this stop"],
+];
+
+/** The Understand view's keys; the help lists them first while you are in the view. */
+export const UNDERSTAND_SHORTCUTS: [string, string][] = [
+  ["y or →", "Got it: mark this step understood and go to the next one"],
+  ["c", "Ask about this step in the chat"],
+  ["j / k", "Next / previous step"],
 ];

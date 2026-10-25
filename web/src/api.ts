@@ -1,7 +1,7 @@
 import type {
   Analysis, ApprovalDecision, CIInfo, ChatEvent, ChatThread, ContextChip, CostSummary, Coverage, Draft, DraftPlace,
   ExistingComment, HeadStatus, HunkInfo, ReanalyzeResult, ReviewEvent, ReviewPreview, ReviewState, Side, SinceReview,
-  Trust, UndoResult, Verdict, VerdictResult,
+  StepExplanation, Trust, UndoResult, Understand, UnderstandLevel, Verdict, VerdictResult,
 } from "./types";
 
 export class ApiError extends Error {
@@ -98,6 +98,14 @@ export const api = {
   head: () => request<HeadStatus>("GET", "/api/head"),
   /** "Re-read the PR": fetch and analyze in the background. ApiError 409 while an analysis already runs. */
   reanalyze: () => request<ReanalyzeResult>("POST", "/api/reanalyze"),
+  // Understand this PR: the steps, a step's text (made on demand; ApiError 404 for an unknown step, 502 when it
+  // couldn't be made), the background level, and "Got it"
+  understand: () => request<Understand>("GET", "/api/understand"),
+  explainStep: (id: string, level: UnderstandLevel) =>
+    request<StepExplanation>("POST", `/api/understand/steps/${q(id)}`, { level }),
+  setUnderstandLevel: (level: UnderstandLevel) => request<{ level: UnderstandLevel }>("PUT", "/api/understand/level", { level }),
+  setUnderstood: (id: string, understood: boolean) =>
+    request<{ understood: boolean }>("POST", `/api/understand/steps/${q(id)}/understood`, { understood }),
 };
 
 /** POST a chat message and stream SSE `data: <json>` frames back to `onEvent`. */
