@@ -246,7 +246,8 @@ def test_doctor_reports_the_last_e2e_run(tmp_path, monkeypatch):
     record.write_text(json.dumps({"at": "2026-10-25T09:30:00+00:00", "passed": True, "claude": "2.1.310",
                                   "results": {"test_a": "passed", "test_b": "passed"}}))
     label, ok, _ = install.e2e_check("2.1.310")
-    assert ok and label == "end-to-end chat security test passed on 2026-10-25 09:30 (Claude Code 2.1.310)"
+    local = datetime(2026, 10, 25, 9, 30, tzinfo=timezone.utc).astimezone().strftime("%Y-%m-%d %H:%M")
+    assert ok and label == f"end-to-end chat security test passed on {local} (Claude Code 2.1.310)"
     label, ok, hint = install.e2e_check("2.1.400")
     assert not ok and "you now run 2.1.400" in label and "test_e2e_chat_security.py" in hint
     record.write_text(json.dumps({"at": "2026-10-25T09:30:00+00:00", "passed": False, "claude": "2.1.310",

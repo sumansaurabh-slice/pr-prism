@@ -95,7 +95,10 @@ def e2e_check(current_claude: str | None) -> Check | None:
         if (REPO_DIR / ".venv").is_dir():
             return "end-to-end chat security test", False, f"no run recorded in this checkout; {rerun}"
         return None
-    when = str(rec.get("at", ""))[:16].replace("T", " ")
+    try:
+        when = datetime.fromisoformat(rec["at"]).astimezone().strftime("%Y-%m-%d %H:%M")  # your local time
+    except (KeyError, TypeError, ValueError):
+        when = "an unknown date"
     ran_on = rec.get("claude") or "unknown"
     if not rec.get("passed"):
         failed = ", ".join(k for k, v in (rec.get("results") or {}).items() if v != "passed")
