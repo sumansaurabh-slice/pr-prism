@@ -115,8 +115,8 @@ def test_an_unreachable_reviewed_commit_falls_back_to_the_whole_pr(pushed, monke
 
     out = since.changes(pushed.pr_dir, pushed.ctx, {"reviewed_head": gone, "reviewed_base": pushed.base}, tried)
     assert out["ok"] and out["full_pr"] and tries == [gone]
-    assert out["note"] == ("The commit you reviewed (fffffff) is no longer on GitHub, likely after a force-push, so "
-                           "this shows the whole PR.")
+    assert out["note"] == ("The commit you reviewed (fffffff) can't be found, likely after a force-push, so this "
+                           "shows the whole PR.")
     assert [f["path"] for f in out["files"]] == [f["path"] for f in pushed.ctx["files"]]
     core = next(f for f in out["files"] if f["path"] == "src/core.py")
     assert core["hunks"] == [{k: h[k] for k in ("old_start", "old_lines", "new_start", "new_lines")}

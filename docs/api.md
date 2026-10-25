@@ -69,7 +69,7 @@ When you submit a review (Submit, or the chat's `post_review`; a single chat `po
 | `reviewed_head`, `head` | the commit you reviewed (null: no review yet) and the analyzed head |
 | `files` | `[{path, hunks: [{old_start, old_lines, new_start, new_lines}]}]`: `git diff <reviewed_head> <head> -- <the PR's current files>`. Empty with no reviewed head or the same head: the app hides its toggle. |
 | `patch` | `{path: unified diff}`, one entry per file in `files`, in the same form as `GET /api/diff`'s `patch` |
-| `note` | "main moved; some changes may come from main" (named after the PR's base branch) when the merge base moved; "The commit you reviewed (abc1234) is no longer on GitHub, likely after a force-push, so this shows the whole PR." when it is gone; "Couldn't compute changes since your review: <reason>" when git fails |
+| `note` | "main moved; some changes may come from main" (named after the PR's base branch) when the merge base moved; "The commit you reviewed (abc1234) can't be found, likely after a force-push, so this shows the whole PR." when it is gone from your repo and can't be fetched by sha; "Couldn't compute changes since your review: <reason>" when git fails |
 | `ok` | false when git failed: no files; the app shows the note and disables the toggle |
 | `full_pr` | true when the reviewed commit is gone: `files` and `patch` are the whole PR |
 | `comments` | your earlier comments: `[{id, path, line, status, note}]`, `id` being the GitHub comment id and `line` null when outdated |

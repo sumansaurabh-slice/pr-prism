@@ -34,7 +34,7 @@ from .util import read_json
 
 SHA = re.compile(r"^[0-9a-f]{7,64}$")
 FETCH_TIMEOUT_S = 60
-GONE = "The commit you reviewed ({short}) is no longer on GitHub, likely after a force-push, so this shows the whole PR."
+GONE = "The commit you reviewed ({short}) can't be found, likely after a force-push, so this shows the whole PR."
 BASE_MOVED = "{base} moved; some changes may come from {base}"
 FAILED = "Couldn't compute changes since your review: {reason}"
 LIMIT = "{n} not checked (limit; raise `recheck_max`)"
