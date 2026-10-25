@@ -27,7 +27,8 @@ SecondLook = Literal["judge", "rule", "carried", "pending", "none"]
 FileStatus = Literal["added", "modified", "deleted", "renamed", "copied"]
 ImpactKind = Literal["callers", "breaking", "migration", "config", "perf", "security", "tests", "sensitive", "other"]
 FlowNodeKind = Literal["entry", "logic", "store", "external", "test"]
-ProgressStatus = Literal["fetched", "annotating", "synthesizing", "complete", "failed"]
+# deepchecking: the deep check ("what could break") runs after the summary; its findings arrive one area at a time
+ProgressStatus = Literal["fetched", "annotating", "synthesizing", "deepchecking", "complete", "failed"]
 
 
 # --------------------------------------------------------------------------------------
@@ -78,6 +79,27 @@ class FlowEdgeOut(BaseModel):
 class AnnotateOut(BaseModel):
     files: list[FileAnnotation]
     flow_edges: list[FlowEdgeOut]
+
+
+# --------------------------------------------------------------------------------------
+# LLM output: deep check, "what could break" (prompts/deepcheck.md)
+# --------------------------------------------------------------------------------------
+
+
+class EvidenceRef(BaseModel):
+    path: str
+    line: int
+
+
+class DeepFinding(FindingOut):
+    path: str = Field(description="The changed file the comment belongs on, copied exactly from a ### heading")
+    scenario: list[str] = Field(description="2-6 short steps, with example values, from a starting state to the wrong result")
+    question: str = Field(description="One yes/no question for the reviewer that settles whether this is real")
+    evidence_refs: list[EvidenceRef] = Field(description="Up to 4 spots you read that show it: path and line in the current code")
+
+
+class DeepCheckOut(BaseModel):
+    findings: list[DeepFinding]
 
 
 # --------------------------------------------------------------------------------------
@@ -257,6 +279,10 @@ class Finding(BaseModel):
     status: FindingStatus          # "still-open": also found in the previous review round
     also_flagged_by: list[str]     # other review tools that flagged the same spot
     comment_body: str              # ready-to-post Markdown
+    scenario: list[str] = []       # deep check: "How it could happen", 2-6 steps with example values
+    question: str | None = None    # deep check: one yes/no question for the reviewer
+    evidence_refs: list[EvidenceRef] = []  # deep check: up to 4 spots it read ({path, line} in the head code)
+    sources: list[str] = []        # which passes found it: "annotate", "blockers", "deep-check" (twins list both)
 
 
 class BotFinding(BaseModel):
@@ -323,6 +349,9 @@ class Progress(BaseModel):
     finished_at: str | None = None
     log: list[str] = []
     cost_usd: float = 0.0          # this analysis run's spend so far, from calls.jsonl
+    deepcheck_total: int = 0       # areas the deep check is checking in this run
+    deepcheck_done: int = 0        # … of which finished (checked, nothing found, failed or stopped)
+    deepcheck_cost_usd: float = 0.0  # the deep check's share of cost_usd
 
 
 class Analysis(BaseModel):
@@ -342,6 +371,7 @@ class Analysis(BaseModel):
     rechecked: list[Resolved]
     progress: Progress
     repair_log: list[str]
+    warnings: list[str] = []       # what didn't run fully, e.g. a deep-check area that failed or was skipped
 
 
 # --------------------------------------------------------------------------------------

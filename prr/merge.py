@@ -12,7 +12,7 @@ from collections import defaultdict
 from pathlib import Path
 from typing import Any
 
-from . import anchors, blockers, bots, ci, diffparse, filekinds, findings, judge
+from . import anchors, blockers, bots, ci, deepcheck, diffparse, filekinds, findings, judge
 from .classify import CATEGORY_ORDER, CATEGORY_TITLES
 from .models import Analysis
 from .util import read_json
@@ -107,7 +107,8 @@ def _keys_by_path(pr_dir: Path) -> dict[str, list[str]]:
 
 
 def placed_findings(pr_dir: Path, ctx: dict) -> list[dict]:
-    """The reviewer's findings plus the blocker rules' proposals, placed on diff lines and de-duplicated."""
+    """The reviewer's findings, the blocker rules' proposals and this run's deep-check findings, placed on diff lines
+    and de-duplicated (a twin found by two passes lists both in `sources`)."""
     fls = file_lines(pr_dir)
     raw: list[tuple[str, dict]] = []
     for path, keys in _keys_by_path(pr_dir).items():
@@ -121,6 +122,7 @@ def placed_findings(pr_dir: Path, ctx: dict) -> list[dict]:
                 items = [findings.from_legacy(old, fls.get(path)) for old in ann.get("suggestions", [])]
             raw += [(path, x) for x in items]
             raw += [(b["path"], blockers.to_raw_finding(b, b.get("problem"))) for b in part.get("blockers", [])]
+    raw += deepcheck.found(pr_dir)
     placed = [findings.place(x, path, fls.get(path)) for path, x in raw]
     kept, _ = findings.dedupe(placed)
     return kept
@@ -338,8 +340,10 @@ def build_analysis(pr_dir: Path) -> dict[str, Any]:
         "ci": ci.public(read_json(pr_dir / "ci.json")),
         "rechecked": rechecked,
         "progress": {k: progress.get(k) for k in ("status", "clusters_total", "clusters_done", "clusters_failed",
-                                                   "message", "started_at", "finished_at", "log", "cost_usd")
+                                                   "message", "started_at", "finished_at", "log", "cost_usd",
+                                                   "deepcheck_total", "deepcheck_done", "deepcheck_cost_usd")
                      if k in progress},
         "repair_log": ctx.get("warnings", []) + log,
+        "warnings": deepcheck.warnings(pr_dir),
     }
     return Analysis.model_validate(analysis).model_dump(mode="json")

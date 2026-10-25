@@ -1,4 +1,5 @@
-"""`prr analyze`: parallel per-cluster annotation → deterministic impact → one synthesis call → analysis.json.
+"""`prr analyze`: parallel per-cluster annotation → deterministic impact → one synthesis call → the deep check
+("what could break") → analysis.json.
 
 Progress goes to progress.json after every step, so the web app fills in while this runs.
 Annotations are cached per file by (path, blobs, prompt version, focus), so a re-run after the PR
@@ -15,8 +16,8 @@ from concurrent.futures import ThreadPoolExecutor, as_completed
 from pathlib import Path
 from typing import Any, Callable
 
-from . import (blockers, bots, ci, cluster, cost, diffparse, filekinds, github, impact, judge, ledger, merge, recheck,
-               rubrics)
+from . import (blockers, bots, ci, cluster, cost, deepcheck, diffparse, filekinds, github, impact, judge, ledger,
+               merge, recheck, rubrics)
 from .claude import ClaudeError, run_structured
 from .config import GUIDELINES_FILE, PROMPTS_DIR, Config
 from .models import AnnotateOut, SynthesisOut, llm_schema
@@ -417,6 +418,9 @@ def _analyze(pr_dir: Path, ctx: dict, cfg: Config, focus: str | None, force: boo
         progress.update("Could not write the summary. Showing the file notes in the default order")
 
     all_failed = clusters and progress.data["clusters_failed"] == len(clusters)
+    # "What could break" in the riskiest areas. It runs in every mode: eval measures it.
+    deepcheck.run(pr_dir, ctx, cfg, diffs, progress, focus=focus, force=force,
+                  skip="Claude could not read any group of files" if all_failed else None)
     progress.update(f"Analysis {'failed' if all_failed else 'complete'} (≈${progress.data['cost_usd']:.2f})",
                     status="failed" if all_failed else "complete", finished_at=now_iso())
     analysis = merge.build_analysis(pr_dir)

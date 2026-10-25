@@ -393,6 +393,11 @@ export function isStaleReview(reviewed: Record<string, string>, f: FileEntry): b
   return blob !== undefined && blob !== "" && f.head_blob !== null && blob !== f.head_blob;
 }
 
+/** The summary, flows and impact may still arrive: the analysis hasn't reached the deep check (or the end) yet. */
+export function summaryPending(analysis: Analysis): boolean {
+  return ["fetched", "annotating", "synthesizing"].includes(analysis.status);
+}
+
 export function totalMinutes(analysis: Analysis | null): number {
   if (!analysis) return 0;
   return Math.round(analysis.files.reduce((a, f) => a + (f.minutes || 0), 0));

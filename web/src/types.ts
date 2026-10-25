@@ -10,7 +10,8 @@ export type FileStatus = "added" | "modified" | "deleted" | "renamed" | "copied"
 export type ImpactKind =
   | "callers" | "breaking" | "migration" | "config" | "perf" | "security" | "tests" | "sensitive" | "other";
 export type FlowNodeKind = "entry" | "logic" | "store" | "external" | "test";
-export type ProgressStatus = "fetched" | "annotating" | "synthesizing" | "complete" | "failed";
+// deepchecking: the deep check ("what could break") runs after the summary; its findings arrive one area at a time
+export type ProgressStatus = "fetched" | "annotating" | "synthesizing" | "deepchecking" | "complete" | "failed";
 export type ReviewEvent = "COMMENT" | "APPROVE" | "REQUEST_CHANGES" | "PENDING";
 // judge = scored by the second look; rule = a blocker the code check confirmed ("confirmed by rule");
 // carried = from the previous round, keeping its verdict; pending = waiting for its second look;
@@ -54,6 +55,8 @@ export interface Flow { id: string; title: string; narrative: string; nodes: Flo
 export interface Ref { path: string; line: number | null; at: "head" | "base" }
 export interface ImpactItem { kind: ImpactKind; severity: Level; title: string; detail: string; refs: Ref[] }
 export interface Question { text: string; refs: Ref[] }
+/** A spot a deep-check finding read to show the failure (a line in the PR's new code; may be outside the diff). */
+export interface EvidenceRef { path: string; line: number }
 /** A problem found in the PR, ready to post as a review comment. */
 export interface Finding {
   id: string; path: string; side: Side; line: number; start_line: number | null;
@@ -71,6 +74,10 @@ export interface Finding {
   status: "new" | "still-open";
   also_flagged_by: string[];
   comment_body: string;
+  scenario: string[];           // deep check: "How it could happen", 2-6 steps with example values ([] otherwise)
+  question: string | null;      // deep check: one yes/no question for the reviewer
+  evidence_refs: EvidenceRef[]; // deep check: up to 4 spots it read
+  sources: string[];            // which passes found it: "annotate", "blockers", "deep-check" (twins list both)
 }
 
 /** A comment another review tool (a bot) already posted, with Claude's second look. */
@@ -102,6 +109,9 @@ export interface Progress {
   status: ProgressStatus; clusters_total: number; clusters_done: number; clusters_failed: number;
   message: string; started_at: string | null; finished_at: string | null; log: string[];
   cost_usd: number;             // this analysis run's spend so far
+  deepcheck_total: number;      // areas the deep check is checking ("Deep check: 2 of 4 areas done")
+  deepcheck_done: number;
+  deepcheck_cost_usd: number;   // the deep check's share of cost_usd
 }
 
 export interface Analysis {
@@ -110,6 +120,7 @@ export interface Analysis {
   impact: ImpactItem[]; questions: Question[];
   findings: Finding[]; bot_findings: BotFinding[]; ci: CIInfo | null; rechecked: Rechecked[];
   progress: Progress; repair_log: string[];
+  warnings: string[];           // what didn't run fully, e.g. a deep-check area that failed or was skipped
 }
 
 // ---- state.json ----

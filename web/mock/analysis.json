@@ -574,7 +574,10 @@
       "annotated 1/1 batches",
       "synthesis done"
     ],
-    "cost_usd": 1.2
+    "cost_usd": 1.2,
+    "deepcheck_total": 2,
+    "deepcheck_done": 2,
+    "deepcheck_cost_usd": 0.0
   },
   "repair_log": [],
   "findings": [
@@ -604,7 +607,28 @@
       "note": null,
       "status": "new",
       "also_flagged_by": [],
-      "comment_body": "Retrying on `HTTPStatusError` also retries 4xx responses, which will never succeed. Retry only on 5xx and 429?"
+      "comment_body": "Retrying on `HTTPStatusError` also retries 4xx responses, which will never succeed. Retry only on 5xx and 429?",
+      "scenario": [
+        "A customer deletes their webhook endpoint, so it now answers `404`.",
+        "`send()` raises `HTTPStatusError`, and `with_retry` catches it.",
+        "The delivery is tried 5 more times over about 2 minutes; every try gets the same `404`.",
+        "The worker is busy the whole time, so other deliveries in the queue wait."
+      ],
+      "question": "Should a 4xx answer other than 429 stop the retries at once?",
+      "evidence_refs": [
+        {
+          "path": "app/delivery/sender.py",
+          "line": 17
+        },
+        {
+          "path": "app/delivery/retry.py",
+          "line": 14
+        }
+      ],
+      "sources": [
+        "annotate",
+        "deep-check"
+      ]
     },
     {
       "id": "s2",
@@ -632,7 +656,13 @@
       "note": null,
       "status": "new",
       "also_flagged_by": [],
-      "comment_body": "`retry_on=(Exception,)` is very broad. Could callers opt in to specific exceptions instead?"
+      "comment_body": "`retry_on=(Exception,)` is very broad. Could callers opt in to specific exceptions instead?",
+      "scenario": [],
+      "question": null,
+      "evidence_refs": [],
+      "sources": [
+        "blockers"
+      ]
     },
     {
       "id": "s3",
@@ -660,7 +690,13 @@
       "note": null,
       "status": "new",
       "also_flagged_by": [],
-      "comment_body": "This removes `delivered` from a public response. Can we keep it for one release?\n\n```suggestion\n    return {\"id\": result.id, \"delivered\": result.status == DeliveryStatus.DELIVERED, \"status\": result.status, \"attempts\": result.attempts}\n```"
+      "comment_body": "This removes `delivered` from a public response. Can we keep it for one release?\n\n```suggestion\n    return {\"id\": result.id, \"delivered\": result.status == DeliveryStatus.DELIVERED, \"status\": result.status, \"attempts\": result.attempts}\n```",
+      "scenario": [],
+      "question": null,
+      "evidence_refs": [],
+      "sources": [
+        "annotate"
+      ]
     },
     {
       "id": "s4",
@@ -688,10 +724,19 @@
       "note": null,
       "status": "new",
       "also_flagged_by": [],
-      "comment_body": "`RETRYING` is never set. Drop it, or set it in `send()` between attempts."
+      "comment_body": "`RETRYING` is never set. Drop it, or set it in `send()` between attempts.",
+      "scenario": [],
+      "question": null,
+      "evidence_refs": [],
+      "sources": [
+        "annotate"
+      ]
     }
   ],
   "bot_findings": [],
   "ci": null,
-  "rechecked": []
+  "rechecked": [],
+  "warnings": [
+    "Deep check couldn't finish \"Behavior & API surface\" (area chapter:c2, model opus, try 2, 10m 0s): timed out after 10m 0s."
+  ]
 }

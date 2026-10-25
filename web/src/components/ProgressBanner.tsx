@@ -32,18 +32,24 @@ export function ProgressBanner() {
       </div>
     );
   }
-  const pct = p.clusters_total ? Math.round((p.clusters_done / p.clusters_total) * 100) : 0;
+  const deep = p.status === "deepchecking";
+  const [done, total] = deep ? [p.deepcheck_done ?? 0, p.deepcheck_total ?? 0] : [p.clusters_done, p.clusters_total];
+  const pct = total ? Math.round((done / total) * 100) : 0;
   const phase =
     p.status === "fetched"
       ? "Waiting for Claude to start…"
       : p.status === "synthesizing"
         ? "Claude is writing the summary, reading order and data flows…"
-        : `Claude is reading the files: ${p.clusters_done} of ${p.clusters_total} groups done`;
+        : deep
+          ? total
+            ? `Deep check: ${done} of ${total} areas done`
+            : "Deep check: picking the riskiest areas…"
+          : `Claude is reading the files: ${p.clusters_done} of ${p.clusters_total} groups done`;
   return (
     <div className="flash flash-info">
       <span className="spinner" aria-hidden />
       <span className="flash-main">{phase}</span>
-      {p.status === "annotating" && (
+      {(p.status === "annotating" || (deep && total > 0)) && (
         <span className="progress-track flash-track">
           <span className="progress-fill" style={{ width: `${pct}%` }} />
         </span>
