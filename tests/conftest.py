@@ -8,7 +8,34 @@ from urllib.parse import parse_qs, urlparse
 
 import pytest
 
+from prr import config
 from prr.fetch import DIFF_ARGS
+
+
+@pytest.fixture(autouse=True)
+def _no_user_config(monkeypatch):
+    """Tests see the repo's config.toml only, never your ~/.config/pr-prism/config.toml."""
+    monkeypatch.setattr(config, "USER_CONFIG_FILE", Path(os.devnull) / "config.toml")
+
+
+_e2e_results: dict[str, str] = {}
+
+
+def pytest_runtest_logreport(report):
+    """Note how the end-to-end chat security test did; a failed setup (no login, no network) counts as failed."""
+    if "test_e2e_chat_security.py" in report.nodeid and (report.when == "call" or report.outcome != "passed"):
+        _e2e_results[report.nodeid.split("::")[-1]] = report.outcome
+
+
+def pytest_sessionfinish(session):
+    """Keep the last E2E result in pytest's cache (.pytest_cache), where `prr doctor` shows it (prr/install.py)."""
+    cache = getattr(session.config, "cache", None)
+    if not _e2e_results or cache is None:
+        return
+    from prr import install
+    from prr.util import now_iso
+    cache.set(install.E2E_KEY, {"at": now_iso(), "passed": all(v == "passed" for v in _e2e_results.values()),
+                                "results": dict(_e2e_results), "claude": install.claude_version()})
 
 
 def _git(cwd: Path, *args: str) -> str:

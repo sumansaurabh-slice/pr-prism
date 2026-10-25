@@ -1,17 +1,46 @@
-"""Settings from <repo>/config.toml, plus paths shared by every command."""
+"""Settings from config.toml (the repo's defaults, then yours in ~/.config/pr-prism), and paths every command uses."""
 
 from __future__ import annotations
 
+import os
 import tomllib
 from dataclasses import dataclass, field
 from pathlib import Path
 
 PACKAGE_DIR = Path(__file__).resolve().parent
-REPO_DIR = PACKAGE_DIR.parent
-SKILL_DIR = REPO_DIR / "skill"
+REPO_DIR = PACKAGE_DIR.parent  # the repo, or the plugin's folder (bin/prr installs it editable)
+SKILL_DIR = REPO_DIR / "skills" / "pr-prism"
 PROMPTS_DIR = PACKAGE_DIR / "prompts"
-WEB_DIST = REPO_DIR / "web" / "dist"
 GUIDELINES_FILE = SKILL_DIR / "review-guidelines.md"
+USER_CONFIG_FILE = Path("~/.config/pr-prism/config.toml").expanduser()  # yours: overrides <repo>/config.toml per key
+TOOL_CACHE = Path("~/.cache/pr-prism")  # bin/prr keeps venv-<version> and web-<version> here (expanded when used)
+
+
+def version() -> str:
+    """This copy's version. pyproject.toml is the one source: bin/prr and scripts/release.sh read it too."""
+    try:
+        return str(tomllib.loads((REPO_DIR / "pyproject.toml").read_text())["project"]["version"])
+    except (OSError, KeyError, ValueError):
+        from importlib.metadata import PackageNotFoundError
+        from importlib.metadata import version as installed
+        try:
+            return installed("prr")
+        except PackageNotFoundError:
+            return "unknown"
+
+
+def find_web_dist() -> Path:
+    """The built web app: PRR_WEB_DIST, else <repo>/web/dist if it is built (a dev checkout), else the copy bin/prr
+    downloaded for this version."""
+    if os.environ.get("PRR_WEB_DIST"):
+        return Path(os.environ["PRR_WEB_DIST"]).expanduser()
+    dev = REPO_DIR / "web" / "dist"
+    if (dev / "index.html").is_file():
+        return dev
+    return TOOL_CACHE.expanduser() / f"web-{version()}"
+
+
+WEB_DIST = find_web_dist()
 
 
 @dataclass
@@ -75,12 +104,25 @@ def _flag(value: object) -> bool:
     return bool(value)
 
 
+def config_files() -> list[Path]:
+    """The repo's defaults first, then yours: a key set in your file wins."""
+    return [REPO_DIR / "config.toml", USER_CONFIG_FILE]
+
+
+def read_raw_config() -> dict:
+    """The config files merged key by key; inside a section like [models], only the keys you set change."""
+    raw: dict = {}
+    for path in config_files():
+        if not path.exists():
+            continue
+        for key, value in tomllib.loads(path.read_text()).items():
+            raw[key] = {**raw[key], **value} if isinstance(value, dict) and isinstance(raw.get(key), dict) else value
+    return raw
+
+
 def load_config() -> Config:
     cfg = Config()
-    path = REPO_DIR / "config.toml"
-    if not path.exists():
-        return cfg
-    raw = tomllib.loads(path.read_text())
+    raw = read_raw_config()
     if "cache_dir" in raw:
         cfg.cache_dir = Path(raw["cache_dir"]).expanduser()
     for key, value in raw.get("models", {}).items():
