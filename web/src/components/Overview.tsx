@@ -23,6 +23,23 @@ export function RefList({ refs }: { refs: Ref[] }) {
   );
 }
 
+/** What didn't run fully, e.g. a deep-check area that failed or was skipped. Muted: the review still works. */
+export function AnalysisWarnings({ warnings }: { warnings: string[] }) {
+  if (!warnings.length) return null;
+  return (
+    <div className="flash flash-muted analysis-warnings" role="status">
+      <div>
+        <div className="analysis-warnings-title">Some checks didn't run fully</div>
+        <ul>
+          {warnings.map((w, i) => (
+            <li key={i}>{w}</li>
+          ))}
+        </ul>
+      </div>
+    </div>
+  );
+}
+
 function SidebarItem({ title, children }: { title: string; children: React.ReactNode }) {
   return (
     <div className="sidebar-item">
@@ -46,6 +63,7 @@ export function Overview() {
     <div className="overview">
       <div className="overview-main">
         <BlockerBanner />
+        <AnalysisWarnings warnings={analysis.warnings ?? []} />
         {summary ? (
           <section className="timeline-comment">
             <div className="tc-head">

@@ -1,11 +1,11 @@
-import { useState } from "react";
+import { Fragment, useState } from "react";
 import { api } from "../api";
 import { IconCheck, IconX } from "../icons";
 import { Markdown } from "../markdown";
 import { fileHref } from "../router";
 import { splitPath, useStore } from "../store";
 import type { CICheck, Finding, Severity } from "../types";
-import { SecondLookLabel, SeverityLabel } from "./FileView";
+import { DeepCheckDetail, DeepCheckLabel, SecondLookLabel, SeverityLabel } from "./FileView";
 import { RefList } from "./Overview";
 
 const RANK: Record<Severity, number> = { blocker: 0, major: 1, minor: 2, nit: 3 };
@@ -60,13 +60,21 @@ export function FindingsBox() {
         {low > 0 && <span className="color-muted small">+{low} low confidence (hidden)</span>}
       </div>
       {visible.map((f: Finding) => (
-        <a key={f.id} className="Box-row finding-row" href={fileHref(f.path, f.line, f.side)}>
-          <SeverityLabel severity={f.severity} />
-          <span className="finding-row-title">{f.title}</span>
-          <SecondLookLabel look={f.second_look} small />
-          {f.status === "still-open" && <span className="Label Label--attention Label--small">still open</span>}
-          <span className="color-muted small mono">{where(f.path, f.line)}</span>
-        </a>
+        <Fragment key={f.id}>
+          <a className="Box-row finding-row" href={fileHref(f.path, f.line, f.side)}>
+            <SeverityLabel severity={f.severity} />
+            <span className="finding-row-title">{f.title}</span>
+            <DeepCheckLabel f={f} small />
+            <SecondLookLabel look={f.second_look} small />
+            {f.status === "still-open" && <span className="Label Label--attention Label--small">still open</span>}
+            <span className="color-muted small mono">{where(f.path, f.line)}</span>
+          </a>
+          {(f.question || (f.scenario ?? []).length > 0) && (
+            <div className="finding-row-deep">
+              <DeepCheckDetail f={f} collapsed />
+            </div>
+          )}
+        </Fragment>
       ))}
       {list.length > 8 && (
         <div className="Box-row">

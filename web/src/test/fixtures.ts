@@ -39,7 +39,7 @@ export function makeFinding(over: Partial<Finding> = {}): Finding {
     severity: "major", category: "correctness", title: "y is never used", impact: "", fix: "",
     suggestion: null, one_click: false, why: "", evidence: "", confidence: 70, judge_score: null, judge_reason: null,
     low_confidence: false, second_look: "judge", source: "claude", note: null, status: "new", also_flagged_by: [],
-    comment_body: "y is never used",
+    comment_body: "y is never used", scenario: [], question: null, evidence_refs: [], sources: ["annotate"],
     ...over,
   };
 }
@@ -56,9 +56,9 @@ export function makeAnalysis(over: Partial<Analysis> = {}): Analysis {
     bot_findings: [], ci: null, rechecked: [],
     progress: {
       status: "complete", clusters_total: 1, clusters_done: 1, clusters_failed: 0, message: "", started_at: null,
-      finished_at: null, log: [], cost_usd: 0,
+      finished_at: null, log: [], cost_usd: 0, deepcheck_total: 0, deepcheck_done: 0, deepcheck_cost_usd: 0,
     },
-    repair_log: [],
+    repair_log: [], warnings: [],
     ...over,
   };
 }
