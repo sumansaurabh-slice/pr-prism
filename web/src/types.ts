@@ -198,6 +198,7 @@ export interface RestoredSummary {
 export interface ContextChip {
   path: string; side: Side; start: number; end: number; text: string; label: string;
   stop_id?: string;  // a guided-review stop ("Ask in chat"): clicking the chip goes back to #/review/<id>
+  step_id?: string;  // an Understand step ("Ask about this"): clicking the chip goes back to #/understand/<id>
 }
 export interface ToolEvent { name: string; summary: string }
 
@@ -429,3 +430,48 @@ export interface HeadStatus {
 
 /** POST /api/reanalyze ("Re-read the PR"); 409 while an analysis runs. */
 export interface ReanalyzeResult { started: boolean; estimate: RunEstimate | null }
+
+// ---- Understand this PR (GET /api/understand, POST /api/understand/steps/{id}; prr/understand.py) ----
+
+/** "I'm new to this area" (new, the default) or "I know this area" (familiar): how much background a step gives. */
+export type UnderstandLevel = "new" | "familiar";
+
+/** One hunk of a step, as the diff's "@@ -old_start,old_lines +new_start,new_lines @@". */
+export interface StepHunk { old_start: number; old_lines: number; new_start: number; new_lines: number }
+
+/**
+ * One step of the walk, in reading order (chapters, then each chapter's files). Deterministic: nothing is generated
+ * until you open it. kind: file = one file; part = some hunks of a large file; group = a chapter's low-risk files
+ * together ("Other changes in this chapter", listed in `files`).
+ */
+export interface UnderstandStep {
+  id: string;                   // "und-<40 hex>"; the route is #/understand/<id>
+  chapter_id: string; chapter_title: string; chapter_goal: string | null;
+  path: string;
+  hunks: StepHunk[];
+  role: string | null;          // from the file summary
+  tests: string[];              // "Tested by"
+  skim: string[];               // generated, lock, vendored and binary files: on a chapter's first step
+  order: number;
+  kind: "file" | "part" | "group";
+  files: string[];
+}
+
+export interface Understand {
+  steps: UnderstandStep[];
+  level: UnderstandLevel;               // remembered per PR
+  understood: Record<string, string>;   // step id → when you said "Got it"
+}
+
+/** POST /api/understand/steps/{id}: the step's text at a level (generated on demand, then cached). */
+export interface StepExplanation {
+  id: string; level: UnderstandLevel;
+  before: string;                       // what the code did before the PR
+  change: string;                       // "What changes"
+  why: string | null; why_source: string | null;
+  why_missing: boolean;                 // nothing says why: "Not explained in the PR"
+  connects: { path: string; line: number; text: string }[];  // "Where it connects"
+  terms: { term: string; meaning: string }[];                // empty for "familiar"
+  look_at: { side: Side; line: number }[];                   // the diff lines to highlight
+  cached: boolean; cost_usd: number | null;
+}

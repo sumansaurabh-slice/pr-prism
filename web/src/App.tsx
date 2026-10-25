@@ -9,12 +9,13 @@ import { Overview } from "./components/Overview";
 import { NewCommitsBanner, ProgressBanner, RestoreBanner } from "./components/ProgressBanner";
 import { ReviewPath } from "./components/ReviewPath";
 import { ReviewView } from "./components/ReviewView";
+import { UnderstandView } from "./components/UnderstandView";
 import { SinceReviewBanner, SinceReviewToggle, useSinceReviewSync } from "./components/SinceReview";
 import { SubmitModal } from "./components/SubmitModal";
-import { DiffStat, IconChecklist, IconComment, IconFileDiff, IconPulse, IconWorkflow, IconX } from "./icons";
-import { REVIEW_SHORTCUTS, SHORTCUTS, useGlobalKeys } from "./keyboard";
+import { DiffStat, IconBook, IconChecklist, IconComment, IconFileDiff, IconPulse, IconWorkflow, IconX } from "./icons";
+import { REVIEW_SHORTCUTS, SHORTCUTS, UNDERSTAND_SHORTCUTS, useGlobalKeys } from "./keyboard";
 import { useReviewCounts } from "./review";
-import { fileHref, navigate, reviewHref, useRoute, type Route } from "./router";
+import { fileHref, navigate, reviewHref, understandHref, useRoute, type Route } from "./router";
 import { reviewOrder, useStore } from "./store";
 
 const POLL_MS = 3000;
@@ -27,11 +28,17 @@ function Tabs({ route }: { route: Route }) {
   const files = analysis?.files ?? [];
   const viewed = files.filter((f) => f.path in reviewedMap).length;
   const review = useReviewCounts();
-  const tabs: { key: Route["view"]; label: string; href: string; icon: ReactNode; count?: number | string }[] = [
-    {
-      key: "review", label: "Review", href: reviewHref(), icon: <IconChecklist />,
-      count: review.total ? (review.left ? `${review.left} left` : "done") : undefined,
-    },
+  const steps = useStore((s) => s.understand?.steps.length ?? 0);
+  type Tab = { key: Route["view"]; label: string; href: string; icon: ReactNode; count?: number | string };
+  const reviewTab: Tab = {
+    key: "review", label: "Review", href: reviewHref(), icon: <IconChecklist />,
+    count: review.total ? (review.left ? `${review.left} left` : "done") : undefined,
+  };
+  // "Understand · N steps" sits next to Review: first until you start reviewing, then Review stays first.
+  const understandTab: Tab = { key: "understand", label: "Understand", href: understandHref(), icon: <IconBook />, count: `${steps} step${steps === 1 ? "" : "s"}` };
+  const guided = !steps ? [reviewTab] : review.started ? [reviewTab, understandTab] : [understandTab, reviewTab];
+  const tabs: Tab[] = [
+    ...guided,
     { key: "overview", label: "Overview", href: "#/overview", icon: <IconComment /> },
     {
       key: "file", label: "Files changed", href: lastFile ? fileHref(lastFile) : "#/overview", icon: <IconFileDiff />,
@@ -88,7 +95,7 @@ function ShortcutRows({ rows }: { rows: [string, string][] }) {
   );
 }
 
-function HelpOverlay({ inReview }: { inReview: boolean }) {
+function HelpOverlay({ mode }: { mode: "review" | "understand" | null }) {
   const open = useStore((s) => s.helpOpen);
   const setOpen = useStore((s) => s.setHelpOpen);
   if (!open) return null;
@@ -102,10 +109,10 @@ function HelpOverlay({ inReview }: { inReview: boolean }) {
           </button>
         </header>
         <div className="modal-body">
-          {inReview ? (
+          {mode ? (
             <>
-              <h3 className="Box-title">In the Review</h3>
-              <ShortcutRows rows={REVIEW_SHORTCUTS} />
+              <h3 className="Box-title">{mode === "review" ? "In the Review" : "In Understand"}</h3>
+              <ShortcutRows rows={mode === "review" ? REVIEW_SHORTCUTS : UNDERSTAND_SHORTCUTS} />
               <h3 className="Box-title">Everywhere else</h3>
               <ShortcutRows rows={SHORTCUTS} />
             </>
@@ -167,11 +174,13 @@ export default function App() {
   const chatOpen = useStore((s) => s.chatOpen);
   const route = useRoute();
   useGlobalKeys();
-  const inReview = route.view === "review";
+  // The Review and Understand views share the guided layout: the list on the left, one item in the middle, a
+  // sticky action bar, and the rails below.
+  const guided = route.view === "review" || route.view === "understand" ? route.view : null;
 
   // The Review view below 1280 px: the chat is a 40 px rail that opens as an overlay (c, or a click).
   const narrow = useMedia("(max-width: 1279.98px)");
-  const chatRail = inReview && narrow;
+  const chatRail = !!guided && narrow;
   useEffect(() => {
     if (useStore.getState().chatRail !== chatRail) useStore.getState().setChatRail(chatRail);
   }, [chatRail]);
@@ -202,6 +211,13 @@ export default function App() {
     const t = window.setInterval(poll, analyzing ? POLL_MS : HEAD_POLL_MS);
     return () => window.clearInterval(t);
   }, [analyzing]);
+
+  // Understand's steps follow the analysis (the reading order and the file summaries): read them again when it
+  // moves on or a re-read brings new commits.
+  const head = analysis?.pr.head_sha;
+  useEffect(() => {
+    if (hasAnalysis) void useStore.getState().loadUnderstand();
+  }, [hasAnalysis, status, head]);
 
   useEffect(() => {
     if (analysis) document.title = `${analysis.pr.title} · #${analysis.pr.number} · PR Prism`;
@@ -235,7 +251,7 @@ export default function App() {
   }
 
   return (
-    <div className={`app${chatOpen ? "" : " chat-closed"}${inReview ? " review-mode" : ""}`}>
+    <div className={`app${chatOpen ? "" : " chat-closed"}${guided ? " review-mode" : ""}`}>
       <Header />
       <Tabs route={route} />
       <ProgressBanner />
@@ -246,6 +262,9 @@ export default function App() {
         {route.view === "review" ? (
           // the stop list (left pane) and the stop or end screen (main column)
           <ReviewView route={route} />
+        ) : route.view === "understand" ? (
+          // the steps by chapter (left pane) and the step or end screen (main column)
+          <UnderstandView route={route} />
         ) : (
           <>
             <ReviewPath />
@@ -258,7 +277,7 @@ export default function App() {
       </div>
       <DraftsDrawer />
       <SubmitModal />
-      <HelpOverlay inReview={inReview} />
+      <HelpOverlay mode={guided} />
       <Toasts />
     </div>
   );

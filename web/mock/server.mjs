@@ -2,6 +2,7 @@
 //   npm run build && node mock/server.mjs        → http://127.0.0.1:8765
 //   (or `PRR_PORT=8765 npm run dev` for hot reload against it)
 // No auth, no GitHub, no Claude: canned data from mock/*.json and mock/diff.patch.
+import { createHash } from "node:crypto";
 import { createServer } from "node:http";
 import { readFileSync, existsSync, statSync } from "node:fs";
 import { join, extname, dirname } from "node:path";
@@ -250,6 +251,135 @@ function takeBack(id, stop) {
   return out;
 }
 
+// ---- Understand this PR (prr/understand.py), simplified: one step per file in reading order; a test attaches to
+// the file it tests ("Tested by"), and generated, lock and binary files are listed on the chapter's first step to
+// skim. Each step's text is canned and takes about a second the first time, as if Claude were reading the code;
+// app/config/settings.py has no reason in the PR (why_missing). PRR_MOCK_UNDERSTAND_FAIL=1 makes every step fail (502).
+const LEVELS = ["new", "familiar"];
+state.understood_steps ??= {};
+state.understand_level ??= "new";
+const firstSentence = (text) => (text ? (/^.*?[.!?](?=\s|$)/.exec(text)?.[0] ?? text) : null);
+
+function buildSteps() {
+  const files = new Map(analysis.files.map((f) => [f.path, f]));
+  const steps = [];
+  for (const ch of analysis.chapters) {
+    const skim = [];
+    const mine = [];
+    for (const cf of ch.files) {
+      const f = files.get(cf.path);
+      if (!f) continue;
+      if (f.generated || f.binary) {
+        skim.push(f.path);
+        continue;
+      }
+      if (f.tests_for && files.has(f.tests_for)) continue; // listed under the code it tests
+      const hunks = f.hunks.map(({ old_start, old_lines, new_start, new_lines }) => ({ old_start, old_lines, new_start, new_lines }));
+      const range = hunks.map((h) => `${h.old_start},${h.old_lines},${h.new_start},${h.new_lines}`).join(";");
+      mine.push({
+        id: `und-${createHash("sha1").update(`${f.path}|${range}|${f.head_blob}`).digest("hex")}`,
+        chapter_id: ch.id, chapter_title: ch.title, chapter_goal: ch.goal || null, path: f.path, hunks,
+        role: firstSentence(f.summary), tests: f.tested_by.filter((t) => files.has(t)), skim: [], order: 0, kind: "file",
+        files: [f.path],
+      });
+    }
+    if (mine.length) mine[0].skim = skim;
+    steps.push(...mine);
+  }
+  steps.forEach((s, i) => (s.order = i));
+  return steps;
+}
+const steps = buildSteps();
+
+const EXPLAIN = {
+  "app/models/webhook.py": {
+    before: "`WebhookDelivery` is the record of one webhook send. It had a single `delivered` flag: true once the POST worked, false before that and after a failure, so a failed send looked like one that hadn't run yet.",
+    change: "The flag becomes a `status` with four values (pending, retrying, delivered, failed), and an `attempts` counter is added. Code can now tell a failure apart from a send that hasn't happened.",
+    why: "Failed deliveries were invisible to support, because `delivered = False` meant both \"not sent yet\" and \"gave up\".",
+    why_source: "PR description",
+    connects: [
+      { path: "app/delivery/sender.py", line: 18, text: "`send()` sets `status` after its tries" },
+      { path: "app/api/webhooks.py", line: 13, text: "the redeliver endpoint returns `status` and `attempts`" },
+      { path: "app/workers/reconcile.py", line: 42, text: "still reads `delivered` (outside this PR)" },
+    ],
+    terms: [
+      { term: "`DeliveryStatus`", meaning: "Where a delivery is: pending, retrying, delivered or failed." },
+      { term: "dataclass", meaning: "A Python class whose fields are listed once; `@dataclass` writes its constructor." },
+    ],
+    look_at: [{ side: "LEFT", line: 10 }, { side: "RIGHT", line: 18 }, { side: "RIGHT", line: 19 }],
+  },
+  "app/delivery/retry.py": {
+    before: "There was no retry code. A webhook send was one HTTP POST; if it failed, the error went straight back to the caller.",
+    change: "Adds `with_retry()`, which calls a function again when it raises one of the given errors, waiting a random, growing time between tries (5 tries by default). After the last try it raises the error.",
+    why: "Receivers often fail for a moment (deploys, rate limits), and one failed POST used to lose the delivery.",
+    why_source: "commit \"Retry webhook deliveries with exponential backoff\"",
+    connects: [
+      { path: "app/delivery/sender.py", line: 17, text: "`send()` wraps each POST in `with_retry()`" },
+      { path: "tests/delivery/test_retry.py", line: 16, text: "the test calls it with a function that fails twice" },
+    ],
+    terms: [
+      { term: "exponential backoff", meaning: "Waiting longer after each failure: 0.5 s, 1 s, 2 s, and so on." },
+      { term: "full jitter", meaning: "Waiting a random time up to that limit, so many senders don't retry at the same moment." },
+      { term: "`retry_on`", meaning: "The errors worth trying again; any other error is raised at once." },
+    ],
+    look_at: [{ side: "RIGHT", line: 11 }, { side: "RIGHT", line: 19 }, { side: "RIGHT", line: 22 }],
+  },
+  "app/config/settings.py": {
+    before: "`Settings` reads the app's configuration from environment variables. Webhook sends waited at most 10 seconds for a reply.",
+    change: "Sends now wait up to 30 seconds, and two new settings shape the retry loop: how many tries (5) and the longest wait between them (30 s).",
+    why: null,
+    why_source: null,
+    connects: [{ path: "app/delivery/sender.py", line: 6, text: "`TIMEOUT` is still 10 here; it doesn't read these settings" }],
+    terms: [{ term: "`BaseSettings`", meaning: "A pydantic class that fills its fields from environment variables, such as `WEBHOOK_TIMEOUT_S`." }],
+    look_at: [{ side: "RIGHT", line: 6 }, { side: "RIGHT", line: 7 }],
+  },
+  "app/delivery/sender.py": {
+    before: "`send()` made one POST to the receiver. On success it set `delivered = True`; on an HTTP error it raised, and the caller had to handle it.",
+    change: "Each POST now runs inside `with_retry()`, counting tries in `attempts`. When every try fails, `send()` no longer raises: it sets `status` to failed and returns the delivery.",
+    why: "Callers shouldn't have to catch delivery errors; the status says what happened.",
+    why_source: "PR description",
+    connects: [
+      { path: "app/api/webhooks.py", line: 11, text: "`redeliver()` calls `send()` and saves the result" },
+      { path: "app/delivery/retry.py", line: 14, text: "`with_retry()` does the waiting between tries" },
+    ],
+    terms: [
+      { term: "`raise_for_status()`", meaning: "An httpx call that raises an error for a 4xx or 5xx reply." },
+      { term: "`httpx.TransportError`", meaning: "The connection itself failed: no reply came back." },
+    ],
+    look_at: [{ side: "RIGHT", line: 17 }, { side: "RIGHT", line: 19 }, { side: "RIGHT", line: 20 }],
+  },
+  "app/api/webhooks.py": {
+    before: "The redeliver endpoint sends one stored delivery again and answers with its id and `delivered` (true or false).",
+    change: "The answer now has `status` and `attempts` instead of `delivered`. Clients that read `delivered` no longer get it.",
+    why: "It follows the new `status` field: \"the API now reports the real outcome\".",
+    why_source: "PR description",
+    connects: [{ path: "app/models/webhook.py", line: 18, text: "where `status` comes from" }],
+    terms: [{ term: "redeliver", meaning: "Sending a webhook again on request, for example after the receiver was down." }],
+    look_at: [{ side: "LEFT", line: 13 }, { side: "RIGHT", line: 13 }],
+  },
+};
+const explained = new Set(); // "<id>:<level>" made once already: answered at once, as from the cache
+
+async function explainStep(step, level) {
+  const key = `${step.id}:${level}`;
+  const cached = explained.has(key);
+  if (!cached) await sleep(1000);
+  if (process.env.PRR_MOCK_UNDERSTAND_FAIL === "1") return [502, { detail: "Claude stopped before it finished (mock)" }];
+  explained.add(key);
+  const e = EXPLAIN[step.path] ?? {
+    before: "This file wasn't part of the code before in this form.", change: "See the diff.", why: null, why_source: null,
+    connects: [], terms: [], look_at: [],
+  };
+  const familiar = level === "familiar";
+  return [200, {
+    id: step.id, level, ...e,
+    before: familiar ? firstSentence(e.before) : e.before,
+    why_missing: !e.why,
+    terms: familiar ? [] : e.terms,
+    cached, cost_usd: cached ? 0 : 0.08,
+  }];
+}
+
 function preview(body, event) {
   const anchored = state.drafts.filter((d) => d.anchored);
   const unanchored = state.drafts.filter((d) => !d.anchored);
@@ -356,6 +486,28 @@ async function api(req, res, url) {
     if (!["real", "not", "unsure"].includes(b.verdict)) return send(res, 400, { detail: "verdict must be real, not or unsure" });
     if (!stop || stop.dropped) return send(res, 409, { detail: "This stop changed; reload" });
     return send(res, 200, answerStop(stop, b.verdict, b.opened_at));
+  }
+  if (p === "/api/understand" && m === "GET") {
+    return send(res, 200, { steps, level: state.understand_level, understood: state.understood_steps });
+  }
+  if (p === "/api/understand/level" && m === "PUT") {
+    const b = await readBody(req);
+    if (!LEVELS.includes(b.level)) return send(res, 400, { detail: "level must be new or familiar" });
+    state.understand_level = b.level;
+    return send(res, 200, { level: b.level });
+  }
+  if ((mm = /^\/api\/understand\/steps\/([^/]+)(\/understood)?$/.exec(p)) && m === "POST") {
+    const step = steps.find((s) => s.id === decodeURIComponent(mm[1]));
+    if (!step) return send(res, 404, { detail: "no such step" });
+    const b = await readBody(req);
+    if (mm[2]) {
+      if (b.understood) state.understood_steps[step.id] ??= now();
+      else delete state.understood_steps[step.id];
+      return send(res, 200, { understood: !!b.understood });
+    }
+    if (!LEVELS.includes(b.level)) return send(res, 400, { detail: "level must be new or familiar" });
+    const [status, out] = await explainStep(step, b.level);
+    return send(res, status, out);
   }
   if (p === "/api/github/threads") return send(res, 200, { comments: ghComments });
   if (p === "/api/review/preview") {
