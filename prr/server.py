@@ -28,7 +28,7 @@ from pydantic import BaseModel
 
 from . import archive, chat_tools, cost, github, merge, policy
 from .analyze import style_rules
-from .drafts import claim_for_post, finish_post, is_posting, new_draft, postable, release
+from .drafts import STARTUP_EXPIRY_S, claim_for_post, finish_post, is_posting, new_draft, postable, release, release_stale
 from .claude import ChatProcess, ClaudeError, run_structured, stream_chat
 from .config import PROMPTS_DIR, WEB_DIST, Config
 from .gitgh import git, viewer_login
@@ -196,6 +196,7 @@ def create_app(pr_dir: Path, cfg: Config) -> FastAPI:
     store = StateStore(pr_dir)
     if store.read()[1]:  # an older state.json: store each chat answer's own cost from now on (written back once)
         store.update(lambda s: None)
+    release_stale(store, STARTUP_EXPIRY_S)  # posts that died with the previous server
     calls = Ledger(pr_dir)  # the server's own Claude calls (chat, review summary, CI refresh) go to calls.jsonl
     running: dict[str, ChatProcess] = {}
     cache: dict[str, Any] = {}

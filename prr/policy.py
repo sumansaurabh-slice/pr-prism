@@ -55,8 +55,13 @@ CAUSE_KINDS = ("lookup", "outside_read", "approved")
 # Folders "Always allow reads in …" is never offered for (nor anything above them, nor anything holding secrets).
 NO_FOLDER_KEY = ("/", "~", *shellsafe.SECRET_PLACES)
 APPROVAL_WAIT_S = int(os.environ.get("PRR_APPROVAL_WAIT_S") or 15 * 60)
-# Connector tools that only look things up (getJiraIssue, searchJiraIssuesUsingJql, slack_read_channel, …).
+# Connector tools that only look things up (getJiraIssue, searchJiraIssuesUsingJql, slack_read_channel, …): a read
+# word in the name and no write word (search_replace and getAndDelete are writes).
 _READ_ONLY_MCP = re.compile(r"(^|_)(get|search|list|read|fetch|lookup|query|find|view)([A-Z_]|$)")
+_WRITE_WORDS = frozenset(
+    "add append approve archive assign close comment create delete drop edit execute insert invite merge move "
+    "patch post publish put react reject remove rename replace reset run schedule send set share submit "
+    "transition trigger unpublish update upload upsert write".split())
 DENIED = "The reviewer said no. Don't try this again; ask them what they want instead."
 CHECK_FAILED = "PR Prism's check failed: {}; ask the reviewer"
 
@@ -259,7 +264,10 @@ def _connector(tool: str) -> bool:
 
 def _lookup(tool: str) -> bool:
     parts = tool.split("__")
-    return len(parts) >= 3 and bool(_READ_ONLY_MCP.search(parts[2]))
+    if len(parts) < 3 or not _READ_ONLY_MCP.search(parts[2]):
+        return False
+    words = re.sub(r"([a-z0-9])([A-Z])", r"\1_\2", parts[2]).lower().split("_")
+    return not _WRITE_WORDS.intersection(words)
 
 
 def summary(tool: str, inp: dict) -> str:

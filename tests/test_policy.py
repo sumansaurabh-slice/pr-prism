@@ -237,6 +237,17 @@ def test_approve_fails_closed(pr, monkeypatch):
 # --------------------------------------------------------------------------------------
 
 
+@pytest.mark.parametrize("name, lookup", [
+    ("getJiraIssue", True), ("searchJiraIssuesUsingJql", True), ("slack_read_channel", True),
+    ("getTransitionsForJiraIssue", True), ("getConfluencePageFooterComments", True),
+    ("createJiraIssue", False), ("slack_send_message", False), ("updateConfluencePage", False),
+    ("search_replace", False), ("getAndDelete", False), ("list_then_write", False),
+])
+def test_only_read_only_connector_tools_count_as_lookups(name, lookup):
+    assert policy._lookup(f"mcp__claude_ai_X__{name}") is lookup
+    assert policy.guard_card(f"mcp__claude_ai_X__{name}", marked=True) is not lookup
+
+
 def test_lookups_on_a_teammates_pr_run_and_mark_the_turn(pr, review_stub):
     stub = review_stub(pr)
     assert policy.trust(pr) == {"author": "alice", "association": "MEMBER", "trusted": True, "state": "trusted"}

@@ -225,6 +225,13 @@ def test_old_threads_are_converted_once_and_written_back(tmp_path):
     write_json(tmp_path / "state.json", v1_state())         # a crash after the ledger lines, before state.json
     store.update(lambda s: None)
     assert len(ledger.read(tmp_path)) == 4                  # nothing counted twice
+
+    kept = (tmp_path / ledger.CALLS_FILE).read_text().splitlines(keepends=True)
+    (tmp_path / ledger.CALLS_FILE).write_text("".join(kept[:2]))   # a crash halfway through the ledger lines
+    write_json(tmp_path / "state.json", v1_state())
+    store.update(lambda s: None)
+    assert [x["seq"] for x in ledger.read(tmp_path)] == [x["seq"] for x in
+                                                          (json.loads(k) for k in kept)]   # the rest, each once
     s = cost.summary(tmp_path)
     assert s["threads"]["t1"] == {"total_usd": 2.0, "turns": 4, "unknown": False, "long": False}
 

@@ -50,6 +50,8 @@ def new_draft(ctx: dict, path: str, side: str, line: int, body: str, *, start_li
 
 # A claim this old belongs to a post that died (GitHub calls time out after 2 minutes), so the drafts are free again.
 CLAIM_EXPIRY_S = 10 * 60
+# When the review server starts, a claim older than GitHub's timeout can only belong to a post that died with it.
+STARTUP_EXPIRY_S = 3 * 60
 
 
 class Claim(NamedTuple):
@@ -118,3 +120,25 @@ def release(store: StateStore, post_id: str) -> None:
                 _unmark(d)
 
     store.update(apply)
+
+
+def release_stale(store: StateStore, older_than_s: float, now: float | None = None) -> int:
+    """Give back drafts claimed more than `older_than_s` ago. Returns how many."""
+    t = time.time() if now is None else now
+
+    def apply(s: dict) -> int:
+        freed = 0
+        for d in s["drafts"]:
+            if d.get("posting"):
+                try:
+                    since = datetime.fromisoformat(d.get("posting_at") or "").timestamp()
+                except ValueError:
+                    since = 0.0
+                if t - since >= older_than_s:
+                    _unmark(d)
+                    freed += 1
+        return freed
+
+    if not any(d.get("posting") for d in store.load()["drafts"]):
+        return 0
+    return store.update(apply)

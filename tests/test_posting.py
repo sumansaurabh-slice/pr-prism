@@ -195,6 +195,14 @@ def test_a_stale_claim_is_released_by_the_next_claim(tmp_path):
     assert store.load()["drafts"][0]["posting"] == "p3"
 
 
+def test_a_new_server_frees_claims_from_a_post_that_died_with_the_old_one(tmp_path):
+    store = store_with(tmp_path, {"id": "a"}, {"id": "b"})
+    drafts.claim_for_post(store, "died", now=T0)
+    assert drafts.release_stale(store, drafts.STARTUP_EXPIRY_S, now=T0 + 60) == 0     # may still be posting
+    assert drafts.release_stale(store, drafts.STARTUP_EXPIRY_S, now=T0 + drafts.STARTUP_EXPIRY_S) == 2
+    assert not any(d.get("posting") for d in store.load()["drafts"])
+
+
 def test_a_stale_claim_on_an_outdated_draft_is_cleared(tmp_path):
     store = store_with(tmp_path, {"id": "old", "outdated": True, "posting": "died",
                                   "posting_at": datetime.fromtimestamp(T0, timezone.utc).isoformat()})

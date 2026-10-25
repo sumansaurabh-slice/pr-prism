@@ -97,7 +97,7 @@ def upgrade_threads(threads: list[dict]) -> list[dict]:
     lines = []
     for t in threads:
         t.update({"last_session_id": None, "last_total_usd": None, "uncounted": 0, "cost_lost": False})
-        for m in t.get("messages", []):
+        for i, m in enumerate(t.get("messages", [])):
             if m.get("role") != "assistant":
                 continue
             running = m.get("cost_usd")
@@ -110,14 +110,16 @@ def upgrade_threads(threads: list[dict]) -> list[dict]:
             error = str(m["error"])[:300] if m.get("error") else None
             lines.append({"at": m.get("ts"), "run_id": None, "purpose": "chat", "model": None, "target": t.get("id"),
                           "duration_ms": None, "cost_usd": fields["cost_usd"], "outcome": "error" if error else "ok",
-                          "error": error, "includes_stopped": fields["includes_stopped"], "migrated": True})
+                          "error": error, "includes_stopped": fields["includes_stopped"], "migrated": True,
+                          "seq": i})
     return lines
 
 
 def not_yet_recorded(existing: list[dict], migrated: list[dict]) -> list[dict]:
-    """The migrated lines for threads that have none in calls.jsonl yet (so a retried migration never counts twice)."""
-    done = {x.get("target") for x in existing if x.get("migrated")}
-    return [x for x in migrated if x.get("target") not in done]
+    """The migrated lines calls.jsonl doesn't have yet, per answer (thread, message index), so an upgrade that
+    stopped halfway fills in the rest and never counts an answer twice."""
+    done = {(x.get("target"), x.get("seq")) for x in existing if x.get("migrated")}
+    return [x for x in migrated if (x.get("target"), x.get("seq")) not in done]
 
 
 # --------------------------------------------------------------------------------------
