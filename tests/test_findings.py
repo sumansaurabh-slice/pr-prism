@@ -142,7 +142,7 @@ def test_rechecked_comment_titles_have_no_markdown():
 def test_confidence_alone_never_hides_a_finding():
     f = {"severity": "minor", "confidence": 35}
     keep6 = {"score": 6, "verdict": "keep", "reason": "can't confirm from the hunk"}
-    assert not judge.is_low(f, keep6)                     # #1004: kept at 6/10, the reviewer only 35% sure → shown
+    assert not judge.is_low(f, keep6)                     # kept at 6/10, the reviewer only 35% sure → shown
     assert judge.is_low(f, keep6, floor=50)               # the eval's old-rule arm
     assert not judge.is_low(f, None) and judge.is_low(f, None, floor=50)
     assert judge.is_low(f, {"score": 8, "verdict": "drop", "reason": "r"})   # drop → hidden
