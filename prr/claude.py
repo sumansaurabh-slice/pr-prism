@@ -21,7 +21,7 @@ import subprocess
 import time
 from dataclasses import dataclass, field
 from pathlib import Path
-from typing import Any, AsyncIterator
+from typing import Any, AsyncIterator, Callable
 
 from . import policy, shellsafe
 from .gitgh import claude_env
@@ -55,7 +55,7 @@ def deny_rules(pr_dir: Path | None, ask_first: bool) -> list[str]:
 
 
 class ClaudeError(RuntimeError):
-    pass
+    outcome = "error"  # how calls.jsonl recorded the call: error | refused | timeout
 
 
 def base_argv(model: str, tools: list[str], *, mcp_config: str | None = None, mcp_tools: list[str] | None = None,
@@ -91,15 +91,21 @@ class CallStats:
 
 def run_structured(prompt: str, schema: dict[str, Any], *, cwd: Path, model: str, tools: list[str] | None = None,
                    max_turns: int = 40, timeout: float = 900, add_dirs: list[Path] | None = None,
-                   ledger: Ledger | None = None, purpose: str = "other", target: str = "") -> tuple[dict, CallStats]:
+                   ledger: Ledger | None = None, purpose: str = "other", target: str = "",
+                   validate: Callable[[dict], Any] | None = None) -> tuple[dict, CallStats]:
     """One structured-output call. With a ledger, its cost goes to calls.jsonl before this returns or raises
-    (a timeout's cost is unknown: the process was killed before it reported one)."""
+    (a timeout's cost is unknown: the process was killed before it reported one).
+
+    With `validate`, output it rejects (a ValueError, e.g. pydantic's ValidationError) is re-raised and recorded
+    as `malformed`. A ClaudeError carries the recorded outcome (error, refused or timeout) as `.outcome`."""
     started = time.monotonic()
     call = {"stats": CallStats(), "outcome": "error", "error": None}
     try:
-        return _run_structured(prompt, schema, cwd, model, tools, max_turns, timeout, add_dirs, call)
+        return _run_structured(prompt, schema, cwd, model, tools, max_turns, timeout, add_dirs, call, validate)
     except Exception as e:
         call["error"] = str(e)
+        if isinstance(e, ClaudeError):
+            e.outcome = call["outcome"]
         raise
     finally:
         if ledger is not None:
@@ -109,7 +115,8 @@ def run_structured(prompt: str, schema: dict[str, Any], *, cwd: Path, model: str
 
 
 def _run_structured(prompt: str, schema: dict[str, Any], cwd: Path, model: str, tools: list[str] | None,
-                    max_turns: int, timeout: float, add_dirs: list[Path] | None, call: dict) -> tuple[dict, CallStats]:
+                    max_turns: int, timeout: float, add_dirs: list[Path] | None, call: dict,
+                    validate: Callable[[dict], Any] | None = None) -> tuple[dict, CallStats]:
     argv = base_argv(model, READ_ONLY_TOOLS if tools is None else tools, add_dirs=add_dirs, cwd=cwd)
     argv += ["--output-format", "json", "--json-schema", json.dumps(schema), "--max-turns", str(max_turns)]
     try:
@@ -133,6 +140,12 @@ def _run_structured(prompt: str, schema: dict[str, Any], cwd: Path, model: str, 
         except json.JSONDecodeError as e:
             call["outcome"] = "refused"
             raise ClaudeError("no structured_output in result") from e
+    if validate is not None:
+        try:
+            validate(out)
+        except ValueError:
+            call["outcome"] = "malformed"
+            raise
     call["outcome"] = "ok"
     return out, stats
 

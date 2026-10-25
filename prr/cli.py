@@ -156,6 +156,15 @@ def _print_summary(a: dict, d: Path) -> None:
     count = {s: sum(1 for f in shown if f["severity"] == s) for s in ("blocker", "major", "minor", "nit")}
     print(f"Findings: {count['blocker']} blocking merge, {count['major']} must fix, {count['minor']} should fix, "
           f"{count['nit']} could improve ({len(a['findings']) - len(shown)} more hidden by the second look).")
+    prog = a["progress"]
+    if prog.get("deepcheck_total"):
+        deep = sum(1 for f in shown if "deep-check" in f.get("sources", []))
+        print(f"Deep check: {prog.get('deepcheck_done', 0)} of {prog['deepcheck_total']} risky areas done, "
+              f"{deep} of the findings above came from it.")
+    print(f"Cost of this analysis: ≈${prog.get('cost_usd') or 0:.2f}, of which the deep check "
+          f"≈${prog.get('deepcheck_cost_usd') or 0:.2f}.")
+    for w in a.get("warnings", []):
+        print(f"Warning: {w}")
     failing = [c["name"] for c in (a.get("ci") or {}).get("checks", []) if c["state"] == "fail"]
     if failing:
         print(f"Failing CI checks: {', '.join(failing)}")

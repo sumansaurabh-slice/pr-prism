@@ -20,6 +20,10 @@ SEVERITY_TEXT = {"blocker": "Blocks merge", "major": "Must fix", "minor": "Shoul
 MIN_ANCHOR = 6          # shorter anchors ("}", "end") match too much to be useful
 NEAR_LINES = 3          # two findings this close, same file and category, about the same thing, are one finding
 MIN_IDENT_OVERLAP = 0.2  # suggested code must share this much vocabulary with the code it replaces
+SOURCE_ORDER = ["annotate", "blockers", "deep-check"]  # the passes that find problems, in the order they run
+DEEP_FIELDS = ("scenario", "question", "evidence_refs")  # what the deep check adds to a finding
+MAX_STEPS = 6           # scenario steps kept
+MAX_REFS = 4            # evidence spots kept
 
 _IDENT = re.compile(r"[A-Za-z_][A-Za-z0-9_]*")
 _WORD = re.compile(r"[a-z0-9]+")
@@ -93,6 +97,20 @@ def _better(a: dict, b: dict) -> dict:
     return a if ka <= kb else b
 
 
+def _merge_twins(a: dict, b: dict) -> dict:
+    """The better of two twins, also listing every pass that found it. When the kept one has no deep-check text
+    (scenario, question, evidence spots), it takes the other's."""
+    best = _better(a, b)
+    other = b if best is a else a
+    keep = dict(best)
+    found = {*keep.get("sources", []), *other.get("sources", [])}
+    keep["sources"] = sorted(found, key=lambda s: (SOURCE_ORDER.index(s) if s in SOURCE_ORDER else 9, s))
+    for key in DEEP_FIELDS:
+        if not keep.get(key) and other.get(key):
+            keep[key] = other[key]
+    return keep
+
+
 def dedupe(findings: list[dict]) -> tuple[list[dict], int]:
     """Same file + category + anchor, or same file + category within a few lines and about the same thing."""
     kept: list[dict] = []
@@ -110,7 +128,7 @@ def dedupe(findings: list[dict]) -> tuple[list[dict], int]:
         if twin is None:
             kept.append(f)
         else:
-            kept[kept.index(twin)] = _better(twin, f)
+            kept[kept.index(twin)] = _merge_twins(twin, f)
             removed += 1
     return kept, removed
 
@@ -148,6 +166,15 @@ def comment_body(f: dict) -> str:
     return "\n\n".join(parts)
 
 
+def _refs(raw: object) -> list[dict]:
+    """Evidence spots as {path, line}; malformed ones are left out."""
+    out = []
+    for r in raw if isinstance(raw, list) else []:
+        if isinstance(r, dict) and isinstance(r.get("path"), str) and r["path"].strip() and isinstance(r.get("line"), int):
+            out.append({"path": r["path"].strip(), "line": r["line"]})
+    return out[:MAX_REFS]
+
+
 def place(raw: dict, path: str, fl: FileLines | None) -> dict:
     """One raw finding (from the reviewer) → a placed finding dict (without scores or status yet)."""
     side = raw.get("side") if raw.get("side") in ("LEFT", "RIGHT") else "RIGHT"
@@ -178,6 +205,11 @@ def place(raw: dict, path: str, fl: FileLines | None) -> dict:
         "suggestion": raw.get("suggestion") or None, "why": raw.get("why") or "", "evidence": raw.get("evidence") or "",
         "confidence": raw.get("confidence") if isinstance(raw.get("confidence"), int) else None,
         "source": raw.get("source") or "claude", "note": raw.get("note"),
+        "scenario": [str(x).strip() for x in raw.get("scenario") or [] if str(x).strip()][:MAX_STEPS],
+        "question": str(raw.get("question") or "").strip() or None,
+        "evidence_refs": _refs(raw.get("evidence_refs")),
+        "sources": list(raw.get("sources") or (["blockers"] if str(raw.get("source") or "").startswith("rule:")
+                                                else ["annotate"])),
     }
     f["one_click"] = bool(fl) and anchored and one_click_ok(fl, side, start or line, line, f["suggestion"])  # type: ignore[arg-type]
     return f

@@ -23,6 +23,7 @@ class Models:
     blockers: str = "sonnet"   # the blocker-rule pass
     judge: str = "haiku"       # the second look at every finding
     ci: str = "sonnet"         # explaining CI failures, other tools' comments, re-checks
+    deepcheck: str = "opus"    # the deep check: "what could break" in the riskiest areas
 
 
 @dataclass
@@ -33,6 +34,10 @@ class AnalysisSettings:
     retries: int = 2
     annotate_timeout_s: int = 900
     synthesize_timeout_s: int = 1200
+    deepcheck: bool = True             # run the deep check after the summary
+    deepcheck_max_targets: int = 4     # areas checked per PR; riskier areas past this are named as skipped
+    deepcheck_target_timeout_s: int = 600  # one area's time limit
+    deepcheck_budget_s: int = 900      # no area starts (or retries) after this; running ones stop 60 s later
 
 
 @dataclass
@@ -56,6 +61,13 @@ class Config:
     budget: BudgetSettings = field(default_factory=BudgetSettings)
 
 
+def _flag(value: object) -> bool:
+    """A TOML boolean, or a string such as "false" written by hand."""
+    if isinstance(value, str):
+        return value.strip().lower() in ("1", "true", "yes", "on")
+    return bool(value)
+
+
 def load_config() -> Config:
     cfg = Config()
     path = REPO_DIR / "config.toml"
@@ -69,7 +81,7 @@ def load_config() -> Config:
             setattr(cfg.models, key, str(value))
     for key, value in raw.get("analysis", {}).items():
         if hasattr(cfg.analysis, key):
-            setattr(cfg.analysis, key, int(value))
+            setattr(cfg.analysis, key, _flag(value) if isinstance(getattr(cfg.analysis, key), bool) else int(value))
     for key, value in raw.get("chat", {}).items():
         if hasattr(cfg.chat, key):
             setattr(cfg.chat, key, bool(value))
