@@ -305,6 +305,26 @@ def test_max_usd_stops_new_runs(repo, monkeypatch):
     assert report["total"]["all"]["on"]["recall"]["runs"] == 2
 
 
+def test_a_usage_limit_stops_the_eval_instead_of_failing_every_run(repo, monkeypatch):
+    fake = FakeAnalysis(monkeypatch)
+    real = fake.__class__.__call__
+
+    def limited(self, run_dir, tag):
+        real(self, run_dir, tag)
+        if run_dir.name == "run-2":   # the account's usage runs out during run 2
+            ledger.append(run_dir, {**call("synthesis", None), "outcome": "error",
+                                    "error": "success: You've hit your session limit · resets 4:40pm"})
+
+    monkeypatch.setattr(FakeAnalysis, "__call__", limited)
+    report, lines = eval_now(repo, prs=[1])
+    assert len(fake.calls) == 2                                             # no third run
+    assert report["status"] == "stopped" and "Claude's usage limit was reached" in report["stop_reason"]
+    [one] = report["pairs"]
+    assert one["status"] == "partial" and [r["status"] for r in one["runs"]] == ["complete", "failed"]
+    assert report["total"]["all"]["on"]["recall"]["runs"] == 1                # the cut run isn't scored
+    assert any(x.startswith("Stopped: Claude's usage limit") for x in lines)
+
+
 def test_nothing_runs_without_a_yes(repo, monkeypatch):
     fake = FakeAnalysis(monkeypatch)
     shown: list[str] = []

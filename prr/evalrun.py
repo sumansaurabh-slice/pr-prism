@@ -30,6 +30,7 @@ be replayed. Nothing here writes to GitHub: the only GitHub calls are `gh pr vie
 from __future__ import annotations
 
 import os
+import re
 import shutil
 import signal
 import subprocess
@@ -567,13 +568,35 @@ def _replay(pairs: list[dict], report: dict, *, base: Path, root: Path, owner: s
                 break
             result = _one_run(folder / f"run-{i}", pair, i, runs)
             spent += result.get("cost_usd") or 0.0
+            hit = limit_hit(folder / f"run-{i}")
+            if hit:  # a run cut short by the limit isn't scored, and the runs after it would only fail
+                result = {**result, "status": "failed", "reason": f"Claude's usage limit: {hit}", "views": {}}
+                report["stop_reason"] = (f"Claude's usage limit was reached ({hit}). Run the eval again once it "
+                                         "resets; the runs before this one are in this report.")
+                out(f"Stopped: {report['stop_reason']}")
             row["runs"].append(result)
+            if hit:
+                break
         if len(row["runs"]) < runs:
             row["status"], row["reason"] = ("partial" if row["runs"] else "skipped"), report["stop_reason"]
         elif all(r["status"] != "complete" for r in row["runs"]):
             row["status"], row["reason"] = "failed", "every run of the analysis failed"
         else:
             row["status"] = "complete"
+
+
+# Claude Code's own words when the account's usage runs out. Every call after that fails in seconds, so the rest of
+# the eval would only record failures; it stops instead and says when to run again.
+_LIMIT = re.compile(r"(hit your (session|usage|weekly) limit|usage limit reached|limit reached\b.*resets)", re.I)
+
+
+def limit_hit(run_dir: Path) -> str | None:
+    """The first Claude call in this run that failed on the account's usage limit (its message), or None."""
+    for x in ledger.read(run_dir):
+        err = str(x.get("error") or "")
+        if _LIMIT.search(err):
+            return " ".join(err.split())[:200]
+    return None
 
 
 def _run_spend(run_dir: Path) -> float:

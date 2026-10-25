@@ -697,13 +697,13 @@ def test_deep_check_settings_are_read_from_config(tmp_path, monkeypatch):
     assert config.load_config().analysis.deepcheck is False
     defaults = Config()
     assert (defaults.models.deepcheck, defaults.analysis.deepcheck, defaults.analysis.deepcheck_max_targets,
-            defaults.analysis.deepcheck_target_timeout_s, defaults.analysis.deepcheck_budget_s) == ("opus", True, 5, 600, 900)
+            defaults.analysis.deepcheck_target_timeout_s, defaults.analysis.deepcheck_budget_s) == ("opus", True, 5, 900, 1500)
 
 
 def test_the_repo_config_lists_every_deep_check_key():
     text = (Path(__file__).resolve().parents[1] / "config.toml").read_text()
     for key in ('deepcheck = "opus"', "deepcheck = true", "deepcheck_max_targets = 5",
-                "deepcheck_target_timeout_s = 600", "deepcheck_budget_s = 900"):
+                "deepcheck_target_timeout_s = 900", "deepcheck_budget_s = 1500"):
         assert key in text, key
 
 
