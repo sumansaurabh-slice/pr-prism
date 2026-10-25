@@ -2985,3 +2985,69 @@ tr.line-flash > td,
 .bot-row .bot-verdict {
   padding: 6px 0 0;
 }
+
+/* ---- coverage before submit, risky hunks seen, and your answers on findings (Wave 3) ---- */
+.coverage {
+  display: flex;
+  flex-direction: column;
+  gap: 6px;
+  font-size: 14px;
+}
+.coverage p {
+  margin: 0;
+}
+.coverage-line {
+  display: flex;
+  align-items: center;
+  gap: 6px;
+}
+.coverage-warn {
+  display: flex;
+  flex-direction: column;
+  gap: 6px;
+}
+.coverage-list {
+  margin: 0;
+  padding-left: 1.4em;
+  font-size: 13px;
+}
+.coverage-list li {
+  padding: 2px 0;
+}
+.coverage-more summary {
+  color: var(--text-muted);
+  cursor: pointer;
+}
+.coverage-more .coverage-list {
+  margin-top: 4px;
+}
+.tree-seen {
+  display: inline-flex;
+  align-items: center;
+  gap: 4px;
+  font-size: 11px;
+  color: var(--text-muted);
+}
+.tree-seen.done {
+  color: var(--success);
+}
+.finding-row {
+  position: relative;
+}
+.finding-row-link {
+  color: inherit;
+  text-decoration: none !important;
+}
+.finding-row-link::after {
+  content: "";
+  position: absolute;
+  inset: 0;
+}
+.finding-row-answer {
+  position: relative;
+  z-index: 1;
+  font-size: 12px;
+}
+.finding-row.answered-not .finding-row-title {
+  color: var(--text-muted);
+}
