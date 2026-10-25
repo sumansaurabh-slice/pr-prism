@@ -198,7 +198,8 @@ Put team rules under "Team context" in `skill/review-guidelines.md`. Claude foll
   - the deep check under `[analysis]`: on or off, how many areas, and its time limits;
   - concurrency, batch size and cache location;
   - the chat's switches under `[chat]`;
-  - an optional spend warning per PR under `[budget]` (`warn_usd`; a warning only).
+  - an optional spend warning per PR under `[budget]` (`warn_usd`; a warning only);
+  - how many places guided review lists under `[review]` (`max_stops`, 12; the rest show as "N more places").
 
 ## How a review is made
 

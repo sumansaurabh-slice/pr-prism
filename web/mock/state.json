@@ -3,7 +3,9 @@
   "app/models/webhook.py": "2222222",
   "app/delivery/retry.py": "old0000"
  },
- "dismissed_suggestions": [],
+ "dismissed_suggestions": [
+  "s9"
+ ],
  "drafts": [
   {
    "id": "d1",
@@ -17,7 +19,25 @@
    "anchored": true,
    "outdated": false,
    "commit_id": "dddddddddddddddddddddddddddddddddddddddd",
-   "created_at": "2026-10-21T12:10:00Z"
+   "created_at": "2026-10-21T12:10:00Z",
+   "origin_id": null
+  },
+  {
+   "id": "d2",
+   "path": "app/delivery/sender.py",
+   "side": "RIGHT",
+   "line": 17,
+   "start_line": null,
+   "start_side": null,
+   "body": "Retrying on `HTTPStatusError` also retries 4xx responses, which will never succeed. Retry only on 5xx and 429?",
+   "source": "suggestion",
+   "suggestion_id": "s1",
+   "origin_id": "stop-49b805a3a5cd4a30964944701edfc35e85d067b8",
+   "outside_link": false,
+   "anchored": true,
+   "outdated": false,
+   "commit_id": "dddddddddddddddddddddddddddddddddddddddd",
+   "created_at": "2026-10-21T12:12:00Z"
   }
  ],
  "threads": [
@@ -66,5 +86,67 @@
    ]
   }
  ],
- "submitted": []
+ "submitted": [],
+ "stop_verdicts": {
+  "stop-49b805a3a5cd4a30964944701edfc35e85d067b8": {
+   "verdict": "real",
+   "at": "2026-10-21T12:12:00Z",
+   "head_sha": "dddddddddddddddddddddddddddddddddddddddd",
+   "anchor": {
+    "kind": "finding",
+    "path": "app/delivery/sender.py",
+    "side": "RIGHT",
+    "line": 17,
+    "start_line": null,
+    "question": "Should a 4xx answer other than 429 stop the retries at once?",
+    "finding_id": "s1",
+    "bot_comment_id": null,
+    "check_name": null
+   },
+   "opened_at": "2026-10-21T12:12:00Z",
+   "answered_at": "2026-10-21T12:12:00Z"
+  },
+  "stop-ea1466fcee3b28b1590977483fa3240322b8223b": {
+   "verdict": "unsure",
+   "at": "2026-10-21T12:13:00Z",
+   "head_sha": "dddddddddddddddddddddddddddddddddddddddd",
+   "anchor": {
+    "kind": "risk_note",
+    "path": "app/delivery/retry.py",
+    "side": "RIGHT",
+    "line": 23,
+    "start_line": 19,
+    "question": "Is this safe? `retry_on` defaults to `Exception`, so programming errors (e.g. `KeyError`) are retried and slept on too.",
+    "finding_id": null,
+    "bot_comment_id": null,
+    "check_name": null
+   },
+   "opened_at": "2026-10-21T12:13:00Z",
+   "answered_at": "2026-10-21T12:13:00Z"
+  },
+  "stop-5555555555555555555555555555555555555555": {
+   "verdict": "not",
+   "at": "2026-10-21T12:11:00Z",
+   "head_sha": "dddddddddddddddddddddddddddddddddddddddd",
+   "anchor": {
+    "kind": "finding",
+    "path": "app/delivery/sender.py",
+    "side": "RIGHT",
+    "line": 12,
+    "start_line": null,
+    "question": "Is this a real problem? `attempts` is counted before the POST",
+    "finding_id": "s9",
+    "bot_comment_id": null,
+    "check_name": null
+   },
+   "opened_at": "2026-10-21T12:10:30Z",
+   "answered_at": "2026-10-21T12:11:00Z"
+  }
+ },
+ "seen_hunks": {
+  "app/delivery/sender.py": [
+   "RIGHT:1-25"
+  ]
+ },
+ "review_body_draft": ""
 }

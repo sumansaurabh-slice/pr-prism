@@ -89,7 +89,10 @@ interface Store {
   setPref: (key: keyof ViewPrefs, value: boolean) => void;
 }
 
-const emptyState: ReviewState = { reviewed: {}, dismissed_suggestions: [], drafts: [], threads: [], submitted: [] };
+const emptyState: ReviewState = {
+  reviewed: {}, dismissed_suggestions: [], drafts: [], threads: [], submitted: [], stop_verdicts: {}, seen_hunks: {},
+  review_body_draft: "",
+};
 
 function readLS(key: string): string | null {
   try {

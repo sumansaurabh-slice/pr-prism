@@ -12,7 +12,7 @@ from collections import defaultdict
 from pathlib import Path
 from typing import Any
 
-from . import anchors, blockers, bots, ci, deepcheck, diffparse, filekinds, findings, judge
+from . import anchors, blockers, bots, ci, deepcheck, diffparse, filekinds, findings, judge, stops
 from .classify import CATEGORY_ORDER, CATEGORY_TITLES
 from .models import Analysis
 from .util import read_json
@@ -95,6 +95,11 @@ def file_lines(pr_dir: Path) -> dict[str, findings.FileLines]:
         parsed = diffparse.parse(patch.read_bytes().decode("utf-8", errors="replace"))
         _LINES_CACHE.update(key=key, lines={fd.path: findings.FileLines(fd) for fd in parsed})
     return _LINES_CACHE["lines"]
+
+
+def diffs(pr_dir: Path) -> dict[str, diffparse.FileDiff]:
+    """Every file's parsed diff (from the same cache as file_lines)."""
+    return {path: fl.fd for path, fl in file_lines(pr_dir).items()}
 
 
 def _keys_by_path(pr_dir: Path) -> dict[str, list[str]]:
@@ -250,7 +255,11 @@ def _deterministic_impact(ctx: dict, impact_data: dict | None) -> list[dict]:
     return items
 
 
-def build_analysis(pr_dir: Path) -> dict[str, Any]:
+def build_analysis(pr_dir: Path, state: dict | None = None, *, max_stops: int = stops.MAX_STOPS,
+                   with_stops: bool = True) -> dict[str, Any]:
+    """analysis.json for the PR folder. Guided-review stops are built last (prr/stops.py): `state` (state.json) pins
+    answered ones, and the CLI passes none. `with_stops=False` leaves them empty: the review server builds them
+    itself, inside its one catch-all, so a bug there can't take the page down."""
     ctx = read_json(pr_dir / "context.json")
     if ctx is None:
         raise FileNotFoundError(f"{pr_dir}/context.json is missing; run `prr fetch` first")
@@ -345,5 +354,9 @@ def build_analysis(pr_dir: Path) -> dict[str, Any]:
                      if k in progress},
         "repair_log": ctx.get("warnings", []) + log,
         "warnings": deepcheck.warnings(pr_dir),
+        "skipped_areas": deepcheck.skipped(pr_dir),
     }
-    return Analysis.model_validate(analysis).model_dump(mode="json")
+    out = Analysis.model_validate(analysis).model_dump(mode="json")
+    if with_stops:
+        stops.build_stops(out, state, max_stops=max_stops, diffs=diffs(pr_dir))
+    return out

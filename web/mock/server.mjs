@@ -49,6 +49,130 @@ function inHunk(path, side, line) {
   );
 }
 
+// ---- guided review and coverage (prr/stops.py, prr/coverage.py), simplified: the stops in analysis.json were
+// built once by prr/stops.py with a cap of 8; answers here don't re-run the cap.
+const STOP_ID = /^stop-[0-9a-f]{40}$/;
+const listedStops = () => analysis.stops.filter((s) => !s.more && !s.low_confidence && !s.dropped);
+const isDone = (s) => !!state.stop_verdicts[s.id] || (!!s.finding_id && state.dismissed_suggestions.includes(s.finding_id));
+
+function reviewSummary() {
+  const left = listedStops().filter((s) => !isDone(s));
+  return {
+    ...analysis.review_summary,
+    minutes_left: left.reduce((n, s) => n + 2 + Math.min(5, Math.floor(s.changed_lines / 20)), 0),
+  };
+}
+
+function hunkId(h) {
+  if (h.new_lines > 0) return `RIGHT:${h.new_start}-${h.new_start + h.new_lines - 1}`;
+  return `LEFT:${h.old_start}-${h.old_start + Math.max(h.old_lines, 1) - 1}`;
+}
+
+function coverage() {
+  const ordered = [...analysis.stops].sort((a, b) => a.order - b.order);
+  const left = ordered
+    .filter((s) => !s.low_confidence && !s.dropped && !isDone(s))
+    .sort((a, b) => Number(a.more) - Number(b.more) || a.order - b.order);
+  const answered = ordered.filter((s) => state.stop_verdicts[s.id]);
+  const byFile = {};
+  for (const f of analysis.files) {
+    if (f.risk !== "high" || !f.hunks.length) continue;
+    const seen = new Set(state.seen_hunks[f.path] || []);
+    const looked = f.hunks.filter((h) => {
+      if (seen.has(hunkId(h))) return true;
+      return answered.some((s) => {
+        if (s.path !== f.path || s.line == null) return false;
+        const [start, count] = s.side === "LEFT" ? [h.old_start, h.old_lines] : [h.new_start, h.new_lines];
+        return count > 0 && s.line >= start && s.line < start + count;
+      });
+    }).length;
+    byFile[f.path] = { seen: looked, total: f.hunks.length };
+  }
+  const files = Object.values(byFile);
+  const notChecked = left.map((s) => ({ stop_id: s.id, path: s.path, line: s.line, question: s.question, kind: s.kind }));
+  return {
+    not_checked: notChecked,
+    unsure: ordered
+      .filter((s) => state.stop_verdicts[s.id]?.verdict === "unsure")
+      .map((s) => ({ stop_id: s.id, path: s.path, line: s.line, question: s.question })),
+    skipped_areas: analysis.skipped_areas,
+    high_risk_unseen: {
+      hunks: files.reduce((n, v) => n + v.total - v.seen, 0),
+      files: files.filter((v) => v.seen < v.total).length,
+      by_file: byFile,
+    },
+    low_confidence: ordered.filter((s) => s.low_confidence && !isDone(s)).length,
+    running: !["complete", "failed"].includes(analysis.status),
+    count: notChecked.length + analysis.skipped_areas.length,
+  };
+}
+
+function answerStop(stop, verdict, openedAt) {
+  const prev = state.stop_verdicts[stop.id];
+  if (!prev || prev.verdict !== verdict) {
+    const anchor = Object.fromEntries(
+      ["kind", "path", "side", "line", "start_line", "question", "finding_id", "bot_comment_id", "check_name"].map((k) => [k, stop[k]]),
+    );
+    state.stop_verdicts[stop.id] = { verdict, at: now(), head_sha: analysis.pr.head_sha, anchor, opened_at: openedAt ?? null, answered_at: now() };
+  }
+  const out = { verdict: state.stop_verdicts[stop.id], draft: null, dismissed: null, review_body_draft: null };
+  if (verdict === "real" && stop.kind === "ci") {
+    const block = (stop.comment_body || "").trim();
+    if (block && !state.review_body_draft.includes(block)) {
+      state.review_body_draft = state.review_body_draft.trim() ? `${state.review_body_draft.trimEnd()}\n\n${block}` : block;
+    }
+    out.review_body_draft = state.review_body_draft;
+  } else if (verdict === "real" && stop.kind !== "look_for") {
+    let d = state.drafts.find((x) => x.origin_id === stop.id);
+    if (!d) {
+      d = {
+        id: `d${++seq}`, path: stop.path, side: stop.side, line: stop.line, start_line: stop.start_line ?? null, start_side: null,
+        body: stop.comment_body || "", source: stop.kind === "finding" ? "suggestion" : "user",
+        suggestion_id: stop.kind === "finding" ? stop.finding_id : null, origin_id: stop.id, outside_link: false,
+        anchored: inHunk(stop.path, stop.side, stop.line), outdated: false, commit_id: analysis.pr.head_sha, created_at: now(),
+      };
+      state.drafts.push(d);
+    }
+    out.draft = d;
+  } else if (verdict === "not" && stop.finding_id) {
+    if (!state.dismissed_suggestions.includes(stop.finding_id)) state.dismissed_suggestions.push(stop.finding_id);
+    out.dismissed = stop.finding_id;
+  }
+  return out;
+}
+
+function takeBack(id, stop) {
+  const rec = state.stop_verdicts[id];
+  const out = { ok: true, kept_draft: null, restored: null, review_body_draft: null };
+  if (!rec) return out;
+  delete state.stop_verdicts[id];
+  const live = stop && !stop.dropped ? stop : null;
+  if (rec.verdict === "not") {
+    const fid = stop?.finding_id ?? rec.anchor?.finding_id;
+    if (fid && state.dismissed_suggestions.includes(fid)) {
+      state.dismissed_suggestions = state.dismissed_suggestions.filter((x) => x !== fid);
+      out.restored = fid;
+    }
+  } else if (rec.verdict === "real" && (live?.kind ?? rec.anchor?.kind) === "ci") {
+    const block = (live?.comment_body || "").trim();
+    const at = block ? state.review_body_draft.indexOf(block) : -1;
+    if (at >= 0) {
+      const text = state.review_body_draft;
+      state.review_body_draft = `${text.slice(0, at).trimEnd()}\n\n${text.slice(at + block.length).trimStart()}`.trim();
+      out.review_body_draft = state.review_body_draft;
+    }
+  } else if (rec.verdict === "real") {
+    for (const d of state.drafts.filter((x) => x.origin_id === id)) {
+      if (live && live.comment_body != null && d.body.trim() === live.comment_body.trim()) {
+        state.drafts = state.drafts.filter((x) => x.id !== d.id);
+      } else {
+        out.kept_draft = d;
+      }
+    }
+  }
+  return out;
+}
+
 function preview(body, event) {
   const anchored = state.drafts.filter((d) => d.anchored);
   const unanchored = state.drafts.filter((d) => !d.anchored);
@@ -71,7 +195,24 @@ async function api(req, res, url) {
   const p = url.pathname;
   const m = req.method;
   if (p === "/api/health") return send(res, 200, { ok: true, pr: analysis.pr.number });
-  if (p === "/api/analysis") return send(res, 200, analysis);
+  if (p === "/api/analysis") return send(res, 200, { ...analysis, review_summary: reviewSummary() });
+  if (p === "/api/coverage") return send(res, 200, coverage());
+  if (p === "/api/review-body-draft" && m === "PUT") {
+    const b = await readBody(req);
+    if (typeof b.body !== "string" || b.body.length > 65536) return send(res, 400, { detail: "The review summary is limited to 65,536 characters" });
+    state.review_body_draft = b.body;
+    return send(res, 200, { ok: true });
+  }
+  if (p === "/api/seen" && m === "POST") {
+    const b = await readBody(req);
+    if (!analysis.files.some((f) => f.path === b.path)) return send(res, 404, { detail: "file is not part of this PR" });
+    if (!Array.isArray(b.hunks) || b.hunks.length > 5000 || b.hunks.some((h) => !/^(LEFT|RIGHT):\d{1,9}-\d{1,9}$/.test(h))) {
+      return send(res, 400, { detail: "not a hunk id" });
+    }
+    const kept = (state.seen_hunks[b.path] || []).filter((h) => !b.hunks.includes(h));
+    state.seen_hunks[b.path] = [...kept, ...new Set(b.hunks)].slice(-5000);
+    return send(res, 200, { ok: true });
+  }
   if (p === "/api/state") return send(res, 200, state);
   if (p === "/api/trust") return send(res, 200, { author: analysis.pr.author, association: "CONTRIBUTOR", trusted: false, state: "outside" });
   if (p === "/api/cost") {
@@ -104,7 +245,7 @@ async function api(req, res, url) {
     const b = await readBody(req);
     const d = {
       id: `d${++seq}`, path: b.path, side: b.side, line: b.line, start_line: b.start_line ?? null, body: b.body,
-      source: b.source, suggestion_id: b.suggestion_id ?? null, origin_id: null, anchored: inHunk(b.path, b.side, b.line),
+      source: b.source, suggestion_id: b.suggestion_id ?? null, origin_id: b.origin_id ?? null, anchored: inHunk(b.path, b.side, b.line),
       outdated: false, commit_id: analysis.pr.head_sha, created_at: now(),
     };
     state.drafts.push(d);
@@ -127,6 +268,17 @@ async function api(req, res, url) {
     state.dismissed_suggestions = state.dismissed_suggestions.filter((x) => x !== id);
     if (mm[2] === "dismiss") state.dismissed_suggestions.push(id);
     return send(res, 200, { dismissed_suggestions: state.dismissed_suggestions });
+  }
+  if ((mm = /^\/api\/stops\/([^/]+)\/verdict$/.exec(p))) {
+    const id = decodeURIComponent(mm[1]);
+    if (!STOP_ID.test(id)) return send(res, 400, { detail: "not a stop id" });
+    const stop = analysis.stops.find((s) => s.id === id);
+    if (!stop && !state.stop_verdicts[id]) return send(res, 404, { detail: "no such stop" });
+    if (m === "DELETE") return send(res, 200, takeBack(id, stop));
+    const b = await readBody(req);
+    if (!["real", "not", "unsure"].includes(b.verdict)) return send(res, 400, { detail: "verdict must be real, not or unsure" });
+    if (!stop || stop.dropped) return send(res, 409, { detail: "This stop changed; reload" });
+    return send(res, 200, answerStop(stop, b.verdict, b.opened_at));
   }
   if (p === "/api/github/threads") return send(res, 200, { comments: ghComments });
   if (p === "/api/review/preview") {

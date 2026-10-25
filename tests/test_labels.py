@@ -163,7 +163,7 @@ def test_load_compacts_what_is_on_disk(tmp_path):
 
 def test_the_recall_denominator_leaves_out_ci_and_look_for():
     assert labels.countable(problem())
-    assert labels.countable(problem(source="verdict", origin_id="s", stop_kind="risk-note"))
+    assert labels.countable(problem(source="verdict", origin_id="s", stop_kind="risk_note"))
     assert not labels.countable(problem(source="verdict", origin_id="s", stop_kind="ci", path=None, line=None))
     assert not labels.countable(problem(source="verdict", origin_id="s", stop_kind="look_for"))   # even with a line
     assert not labels.countable(problem(line=None))

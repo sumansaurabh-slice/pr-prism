@@ -16,6 +16,7 @@ import os
 import shutil
 import sys
 import time
+import traceback
 import uuid
 from http.cookies import SimpleCookie
 from pathlib import Path
@@ -26,12 +27,13 @@ from fastapi import FastAPI, HTTPException
 from fastapi.responses import Response, StreamingResponse
 from pydantic import BaseModel
 
-from . import archive, chat_tools, cost, github, labels, merge, policy
+from . import archive, chat_tools, cost, github, labels, merge, policy, stops
+from . import coverage as cover
 from .analyze import style_rules
 from .drafts import STARTUP_EXPIRY_S, claim_for_post, finish_post, is_posting, new_draft, postable, release, release_stale
 from .claude import ChatProcess, ClaudeError, run_structured, stream_chat
 from .config import PROMPTS_DIR, WEB_DIST, Config
-from .gitgh import git, viewer_login
+from .gitgh import CommandError, git, viewer_login
 from .ledger import Ledger
 from .state import StateStore
 from .util import now_iso, read_json, write_text
@@ -42,6 +44,7 @@ CSP = ("default-src 'self'; script-src 'self'; style-src 'self' 'unsafe-inline';
 MAX_FILE_BYTES = 2_000_000
 MAX_CONTEXT_CHARS = 20_000
 BEING_POSTED = "This comment is being posted to GitHub right now. Try again in a moment."
+STOP_CHANGED = "This stop changed; reload"
 
 
 class Guard:
@@ -105,6 +108,7 @@ class DraftIn(BaseModel):
     body: str
     source: str = "user"
     suggestion_id: str | None = None
+    origin_id: str | None = None  # the guided-review stop it was made from (a look_for stop's editor sets it)
 
 
 class DraftPatch(BaseModel):
@@ -158,6 +162,20 @@ class TaintIn(BaseModel):
     thread_id: str
     kind: str  # policy.CAUSE_KINDS
     text: str = ""
+
+
+class VerdictIn(BaseModel):
+    verdict: str                  # real | not | unsure
+    opened_at: str | None = None  # when the reviewer opened the stop (to calibrate the time-left estimate later)
+
+
+class ReviewBodyIn(BaseModel):
+    body: str
+
+
+class SeenIn(BaseModel):
+    path: str
+    hunks: list[str]  # prr/coverage.py hunk ids: "RIGHT:<new_start>-<new_end>" or "LEFT:<old_start>-<old_end>"
 
 
 # --------------------------------------------------------------------------------------
@@ -304,7 +322,7 @@ def create_app(pr_dir: Path, cfg: Config) -> FastAPI:
 
     @app.get("/api/analysis")
     def analysis() -> dict:
-        return merge.build_analysis(pr_dir)
+        return view()
 
     @app.get("/api/state")
     def state() -> dict:
@@ -397,9 +415,12 @@ def create_app(pr_dir: Path, cfg: Config) -> FastAPI:
 
     @app.post("/api/drafts")
     def add_draft(body: DraftIn) -> dict:
+        if body.origin_id is not None and not stops.ID.fullmatch(body.origin_id):
+            raise HTTPException(400, "origin_id must be a stop id")
         try:
             draft = new_draft(ctx(), body.path, body.side, body.line, body.body, start_line=body.start_line,
-                              start_side=body.start_side, source=body.source, suggestion_id=body.suggestion_id)
+                              start_side=body.start_side, source=body.source, suggestion_id=body.suggestion_id,
+                              origin_id=body.origin_id)
         except ValueError as e:
             raise HTTPException(400, str(e)) from e
         store.update(lambda s: s["drafts"].append(draft))
@@ -492,6 +513,122 @@ def create_app(pr_dir: Path, cfg: Config) -> FastAPI:
         store.update(lambda s: s.pop("restored", None))
         return {"ok": True}
 
+    # ---- guided review and coverage before submit (prr/stops.py, prr/coverage.py) -----------------------
+
+    served_stops: dict[str, None] = {}  # stop ids this server has listed: an answer to one that is gone gets 409
+
+    def view(state: dict | None = None) -> dict:
+        """The analysis, with guided-review stops pinned by the reviewer's answers. Building the stops is the one
+        catch-all: if it fails, the page still works, without stops, and says why."""
+        a = merge.build_analysis(pr_dir, with_stops=False)
+        try:
+            stops.build_stops(a, store.load() if state is None else state, max_stops=cfg.review.max_stops,
+                              diffs=merge.diffs(pr_dir))
+        except Exception as e:  # noqa: BLE001
+            traceback.print_exc()
+            a["stops"] = []
+            a["warnings"].append(f"Guided review unavailable: {e}")
+        served_stops.update(dict.fromkeys(s["id"] for s in a["stops"]))
+        while len(served_stops) > 20_000:
+            served_stops.pop(next(iter(served_stops)))
+        return a
+
+    def listed_stop(sid: str, state: dict) -> dict | None:
+        """The stop as listed now, or None when it is gone (404 when this id was never a stop here)."""
+        if not stops.ID.fullmatch(sid):
+            raise HTTPException(400, "not a stop id")
+        found = next((s for s in view(state)["stops"] if s["id"] == sid), None)
+        if found is None and sid not in served_stops and sid not in stops.verdicts(state):
+            raise HTTPException(404, "no such stop")
+        return found
+
+    def answer_author() -> str | None:
+        try:
+            return viewer()
+        except (CommandError, OSError):
+            return None  # the label just has no author
+
+    @app.post("/api/stops/{stop_id}/verdict")
+    def answer_stop(stop_id: str, body: VerdictIn) -> dict:
+        """Real problem / Not a problem / Not sure (prr/stops.py `answer`). Answering again the same way changes
+        nothing, so a double-click makes one comment."""
+        if body.verdict not in stops.VERDICTS:
+            raise HTTPException(400, "verdict must be real, not or unsure")
+        if body.opened_at is not None and len(body.opened_at) > 64:
+            raise HTTPException(400, "opened_at is too long")
+        stop = listed_stop(stop_id, store.load())
+        if stop is None or stop["dropped"]:
+            raise HTTPException(409, STOP_CHANGED)
+        c = ctx()
+
+        def apply(s: dict) -> dict:
+            try:
+                return stops.answer(s, stop, body.verdict, c, opened_at=body.opened_at, now=now_iso())
+            except ValueError as e:
+                raise HTTPException(400, str(e)) from e
+
+        out = store.update(apply)
+        previous = out.pop("previous")
+        if previous != body.verdict:
+            warning = labels.save(pr_dir, labels.for_verdict(c["pr"], stop, body.verdict, previous,
+                                                             author=answer_author()))
+            if warning:
+                out["warning"] = warning
+        return out
+
+    @app.delete("/api/stops/{stop_id}/verdict")
+    def take_back_answer(stop_id: str) -> dict:
+        """Undo, or the first half of "Change answer" (prr/stops.py `take_back`): an edited "Real problem" comment
+        is kept and returned as kept_draft, so the app can ask "Keep your comment?"."""
+        state = store.load()
+        stop = listed_stop(stop_id, state)
+        rec = stops.verdicts(state).get(stop_id) or {}
+
+        def apply(s: dict) -> dict:
+            try:
+                return stops.take_back(s, stop_id, stop)
+            except stops.BeingPosted:
+                raise HTTPException(409, BEING_POSTED) from None
+
+        out = store.update(apply)
+        previous = out.pop("previous")
+        where = stop if stop is not None else {**(rec.get("anchor") or {}), "id": stop_id}
+        warning = labels.save(pr_dir, labels.for_verdict(ctx()["pr"], where, None, previous, author=None))
+        return {"ok": True, **out, **({"warning": warning} if warning else {})}
+
+    @app.put("/api/review-body-draft")
+    def save_review_body(body: ReviewBodyIn) -> dict:
+        """The review summary as typed in Submit review (autosaved); a CI stop's "Real problem" adds to it."""
+        if len(body.body) > stops.MAX_REVIEW_BODY:
+            raise HTTPException(400, f"The review summary is limited to {stops.MAX_REVIEW_BODY:,} characters")
+        store.update(lambda s: s.__setitem__("review_body_draft", body.body))
+        return {"ok": True}
+
+    @app.post("/api/seen")
+    def mark_seen(body: SeenIn) -> dict:
+        """Hunks that were on screen for 3 s (coverage before submit). At most 5,000 ids are kept per file."""
+        if file_ctx(body.path) is None:
+            raise HTTPException(404, "file is not part of this PR")
+        if len(body.hunks) > cover.MAX_SEEN_PER_FILE:
+            raise HTTPException(400, f"at most {cover.MAX_SEEN_PER_FILE:,} hunk ids per file")
+        bad = next((h for h in body.hunks if not cover.HUNK_ID.fullmatch(h)), None)
+        if bad is not None:
+            raise HTTPException(400, f"not a hunk id: {bad[:40]!r}")
+
+        def apply(s: dict) -> None:
+            seen = s["seen_hunks"] if isinstance(s.get("seen_hunks"), dict) else {}
+            seen[body.path] = cover.add_seen(seen.get(body.path) or [], body.hunks)
+            s["seen_hunks"] = seen
+
+        store.update(apply)
+        return {"ok": True}
+
+    @app.get("/api/coverage")
+    def get_coverage() -> dict:
+        """What hasn't been checked yet (prr/coverage.py): the Submit dialog's warning and its collapsed lines."""
+        state = store.load()
+        return cover.coverage(view(state), state)
+
     # ---- publishing ----------------------------------------------------------------
 
     def _current_head(pr: dict, fresh: bool) -> str:
@@ -562,7 +699,7 @@ def create_app(pr_dir: Path, cfg: Config) -> FastAPI:
 
     @app.post("/api/review/draft-summary")
     async def draft_summary() -> dict:
-        a = merge.build_analysis(pr_dir)
+        a = merge.build_analysis(pr_dir, with_stops=False)
         drafts = store.load()["drafts"]
         lines = [f"- {d['path']}:{d['line']} — {d['body'][:400]}" for d in drafts] or ["(no inline comments)"]
         prompt = (
@@ -776,7 +913,7 @@ def create_app(pr_dir: Path, cfg: Config) -> FastAPI:
         thread = store.update(add_user)
         running[tid] = None  # type: ignore[assignment]  # reserve the slot; the process attaches via on_start
         marks.pop(tid, None)  # a new turn starts unmarked
-        analysis_now = await asyncio.to_thread(merge.build_analysis, pr_dir)
+        analysis_now = await asyncio.to_thread(merge.build_analysis, pr_dir, with_stops=False)
         mcp_config, codegraph = chat_mcp(tid)
         system_file = chat_system_file(analysis_now, codegraph)
         prompt = _compose_prompt(body.text, body.context)

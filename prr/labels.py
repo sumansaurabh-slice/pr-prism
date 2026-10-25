@@ -12,7 +12,7 @@ Dismissing a finding is not a label: it can mean "true, but not worth a comment"
 
 One line: {v, id, pr, commit_id, merge_base_sha, path, side, line, kind, text, author, source, origin_id,
 gh_comment_id, finding_id, stop_kind, split, at}. `v` is the format version. `stop_kind` is the guided-review stop a
-verdict answered (finding, risk-note, bot, ci, look_for), or null. `split` is train or holdout: held-out PRs are kept
+verdict answered (finding, risk_note, bot, ci, look_for), or null. `split` is train or holdout: held-out PRs are kept
 out of prompt design and reported on their own.
 
 Compaction, so one issue counts once:
@@ -186,6 +186,23 @@ def posted_drafts(drafts: list[dict], gh_comments: list[dict]) -> list[dict]:
         out.append({"path": d.get("path"), "line": d.get("line"), "side": d.get("side"), "body": d.get("body") or "",
                     "origin_id": d.get("origin_id"), "gh_comment_id": hit.get("id") if hit else None})
     return out
+
+
+def for_verdict(pr: dict, stop: dict, verdict: str | None, previous: str | None, *,
+                author: str | None) -> list[dict[str, Any]]:
+    """The label a guided-review answer makes, keyed by the stop id (origin_id): real → problem, not → not-problem.
+    "Not sure" (or taking the answer back: `verdict` None) makes none, so it retracts an earlier real or not answer.
+    `stop` is the stop, or for one that is gone, where it was ({id, kind, path, side, line, finding_id})."""
+    kind = {"real": "problem", "not": "not-problem"}.get(verdict or "")
+    if kind is None and previous not in ("real", "not"):
+        return []
+    where = {"pr": pr["number"], "source": "verdict", "commit_id": pr.get("head_sha"), "path": stop.get("path"),
+             "side": stop.get("side"), "line": stop.get("line"), "origin_id": stop["id"],
+             "finding_id": stop.get("finding_id"), "stop_kind": stop.get("kind")}
+    if kind is None:
+        return [new_label(kind="retracted", **where)]
+    return [new_label(kind=kind, merge_base_sha=pr.get("merge_base_sha"), author=author,
+                      text=stop.get("comment_body") or stop.get("question") or "", **where)]
 
 
 def retracted(pr: dict, draft: dict) -> list[dict[str, Any]]:
