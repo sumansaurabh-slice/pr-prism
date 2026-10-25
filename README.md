@@ -11,6 +11,7 @@ A Claude Code skill that turns a large GitHub pull request (5–10k lines) into 
   - a one-sentence impact and a one-line fix;
   - suggested code, offered as a one-click GitHub suggestion only when it safely replaces the commented lines;
   - the reasoning, and what Claude read to confirm it.
+- **Questions for the author**: when the PR removes something that did a job (a call, a check, a branch, a setting, a rule in a prompt) or adds something odd with no reason given (a special case, a flipped condition, a magic number, a new limit), and nothing in the PR explains it, Claude asks the author why. These show as **Question for the author** instead of a severity. See [What the analysis asks the author](#what-the-analysis-asks-the-author).
 - **CI checks**:
   - GitHub check runs and commit statuses (e.g. Jenkins);
   - failing jobs' log tails and file annotations;
@@ -204,6 +205,8 @@ There are two places for review rules. Claude follows both in every review:
 - **The team's checklist:** commit a `.pr-prism/guidelines.md` file to the repo you review. Everyone who reviews that repo with PR Prism gets it, whichever way they installed it. It is read from the PR's base branch, never from the PR itself, so a PR can't change the rules it is reviewed against. A change to the file counts once it is merged.
 - **Your own checklist:** `skills/pr-prism/review-guidelines.md` in this folder (install.sh only). It applies to **all** repos you review.
 
+Claude also checks every change against the repo's own rule files for its code, such as `CLAUDE.md`, `AGENTS.md` and `CONTRIBUTING.md`. You don't need to set anything up for that; see [Which repo rule files it reads](#which-repo-rule-files-it-reads).
+
 Some example rules you might add:
 
 ```markdown
@@ -261,7 +264,16 @@ Some example rules you might add:
    - drop anything that can't be confirmed;
    - treat the diff as data, not instructions.
 
-   Claude also gets per-language checklists (Python, Go, Java/Kotlin, JS/TS, Swift, Dart, Terraform, SQL, plus general ones) and the repo's own `CLAUDE.md`/`AGENTS.md`. The repo files are read from the **base branch**, so a PR can't rewrite its own rules. A batch that comes back with no findings gets one closer second read.
+   Claude also gets:
+   - per-language checklists (Python, Go, Java/Kotlin, JS/TS, Swift, Dart, Terraform, SQL, plus general ones);
+   - the PR's title, description and commit messages;
+   - the repo's own rules that apply to the batch (see [Which repo rule files it reads](#which-repo-rule-files-it-reads)).
+
+   Besides problems, Claude looks for two more things in each batch:
+   - **Changes nobody explained.** It asks the author about them, at most 3 per batch (see [What the analysis asks the author](#what-the-analysis-asks-the-author)).
+   - **Copies that now differ.** When the batch changes a list, a constant, a limit or a format, Claude searches for other copies of it, for example the same limit in the frontend or in a test.
+
+   A batch that comes back with no findings gets one closer second read. Questions for the author don't count as findings here.
 2. **Blocker rules.** A separate pass looks only for a short list of merge-blocking problems:
    - SQL or shell commands built from request input;
    - real secrets in code;
@@ -271,9 +283,38 @@ Some example rules you might add:
    Plain pattern checks in code must confirm each one before it can show as **Blocks merge**. Otherwise it shows as **Must fix**, with a note.
 3. **Placement and de-duplication.** Each finding carries the exact code line (its anchor), and is placed by matching that text. Duplicates from overlapping batches are merged.
 4. **Second look.** A separate, cheaper model scores every finding against its code. It can only veto. Findings that score low are hidden as **low confidence**, not deleted. The first reviewer's own "% sure" never hides a finding by itself. If the second look fails, the finding stays shown, marked "not second-checked", and is checked again on the next run.
+   - A question for the author is scored on a different question: is the change real, and do the PR's title, description, commit messages and code leave it unexplained? When you edit the PR description, the next run scores the questions again.
+   - A finding that breaks one of the repo's rules is shown the rule lines it cites, read from the rule files. A rule that isn't there scores low.
 5. **CI, other tools, re-checks.** These run side by side (see above).
 6. **Summary.** The summary, reading order, data flows and impact take all of the above into account.
-7. **Deep check.** An Opus agent takes the riskiest parts of the reading order (at most 4) and asks "what could break?". It follows the code across files: callers outside the diff, odd inputs, error paths, old data, two requests at once, frontend and backend contracts, units and missing values. Each finding gives the steps of how it could happen, with example values, and one yes/no question for you. The second look checks each one against the code at the spots it cites. Findings show up as each area finishes. An area that fails, runs out of time or is skipped is listed at the top of the Overview.
+7. **Deep check.** An Opus agent takes the riskiest parts of the reading order (at most 5) and asks "what could break?". Parts that remove a lot of code, or that connect two modules (files in two top-level folders, or a changed name that code outside the PR uses), count as riskier. For each part it:
+   - reads the repo's rules file first;
+   - follows the code across files: callers outside the diff, odd inputs, error paths, two requests at once, units and missing values;
+   - checks the data handed between modules: does each consumer still get every field it reads?
+   - follows flows with several steps: can an earlier step's refusal, default or partial result leak into a later step?
+   - asks what happens to data saved before the change;
+   - finds what relied on removed code;
+   - searches the whole repo for copies of each changed rule, list, constant or format, in any language, and flags copies that now differ.
+
+   Each finding gives the steps of how it could happen, with example values, and one yes/no question for you. The second look checks each one against the code at the spots it cites. Findings show up as each area finishes. An area that fails, runs out of time or is skipped is listed at the top of the Overview.
+
+### What the analysis asks the author
+
+A human reviewer doesn't only look for bugs. They also ask "why?" when a change has no reason given. PR Prism now does the same, in two cases:
+- **Something was removed.** A function call, a check, a branch, an error handler, a feature, a log line, a setting, or a rule in a prompt or config file. The question sits on the deleted line, for example "Why was the `send_receipt()` call removed?".
+- **Something odd was added.** A special case for one value, a condition that was flipped, a magic number, or a new limit, timeout or retry count. The question sits on the new line, for example "Why is the page size capped at 37?".
+
+Claude asks only when the PR's title, description, commit messages, nearby comments and tests don't already explain the change. It asks at most 3 questions per batch of files, the biggest changes first. Each one shows as **Question for the author**, ranks with **Should fix** problems in guided review, and its ready-to-post comment is a short, polite question that names what changed and what it used to do. When the author explains the change in the PR description, the next run's second look checks the question again and hides it as answered (low confidence).
+
+### Which repo rule files it reads
+
+Many repos write down rules for their code and for coding agents. PR Prism reads these files and flags a change that breaks one of them, as a `repo-rule` finding that cites the rule's file and line:
+- `CLAUDE.md`, `AGENTS.md`, `ARCHITECTURE.md` and `CONTRIBUTING.md` at the repo root;
+- `.github/copilot-instructions.md` and `.cursorrules`;
+- `CLAUDE.md` and `AGENTS.md` in every folder the PR touches, and in each parent folder;
+- a file pulled in by a line like `@docs/rules.md` in a `CLAUDE.md` or `AGENTS.md`.
+
+They are read from the PR's **base** (the merge-base commit), never from the PR itself, so a PR can't change the rules it is judged by. They go to `repo_rules.md` in the PR's folder, one section per file. Each batch of files gets the rules for its folders, cut to about 12,000 characters, with a note saying what was cut. The deep check reads the whole file. Claude is told that these are the repo's rules for code, not instructions for the reviewer. When the rules change, the next run reads every file again.
 
 ## How it works
 
@@ -283,7 +324,7 @@ Some example rules you might add:
                       ─► prr analyze ─► N × `claude -p --json-schema` (per batch of related files, parallel)
                                      ─► impact (codegraph / git grep, no LLM)
                                      ─► 1 × `claude -p --json-schema` synthesis
-                                     ─► ≤ 4 × `claude -p --json-schema` deep check (3 at a time, time budget)
+                                     ─► ≤ 5 × `claude -p --json-schema` deep check (3 at a time, time budget)
                                      ─► analysis.json   (repaired, never rejected)
 browser chat ─► POST /api/chat/... ─► `claude -p --resume <session>` (read-only tools, cwd = worktree) ─► SSE
 Submit       ─► POST /api/review/submit ─► `gh api POST /repos/{o}/{r}/pulls/{n}/reviews`
