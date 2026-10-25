@@ -5,7 +5,9 @@ export type Route =
   | { view: "overview" }
   | { view: "file"; path: string; line: number | null; side: Side; full: boolean }
   | { view: "flow"; id: string | null }
-  | { view: "impact" };
+  | { view: "impact" }
+  // Guided review: #/review (resume: the first open stop, or the end screen), #/review/<stopId>, #/review/end
+  | { view: "review"; stopId: string | null; end: boolean };
 
 export function parseHash(hash: string): Route {
   const raw = hash.replace(/^#\/?/, "");
@@ -29,6 +31,11 @@ export function parseHash(hash: string): Route {
       return { view: "flow", id: rest.length ? decodeURIComponent(rest.join("/")) : null };
     case "impact":
       return { view: "impact" };
+    case "review": {
+      const id = rest.length ? decodeURIComponent(rest.join("/")) : "";
+      if (id === "end") return { view: "review", stopId: null, end: true };
+      return { view: "review", stopId: id || null, end: false };
+    }
     default:
       return { view: "overview" };
   }
@@ -43,6 +50,12 @@ export function fileHref(path: string, line?: number | null, side?: Side, full?:
   return `#/file/${encodeURIComponent(path)}${qs ? `?${qs}` : ""}`;
 }
 
+/** `#/review/<stopId>`; `#/review` resumes at the first open stop; `#/review/end` is the end screen. */
+export function reviewHref(stopId?: string | null): string {
+  return stopId ? `#/review/${encodeURIComponent(stopId)}` : "#/review";
+}
+export const REVIEW_END = "#/review/end";
+
 export function navigate(href: string) {
   if (window.location.hash === href) {
     // Same target: re-fire so views can re-scroll to the line.
@@ -54,6 +67,12 @@ export function navigate(href: string) {
 
 export const goFile = (path: string, line?: number | null, side?: Side, full?: boolean) =>
   navigate(fileHref(path, line, side, full));
+
+/** Swap the address without a new history entry (#/review → #/review/<first open stop>), then tell the views. */
+export function replaceRoute(href: string) {
+  window.history.replaceState(window.history.state, "", href);
+  window.dispatchEvent(new HashChangeEvent("hashchange"));
+}
 
 function subscribe(cb: () => void) {
   window.addEventListener("hashchange", cb);

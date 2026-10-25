@@ -25,7 +25,7 @@ for (const lang of [jsx, tsx, toml, protobuf, graphql, hcl, docker]) refractor.r
 
 // ------------------------------------------------------------------ helpers
 
-const diffCache = new Map<string, string>();
+export const diffCache = new Map<string, string>(); // path → patch, shared with the Review view's hunks
 const fileCache = new Map<string, string>();
 
 const EXT_LANG: Record<string, string> = {
@@ -38,7 +38,7 @@ const EXT_LANG: Record<string, string> = {
   pl: "perl", m: "objectivec", ini: "ini", mk: "makefile", diff: "diff",
 };
 
-function languageOf(path: string): string | null {
+export function languageOf(path: string): string | null {
   const base = splitPath(path).base;
   if (/^dockerfile/i.test(base)) return "docker";
   if (/^makefile$/i.test(base)) return "makefile";
@@ -49,7 +49,7 @@ function languageOf(path: string): string | null {
 
 // react-diff-view 3 was written against refractor 2 (highlight → node[]); refractor 5 returns a root.
 type HighlightOptions = Extract<TokenizeOptions, { highlight: true }>;
-const refractorAdapter = {
+export const refractorAdapter = {
   highlight: (value: string, language: string) => refractor.highlight(value, language).children,
 } as unknown as HighlightOptions["refractor"];
 

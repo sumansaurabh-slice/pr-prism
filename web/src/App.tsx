@@ -1,4 +1,4 @@
-import { useEffect, type CSSProperties, type ReactNode } from "react";
+import { useEffect, useState, type CSSProperties, type ReactNode } from "react";
 import { ChatPanel } from "./components/ChatPanel";
 import { DraftsDrawer } from "./components/Drafts";
 import { FileView } from "./components/FileView";
@@ -8,10 +8,12 @@ import { Impact } from "./components/Impact";
 import { Overview } from "./components/Overview";
 import { ProgressBanner, RestoreBanner } from "./components/ProgressBanner";
 import { ReviewPath } from "./components/ReviewPath";
+import { ReviewView } from "./components/ReviewView";
 import { SubmitModal } from "./components/SubmitModal";
-import { DiffStat, IconComment, IconFileDiff, IconPulse, IconWorkflow, IconX } from "./icons";
-import { SHORTCUTS, useGlobalKeys } from "./keyboard";
-import { fileHref, navigate, useRoute, type Route } from "./router";
+import { DiffStat, IconChecklist, IconComment, IconFileDiff, IconPulse, IconWorkflow, IconX } from "./icons";
+import { REVIEW_SHORTCUTS, SHORTCUTS, useGlobalKeys } from "./keyboard";
+import { useReviewCounts } from "./review";
+import { fileHref, navigate, reviewHref, useRoute, type Route } from "./router";
 import { reviewOrder, useStore } from "./store";
 
 const POLL_MS = 3000;
@@ -22,7 +24,12 @@ function Tabs({ route }: { route: Route }) {
   const lastFile = route.view === "file" ? route.path : reviewOrder(analysis)[0];
   const files = analysis?.files ?? [];
   const viewed = files.filter((f) => f.path in reviewedMap).length;
-  const tabs: { key: Route["view"]; label: string; href: string; icon: ReactNode; count?: number }[] = [
+  const review = useReviewCounts();
+  const tabs: { key: Route["view"]; label: string; href: string; icon: ReactNode; count?: number | string }[] = [
+    {
+      key: "review", label: "Review", href: reviewHref(), icon: <IconChecklist />,
+      count: review.total ? (review.left ? `${review.left} left` : "done") : undefined,
+    },
     { key: "overview", label: "Overview", href: "#/overview", icon: <IconComment /> },
     {
       key: "file", label: "Files changed", href: lastFile ? fileHref(lastFile) : "#/overview", icon: <IconFileDiff />,
@@ -61,7 +68,24 @@ function Tabs({ route }: { route: Route }) {
   );
 }
 
-function HelpOverlay() {
+function ShortcutRows({ rows }: { rows: [string, string][] }) {
+  return (
+    <table className="shortcuts">
+      <tbody>
+        {rows.map(([k, d]) => (
+          <tr key={k}>
+            <td>
+              <kbd>{k}</kbd>
+            </td>
+            <td>{d}</td>
+          </tr>
+        ))}
+      </tbody>
+    </table>
+  );
+}
+
+function HelpOverlay({ inReview }: { inReview: boolean }) {
   const open = useStore((s) => s.helpOpen);
   const setOpen = useStore((s) => s.setHelpOpen);
   if (!open) return null;
@@ -75,18 +99,16 @@ function HelpOverlay() {
           </button>
         </header>
         <div className="modal-body">
-          <table className="shortcuts">
-            <tbody>
-              {SHORTCUTS.map(([k, d]) => (
-                <tr key={k}>
-                  <td>
-                    <kbd>{k}</kbd>
-                  </td>
-                  <td>{d}</td>
-                </tr>
-              ))}
-            </tbody>
-          </table>
+          {inReview ? (
+            <>
+              <h3 className="Box-title">In the Review</h3>
+              <ShortcutRows rows={REVIEW_SHORTCUTS} />
+              <h3 className="Box-title">Everywhere else</h3>
+              <ShortcutRows rows={SHORTCUTS} />
+            </>
+          ) : (
+            <ShortcutRows rows={SHORTCUTS} />
+          )}
         </div>
       </div>
     </div>
@@ -101,10 +123,40 @@ function Toasts() {
       {toasts.map((t) => (
         <div key={t.id} className={`toast toast-${t.kind}`} onClick={() => drop(t.id)}>
           {t.text}
+          {t.actions?.map((a) => (
+            <span key={a.label}>
+              {" · "}
+              <button
+                className="btn-link"
+                onClick={(e) => {
+                  e.stopPropagation();
+                  drop(t.id);
+                  a.run();
+                }}
+              >
+                {a.label}
+              </button>
+            </span>
+          ))}
         </div>
       ))}
     </div>
   );
+}
+
+/** True while the media query matches (false where matchMedia is missing, as in tests). */
+function useMedia(query: string): boolean {
+  const get = () => typeof window.matchMedia === "function" && window.matchMedia(query).matches;
+  const [on, setOn] = useState(get);
+  useEffect(() => {
+    if (typeof window.matchMedia !== "function") return;
+    const mq = window.matchMedia(query);
+    const change = () => setOn(mq.matches);
+    change();
+    mq.addEventListener("change", change);
+    return () => mq.removeEventListener("change", change);
+  }, [query]);
+  return on;
 }
 
 export default function App() {
@@ -112,6 +164,14 @@ export default function App() {
   const chatOpen = useStore((s) => s.chatOpen);
   const route = useRoute();
   useGlobalKeys();
+  const inReview = route.view === "review";
+
+  // The Review view below 1280 px: the chat is a 40 px rail that opens as an overlay (c, or a click).
+  const narrow = useMedia("(max-width: 1279.98px)");
+  const chatRail = inReview && narrow;
+  useEffect(() => {
+    if (useStore.getState().chatRail !== chatRail) useStore.getState().setChatRail(chatRail);
+  }, [chatRail]);
 
   useEffect(() => {
     const { loadAnalysis, loadState, loadGithubComments, loadTrust } = useStore.getState();
@@ -162,21 +222,28 @@ export default function App() {
   }
 
   return (
-    <div className={`app${chatOpen ? "" : " chat-closed"}`}>
+    <div className={`app${chatOpen ? "" : " chat-closed"}${inReview ? " review-mode" : ""}`}>
       <Header />
       <Tabs route={route} />
       <ProgressBanner />
       <RestoreBanner />
       <div className="layout">
-        <ReviewPath />
-        <main className="pane center">
-          <div className="center-body">{analysis ? main : <div className="blankslate">Loading the pull request…</div>}</div>
-        </main>
+        {route.view === "review" ? (
+          // the stop list (left pane) and the stop or end screen (main column)
+          <ReviewView route={route} />
+        ) : (
+          <>
+            <ReviewPath />
+            <main className="pane center">
+              <div className="center-body">{analysis ? main : <div className="blankslate">Loading the pull request…</div>}</div>
+            </main>
+          </>
+        )}
         <ChatPanel />
       </div>
       <DraftsDrawer />
       <SubmitModal />
-      <HelpOverlay />
+      <HelpOverlay inReview={inReview} />
       <Toasts />
     </div>
   );

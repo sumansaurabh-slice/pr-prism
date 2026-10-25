@@ -29,6 +29,11 @@ export function SubmitModal() {
   const [showPayload, setShowPayload] = useState(false);
   const seq = useRef(0);
 
+  // Every opening starts on Comment, never Approve (R0), e.g. from the end of the guided review.
+  useEffect(() => {
+    if (open) setEvent("COMMENT");
+  }, [open]);
+
   useEffect(() => {
     if (!open) {
       setDone(null);

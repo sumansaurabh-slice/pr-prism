@@ -133,6 +133,39 @@ export const IconLink = (p: IconProps) => (
   </Svg>
 );
 
+// ---- guided review: the Review tab and the answer icons (each always shown with its text)
+
+export const IconChecklist = (p: IconProps) => (
+  <Svg {...p}>
+    <path d="M2 3.5 3.25 4.75 5.5 2.5M2 8.5l1.25 1.25L5.5 7.5M8 3.75h6M8 8.75h6M8 13.25h6M2.5 13.25h2" />
+  </Svg>
+);
+
+/** Real problem. */
+export const IconAlert = (p: IconProps) => (
+  <Svg {...p}>
+    <circle cx="8" cy="8" r="6.25" />
+    <path d="M8 4.75v3.75" />
+    <circle cx="8" cy="11.1" r="0.6" fill="currentColor" stroke="none" />
+  </Svg>
+);
+
+/** Not sure. */
+export const IconQuestion = (p: IconProps) => (
+  <Svg {...p}>
+    <circle cx="8" cy="8" r="6.25" />
+    <path d="M6.1 6.2a1.95 1.95 0 0 1 3.8.55c0 1.3-1.9 1.6-1.9 2.75" />
+    <circle cx="8" cy="11.6" r="0.6" fill="currentColor" stroke="none" />
+  </Svg>
+);
+
+/** Open: not answered yet. */
+export const IconCircle = (p: IconProps) => (
+  <Svg {...p}>
+    <circle cx="8" cy="8" r="5.5" />
+  </Svg>
+);
+
 /** GitHub's row of five green / red / grey squares that shows the size of a change. */
 export function DiffStat({ additions, deletions }: { additions: number; deletions: number }) {
   const total = additions + deletions;
