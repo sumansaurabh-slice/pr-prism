@@ -11,9 +11,24 @@ Where labels come from:
 Dismissing a finding is not a label: it can mean "true, but not worth a comment".
 
 One line: {v, id, pr, commit_id, merge_base_sha, path, side, line, kind, text, author, source, origin_id,
-gh_comment_id, finding_id, stop_kind, split, at}. `v` is the format version. `stop_kind` is the guided-review stop a
-verdict answered (finding, risk_note, bot, ci, look_for), or null. `split` is train or holdout: held-out PRs are kept
-out of prompt design and reported on their own.
+gh_comment_id, finding_id, stop_kind, split, written_by, written_by_from, at}. `v` is the format version. `stop_kind`
+is the guided-review stop a verdict answered (finding, risk_note, bot, ci, look_for), or null. `side` and `line` are
+GitHub's: a comment on a deleted line is LEFT, with the old file's line number. `split` names a set of PRs: train (the
+default) or any other name (SPLIT_NAME), such as holdout or holdout2. PRs outside train are kept out of prompt design,
+reported on their own, and each such split gets its own gate in `prr eval`. A PR is in one split as a whole (pr_splits).
+
+Who wrote the label's text, `written_by`, so eval can report recall on the reviewer's own comments: a comment that
+PR Prism wrote and the reviewer only clicked through is one the analysis "finds" by itself.
+- human: the reviewer wrote it;
+- tool: PR Prism wrote it: a finding's ready-made comment, the chat's text or a stop's pre-filled comment, posted
+  unchanged or edited only a little, or a "real" answer on a finding or risk-note stop;
+- unknown: can't tell (an imported comment not in PR Prism's format, another tool's stop, a line from before this).
+`written_by_from` is how it is known, surest first: set (you said so: `--written-by` or `prr labels tag`), app (from
+the pending comment that was posted, or the stop that was answered), format (an imported comment's text: PR Prism's
+finding format, PRISM_FORMAT, is tool, anything else unknown; the writing style is never guessed from).
+A posted comment (draft_writer) is human when the reviewer typed it (a "user" draft that didn't start as generated
+text), or typed more than 30% of its words (EDITED_SHARE: the posted words that don't line up, in order, with the text
+PR Prism generated, the draft's `generated_body`). Removing words alone never makes it human.
 
 Compaction, so one issue counts once:
 1. A line's key is its origin_id (the stop it came from) when present, else its gh_comment_id; a line with both links
@@ -21,6 +36,9 @@ Compaction, so one issue counts once:
 2. The latest line per key wins, and `retracted` removes the key.
 3. Problem labels on the same (pr, commit_id, path, side) at most one line apart are one label (the latest), which
    catches an import of a comment that was posted from the app.
+4. Of the lines merged into one label, the surest written_by wins (the latest of equally sure ones), so an import of a
+   comment posted from the app keeps what the app knew. `prr labels tag` re-tags by appending a copy of the label (same
+   id) with the new written_by or split.
 
 The review server and the chat's MCP process both append, so writes take labels.lock (waiting at most 5 s). The file
 is created 0600, like state.json.
@@ -36,6 +54,7 @@ import sys
 import time
 import uuid
 from contextlib import contextmanager
+from difflib import SequenceMatcher
 from pathlib import Path
 from typing import Any, Iterator
 
@@ -49,11 +68,22 @@ LOCK_FILE = "labels.lock"
 LOCK_TIMEOUT_S = 5.0
 KINDS = ("problem", "not-problem", "retracted")
 SOURCES = ("verdict", "posted", "imported")
-SPLITS = ("train", "holdout")
+TRAIN = "train"                     # the default split; every other split name is held out
+ALL = "all"                         # `prr eval --split all`: every split, so it can't name one
+SPLIT_NAME = re.compile(r"[A-Za-z0-9][A-Za-z0-9_.-]{0,39}")
+WRITERS = ("human", "tool", "unknown")
+SURE = {"set": 3, "app": 2, "format": 1}  # written_by_from, surest first
+EDITED_SHARE = 0.3                  # a posted PR Prism comment is human when more of its words are the reviewer's
+PRISM_STOPS = ("finding", "risk_note")  # stops PR Prism raised itself: a "real" answer on one is the tool's issue
 NO_EXACT_LINE = ("ci", "look_for")  # verdicts on these stops are kept, but they have no exact line to find
 SAVE_FAILED = "Couldn't save this answer for eval"
 SHA = re.compile(r"[0-9a-f]{40}")
 _PR_FOLDER = re.compile(r"pr-\d+")
+_WORD = re.compile(r"[a-z0-9]+")
+# findings.comment_body: a bold title line, a blank line, then "*Must fix · correctness*" (severity · category)
+_SEVERITY_WORDS = "|".join(re.escape(s) for s in (*findings.SEVERITY_TEXT.values(), "Nit"))
+PRISM_FORMAT = re.compile(r"\s*\*\*[^*\s][^\n]*\*\*[ \t]*\r?\n[ \t]*\r?\n"
+                          rf"\*(?:{_SEVERITY_WORDS}) · [^*\n]+\*[ \t]*(?:\r?\n|\Z)")
 
 
 def repo_dir(cache_dir: Path, owner: str, repo: str) -> Path:
@@ -74,23 +104,39 @@ def repo_dir_for(pr_dir: Path) -> Path | None:
 # --------------------------------------------------------------------------------------
 
 
+def check_split(name: str) -> str:
+    """`name` when it can name a split (train, holdout, holdout2…), else ValueError."""
+    if not isinstance(name, str) or not SPLIT_NAME.fullmatch(name) or name == ALL:
+        raise ValueError(f"a split is named with letters, digits, '.', '_' or '-' (and isn't {ALL!r}), not {name!r}")
+    return name
+
+
+def check_writer(written_by: str) -> str:
+    if written_by not in WRITERS:
+        raise ValueError(f"written_by must be human, tool or unknown, not {written_by!r}")
+    return written_by
+
+
 def new_label(*, pr: int, kind: str, source: str, commit_id: str | None = None, merge_base_sha: str | None = None,
               path: str | None = None, side: str | None = None, line: int | None = None, text: str = "",
               author: str | None = None, origin_id: str | None = None, gh_comment_id: int | None = None,
-              finding_id: str | None = None, stop_kind: str | None = None, split: str = "train",
-              at: str | None = None) -> dict[str, Any]:
-    """One label line. Raises ValueError for an unknown kind, source or split."""
+              finding_id: str | None = None, stop_kind: str | None = None, split: str = TRAIN,
+              written_by: str = "unknown", written_by_from: str | None = None, at: str | None = None) -> dict[str, Any]:
+    """One label line. Raises ValueError for an unknown kind, source, split or writer."""
     if kind not in KINDS:
         raise ValueError(f"unknown label kind {kind!r}")
     if source not in SOURCES:
         raise ValueError(f"unknown label source {source!r}")
-    if split not in SPLITS:
-        raise ValueError(f"split must be train or holdout, not {split!r}")
+    check_split(split)
+    check_writer(written_by)
+    if written_by_from is not None and written_by_from not in SURE:
+        raise ValueError(f"written_by_from must be set, app or format, not {written_by_from!r}")
     return {"v": VERSION, "id": uuid.uuid4().hex[:12], "pr": int(pr), "commit_id": commit_id,
             "merge_base_sha": merge_base_sha, "path": path, "side": side if side in ("LEFT", "RIGHT") else None,
             "line": line if isinstance(line, int) else None, "kind": kind, "text": text or "", "author": author,
             "source": source, "origin_id": origin_id, "gh_comment_id": gh_comment_id, "finding_id": finding_id,
-            "stop_kind": stop_kind, "split": split, "at": at or now_iso()}
+            "stop_kind": stop_kind, "split": split, "written_by": written_by, "written_by_from": written_by_from,
+            "at": at or now_iso()}
 
 
 @contextmanager
@@ -133,13 +179,15 @@ def write(folder: Path, labels: list[dict[str, Any]], timeout: float = LOCK_TIME
 def append(folder: Path, *, pr: int, kind: str, source: str, commit_id: str | None = None,
            merge_base_sha: str | None = None, path: str | None = None, side: str | None = None, line: int | None = None,
            text: str = "", author: str | None = None, origin_id: str | None = None, gh_comment_id: int | None = None,
-           finding_id: str | None = None, stop_kind: str | None = None, split: str = "train") -> dict[str, Any]:
+           finding_id: str | None = None, stop_kind: str | None = None, split: str = TRAIN,
+           written_by: str = "unknown", written_by_from: str | None = None) -> dict[str, Any]:
     """Add one label to the repo folder's labels.jsonl and return it. A guided-review verdict is
     kind="problem" (real) or "not-problem" (not), source="verdict", origin_id=<stop id>, stop_kind=<the stop's kind>
     and finding_id when the stop is a finding. Raises ValueError, TimeoutError (lock busy) or OSError."""
     label = new_label(pr=pr, kind=kind, source=source, commit_id=commit_id, merge_base_sha=merge_base_sha, path=path,
                       side=side, line=line, text=text, author=author, origin_id=origin_id, gh_comment_id=gh_comment_id,
-                      finding_id=finding_id, stop_kind=stop_kind, split=split)
+                      finding_id=finding_id, stop_kind=stop_kind, split=split, written_by=written_by,
+                      written_by_from=written_by_from)
     write(folder, [label])
     return label
 
@@ -161,18 +209,21 @@ def save(pr_dir: Path, labels: list[dict[str, Any]]) -> str | None:
 
 def for_posted(pr: dict, comments: list[dict], *, commit_id: str | None, author: str | None) -> list[dict[str, Any]]:
     """Problem labels for comments just posted to GitHub. Each comment: {path, line, side, body, gh_comment_id,
-    origin_id?}. The merge base is known only when they went on the analyzed head."""
+    origin_id?, written_by?} (written_by from draft_writer; unknown without it). The merge base is known only when
+    they went on the analyzed head."""
     merge_base = pr.get("merge_base_sha") if commit_id and commit_id == pr.get("head_sha") else None
     return [new_label(pr=pr["number"], kind="problem", source="posted", commit_id=commit_id, merge_base_sha=merge_base,
                       path=c.get("path"), side=c.get("side") or "RIGHT", line=c.get("line"), text=c.get("body") or "",
-                      author=author, origin_id=c.get("origin_id"), gh_comment_id=c.get("gh_comment_id"))
+                      author=author, origin_id=c.get("origin_id"), gh_comment_id=c.get("gh_comment_id"),
+                      written_by=c["written_by"] if c.get("written_by") in WRITERS else "unknown",
+                      written_by_from="app" if c.get("written_by") in WRITERS else None)
             for c in comments]
 
 
 def posted_drafts(drafts: list[dict], gh_comments: list[dict]) -> list[dict]:
     """The comments a review just posted, from the drafts it sent, with GitHub's comment ids where GitHub returned
     them (`gh_comments`: the review's comments as GitHub lists them). A draft that went into the review body, outside
-    the diff, has no comment id of its own."""
+    the diff, has no comment id of its own. Each says who wrote it (draft_writer)."""
     left = list(gh_comments)
     out = []
     for d in drafts:
@@ -184,7 +235,8 @@ def posted_drafts(drafts: list[dict], gh_comments: list[dict]) -> list[dict]:
         if hit:
             left.remove(hit)
         out.append({"path": d.get("path"), "line": d.get("line"), "side": d.get("side"), "body": d.get("body") or "",
-                    "origin_id": d.get("origin_id"), "gh_comment_id": hit.get("id") if hit else None})
+                    "origin_id": d.get("origin_id"), "gh_comment_id": hit.get("id") if hit else None,
+                    "written_by": draft_writer(d)})
     return out
 
 
@@ -192,7 +244,8 @@ def for_verdict(pr: dict, stop: dict, verdict: str | None, previous: str | None,
                 author: str | None) -> list[dict[str, Any]]:
     """The label a guided-review answer makes, keyed by the stop id (origin_id): real → problem, not → not-problem.
     "Not sure" (or taking the answer back: `verdict` None) makes none, so it retracts an earlier real or not answer.
-    `stop` is the stop, or for one that is gone, where it was ({id, kind, path, side, line, finding_id})."""
+    `stop` is the stop, or for one that is gone, where it was ({id, kind, path, side, line, finding_id}). The issue
+    is PR Prism's (written_by tool) when the stop is its own finding or risk note, else unknown (another tool's)."""
     kind = {"real": "problem", "not": "not-problem"}.get(verdict or "")
     if kind is None and previous not in ("real", "not"):
         return []
@@ -202,7 +255,9 @@ def for_verdict(pr: dict, stop: dict, verdict: str | None, previous: str | None,
     if kind is None:
         return [new_label(kind="retracted", **where)]
     return [new_label(kind=kind, merge_base_sha=pr.get("merge_base_sha"), author=author,
-                      text=stop.get("comment_body") or stop.get("question") or "", **where)]
+                      text=stop.get("comment_body") or stop.get("question") or "",
+                      written_by="tool" if stop.get("kind") in PRISM_STOPS else "unknown", written_by_from="app",
+                      **where)]
 
 
 def retracted(pr: dict, draft: dict) -> list[dict[str, Any]]:
@@ -212,6 +267,58 @@ def retracted(pr: dict, draft: dict) -> list[dict[str, Any]]:
     return [new_label(pr=pr["number"], kind="retracted", source="verdict", origin_id=draft["origin_id"],
                       commit_id=draft.get("commit_id"), path=draft.get("path"), side=draft.get("side"),
                       line=draft.get("line"))]
+
+
+# --------------------------------------------------------------------------------------
+# Who wrote it
+# --------------------------------------------------------------------------------------
+
+
+def writer(label: dict) -> str:
+    """The label's written_by; unknown for a line from before it was recorded (`prr labels tag` fills those in)."""
+    return label.get("written_by") if label.get("written_by") in WRITERS else "unknown"
+
+
+def text_writer(text: str) -> str:
+    """An imported comment's writer from its text alone: tool when it is in PR Prism's finding format (a bold title
+    line, then "*Must fix · category*"), else unknown. A short plain comment may well be the reviewer's, but the
+    writing style is never taken as proof."""
+    return "tool" if PRISM_FORMAT.match(text or "") else "unknown"
+
+
+def typed_share(generated: str, body: str) -> float:
+    """The share of `body`'s words the reviewer typed: those that don't line up, in order, with the generated text.
+    0 for the text unchanged or only cut down; 1 for a body with no words that isn't the generated text."""
+    got = _WORD.findall(body.lower())
+    if not got:
+        return 0.0 if body.strip() == generated.strip() else 1.0
+    made = _WORD.findall(generated.lower())
+    kept = sum(b.size for b in SequenceMatcher(None, made, got, autojunk=False).get_matching_blocks())
+    return 1 - kept / len(got)
+
+
+def draft_writer(draft: dict) -> str:
+    """Who wrote a pending comment that is being posted. One that started as PR Prism's text (`generated_body`: a
+    finding's comment, the chat's, or a stop's pre-filled one) is tool unless the reviewer typed more than
+    EDITED_SHARE of its words, then human. Otherwise source "user" is human (the reviewer typed it), and a
+    "suggestion" or "chat" draft made before its generated text was kept is unknown."""
+    generated = draft.get("generated_body")
+    if isinstance(generated, str):
+        return "human" if typed_share(generated, draft.get("body") or "") > EDITED_SHARE else "tool"
+    return "unknown" if draft.get("source") in ("suggestion", "chat") else "human"
+
+
+def guessed_writer(label: dict) -> tuple[str, str]:
+    """(written_by, written_by_from) for a label saved before written_by was: a verdict from its stop (PR Prism's own
+    finding or risk note → tool, else unknown); a posted or imported comment from its format."""
+    if label.get("source") == "verdict":
+        return ("tool" if label.get("stop_kind") in PRISM_STOPS else "unknown"), "app"
+    return text_writer(label.get("text") or ""), "format"
+
+
+def _sure(label: dict) -> int:
+    """How surely the label's written_by is known (SURE); -1 for a line without one."""
+    return SURE.get(label.get("written_by_from") or "", 0) if label.get("written_by") in WRITERS else -1
 
 
 # --------------------------------------------------------------------------------------
@@ -268,8 +375,13 @@ _CARRY = ("origin_id", "gh_comment_id", "finding_id", "stop_kind", "merge_base_s
 
 
 def _carry(newer: dict, older: dict) -> dict:
-    """The newer line, with what only the older one knew (an import of a posted comment keeps the stop it came from)."""
-    return {**newer, **{k: older[k] for k in _CARRY if newer.get(k) in (None, "") and older.get(k) not in (None, "")}}
+    """The newer line, with what only the older one knew (an import of a posted comment keeps the stop it came from)
+    and the older one's written_by when that is surer (an import of a comment posted from the app keeps what the app
+    knew about who wrote it)."""
+    out = {**newer, **{k: older[k] for k in _CARRY if newer.get(k) in (None, "") and older.get(k) not in (None, "")}}
+    if _sure(older) > _sure(newer):
+        out["written_by"], out["written_by_from"] = older["written_by"], older.get("written_by_from")
+    return out
 
 
 def compact(entries: list[dict[str, Any]]) -> list[dict[str, Any]]:
@@ -295,9 +407,22 @@ def countable(label: dict) -> bool:
             and label.get("stop_kind") not in NO_EXACT_LINE)
 
 
+def pr_splits(entries: list[dict]) -> dict[int, str]:
+    """Each PR's split, so a PR is in one split as a whole: the latest split other than train among its labels, else
+    train (a label saved from the app, such as a posted comment, is train by default)."""
+    out: dict[int, str] = {}
+    for x in entries:
+        name = x.get("split") or TRAIN
+        if name != TRAIN or x["pr"] not in out:
+            out[x["pr"]] = name
+    return out
+
+
 def match_label(label: dict, finding: dict) -> bool:
     """The finding is about the labelled issue: the app's own "same issue" rule (findings.near_same), comparing the
-    finding's title and impact with the label's text."""
+    finding's title and impact with the label's text. Like that rule, it doesn't compare sides: a label on a deleted
+    line (LEFT, the old file's line number) matches a finding placed on that deleted line, such as an "intent"
+    question about removed code, since both use the old file's numbers."""
     return findings.near_same(finding["path"], finding["line"], f"{finding['title']} {finding.get('impact') or ''}",
                               label.get("path") or "", label.get("line"), label.get("text") or "")
 
@@ -358,16 +483,35 @@ def _where(c: dict) -> tuple[str | None, int | None]:
     return c.get("commit_id") or c.get("original_commit_id"), c.get("line") if isinstance(c.get("line"), int) else None
 
 
+def _side(c: dict) -> str:
+    """The side the comment is on: GitHub's original_side, else its side (a comment on a deleted line is LEFT, and its
+    line is the old file's). When GitHub gives neither, a diff hunk that ends on a deleted line means LEFT."""
+    for key in ("original_side", "side"):
+        if c.get(key) in ("LEFT", "RIGHT"):
+            return c[key]
+    last = (c.get("diff_hunk") or "").rstrip("\n").rsplit("\n", 1)[-1]
+    return "LEFT" if last.startswith("-") else "RIGHT"
+
+
+def _import_key(x: dict) -> tuple:
+    return x.get("gh_comment_id"), x.get("commit_id"), x.get("line"), x.get("text"), x.get("split")
+
+
 def import_comments(ref: PRRef, root: Path, folder: Path, *, reviewers: str = "me", viewer: str | None = None,
-                    split: str = "train") -> dict[str, Any]:
+                    split: str = TRAIN, written_by: str | None = None) -> dict[str, Any]:
     """The root review comments already on a PR, as problem labels in `folder`'s labels.jsonl: yours
     (`reviewers="me"`, with `viewer` your GitHub login) or every human reviewer's (`"all"`; bot accounts never).
-    Only reads from GitHub. A comment imported before with the same place, text and split is not added again.
+    Who wrote each one is `written_by` when given (set by you: e.g. human for PRs reviewed before PR Prism existed),
+    else its format's guess (text_writer). Only reads from GitHub. A comment imported before with the same place,
+    text and split is not added again (with `written_by`, unless it was not yet set to that).
     Returns a summary for the command's output."""
     if reviewers not in REVIEWERS:
         raise ValueError("--reviewers must be me or all")
     if reviewers == "me" and not viewer:
         raise ValueError("importing your own comments needs your GitHub login")
+    check_split(split)
+    if written_by is not None:
+        check_writer(written_by)
     me = (viewer or "").lower()
     meta = gh_json("pr", "view", str(ref.number), "--repo", ref.slug, "--json", _META_FIELDS)
     comments = [c for c in github.existing_comments(ref.owner, ref.repo, ref.number)
@@ -375,21 +519,66 @@ def import_comments(ref: PRRef, root: Path, folder: Path, *, reviewers: str = "m
                 and (reviewers == "all" or (c.get("user") or "").lower() == me)]
     remote = find_remote(root, ref)
     bases: dict[str, str | None] = {}
-    seen = {(x.get("gh_comment_id"), x.get("commit_id"), x.get("line"), x.get("text"), x.get("split"))
-            for x in read(folder) if x.get("source") == "imported"}
+    before = [x for x in read(folder) if x.get("source") == "imported"]
+    seen = {_import_key(x) for x in before}
+    told = {(*_import_key(x), x.get("written_by")) for x in before if x.get("written_by_from") == "set"}
     rows, again = [], 0
     for c in comments:
         commit, line = _where(c)
         if commit and commit not in bases:
             bases[commit] = merge_base_for(root, remote, ref, meta, commit)
-        if (c["id"], commit, line, c.get("body") or "", split) in seen:
+        key = (c["id"], commit, line, c.get("body") or "", split)
+        if (key in seen) if written_by is None else ((*key, written_by) in told):
             again += 1
             continue
         rows.append(new_label(pr=ref.number, kind="problem", source="imported", commit_id=commit,
                               merge_base_sha=bases.get(commit) if commit else None, path=c.get("path"),
-                              side=c.get("side") or "RIGHT", line=line, text=c.get("body") or "", author=c.get("user"),
-                              gh_comment_id=c["id"], split=split))
+                              side=_side(c), line=line, text=c.get("body") or "", author=c.get("user"),
+                              gh_comment_id=c["id"], split=split,
+                              written_by=written_by or text_writer(c.get("body") or ""),
+                              written_by_from="set" if written_by else "format"))
     write(folder, rows)
     return {"pr": ref.number, "imported": len(rows), "already_imported": again,
             "outdated": sum(1 for c in comments if c.get("line") is None), "commits": len(bases),
-            "no_merge_base": sum(1 for b in bases.values() if b is None), "reviewers": reviewers, "split": split}
+            "no_merge_base": sum(1 for b in bases.values() if b is None), "reviewers": reviewers, "split": split,
+            "written_by": {w: sum(1 for r in rows if r["written_by"] == w) for w in WRITERS}}
+
+
+# --------------------------------------------------------------------------------------
+# `prr labels tag`: re-tag the labels already in the log
+# --------------------------------------------------------------------------------------
+
+
+def tag(folder: Path, prs: list[int] | None = None, *, written_by: str | None = None,
+        split: str | None = None) -> dict[str, Any]:
+    """Re-tag the labels of `prs` (every labelled PR when None) by appending a copy of each changed label, with the
+    same id, so compaction takes the copy as its latest line:
+    - `written_by`: who wrote them, set by you (no later guess overrides it);
+    - `split`: move the PRs to that split;
+    - every label still without a written_by (saved before it existed) gets it from its format (guessed_writer).
+    Setting a writer or a split needs `prs`. Returns {prs, labels, retagged, written_by: {human, tool, unknown}}."""
+    if written_by is not None:
+        check_writer(written_by)
+    if split is not None:
+        check_split(split)
+    if (written_by or split) and not prs:
+        raise ValueError("say which PRs to re-tag (--prs)")
+    now = now_iso()
+    picked, rows = [], []
+    for x in load(folder):
+        if prs and x["pr"] not in prs:
+            continue
+        picked.append(x)
+        new = dict(x)
+        if written_by:
+            new.update(written_by=written_by, written_by_from="set")
+        elif x.get("written_by") not in WRITERS:
+            new["written_by"], new["written_by_from"] = guessed_writer(x)
+        if split:
+            new["split"] = split
+        if new != x:
+            rows.append({**new, "at": now})
+    write(folder, rows)
+    final = {x["id"]: x for x in picked} | {x["id"]: x for x in rows}
+    return {"prs": sorted({x["pr"] for x in picked}), "labels": len(picked), "retagged": len(rows),
+            "written_by": {w: sum(1 for x in final.values() if writer(x) == w) for w in WRITERS}}
