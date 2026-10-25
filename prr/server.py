@@ -28,7 +28,7 @@ from fastapi import FastAPI, HTTPException
 from fastapi.responses import Response, StreamingResponse
 from pydantic import BaseModel
 
-from . import archive, chat_tools, cost, github, labels, merge, policy, since, stops
+from . import archive, chat_tools, cost, github, labels, merge, policy, since, stops, understand
 from . import coverage as cover
 from .analyze import style_rules
 from .drafts import STARTUP_EXPIRY_S, claim_for_post, finish_post, is_posting, new_draft, postable, release, release_stale
@@ -177,6 +177,14 @@ class ReviewBodyIn(BaseModel):
 class SeenIn(BaseModel):
     path: str
     hunks: list[str]  # prr/coverage.py hunk ids: "RIGHT:<new_start>-<new_end>" or "LEFT:<old_start>-<old_end>"
+
+
+class LevelIn(BaseModel):
+    level: str  # new | familiar
+
+
+class UnderstoodIn(BaseModel):
+    understood: bool
 
 
 # --------------------------------------------------------------------------------------
@@ -646,6 +654,62 @@ def create_app(pr_dir: Path, cfg: Config) -> FastAPI:
         """What hasn't been checked yet (prr/coverage.py): the Submit dialog's warning and its collapsed lines."""
         state = store.load()
         return cover.coverage(view(state), state)
+
+    # ---- understand this PR (prr/understand.py) ------------------------------------------
+
+    explaining: dict[tuple[str, str], threading.Lock] = {}  # (step id, level) → held while its text is made
+    explaining_guard = threading.Lock()
+
+    def understand_view() -> tuple[dict, dict, dict, list[dict]]:
+        """(analysis, context, parsed diffs, the walk's steps)."""
+        a, c, d = merge.build_analysis(pr_dir, with_stops=False), ctx(), merge.diffs(pr_dir)
+        return a, c, d, understand.build_steps(a, c, diffs=d)
+
+    def check_level(level: str) -> None:
+        if level not in understand.LEVELS:
+            raise HTTPException(400, "level must be new or familiar")
+
+    @app.get("/api/understand")
+    def understand_steps() -> dict:
+        """The walk's steps in reading order, the reader's level and the steps marked "Got it". Nothing is generated
+        here: a step's text is made when it is opened."""
+        s = store.load()
+        return {"steps": understand_view()[3], "level": understand.level_of(s), "understood": understand.understood(s)}
+
+    @app.post("/api/understand/steps/{step_id}")
+    async def explain_step(step_id: str, body: LevelIn) -> dict:
+        """One step's text for the level: from the cache, or one Claude call. A request for a step and level whose
+        text is being made waits for that call, then reads its result from the cache."""
+        check_level(body.level)
+        a, c, d, steps = await asyncio.to_thread(understand_view)
+        step = next((x for x in steps if x["id"] == step_id), None)
+        if step is None:
+            raise HTTPException(404, "no such step")
+        with explaining_guard:
+            lock = explaining.setdefault((step_id, body.level), threading.Lock())
+
+        def work() -> dict:
+            with lock:
+                return understand.explain(pr_dir, step, body.level, analysis=a, ctx=c, cfg=cfg, ledger=calls, diffs=d)
+
+        try:
+            return await asyncio.to_thread(work)
+        except Exception as e:  # noqa: BLE001 — the app shows "Couldn't explain this step: <detail> · Try again"
+            raise HTTPException(502, str(e)[:500] or type(e).__name__) from e
+
+    @app.put("/api/understand/level")
+    def set_understand_level(body: LevelIn) -> dict:
+        """"I'm new to this area" (new) or "I know this area" (familiar), remembered per PR."""
+        check_level(body.level)
+        store.update(lambda s: s.__setitem__("understand_level", body.level))
+        return {"level": body.level}
+
+    @app.post("/api/understand/steps/{step_id}/understood")
+    def mark_understood(step_id: str, body: UnderstoodIn) -> dict:
+        """"Got it" (true), or taking it back (false). 404 when marking a step that isn't in the walk now."""
+        if body.understood and step_id not in {x["id"] for x in understand_view()[3]}:
+            raise HTTPException(404, "no such step")
+        return {"understood": store.update(lambda s: understand.mark(s, step_id, body.understood, now_iso()))}
 
     # ---- publishing ----------------------------------------------------------------
 

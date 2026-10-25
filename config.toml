@@ -12,6 +12,7 @@ blockers = "sonnet"   # the blocker-rule pass (SQL/shell from request input, sec
 judge = "haiku"       # the second look that scores every finding
 ci = "sonnet"         # explaining CI failures, checking other review tools' comments, re-checking earlier findings
 deepcheck = "opus"    # the deep check: asks "what could break?" in the riskiest areas, after the summary
+understand = "sonnet"  # "Understand this PR": explains one step when you open it, never during the analysis (about $0.03-0.15 a step)
 
 [analysis]
 concurrency = 6            # parallel `claude -p` review calls

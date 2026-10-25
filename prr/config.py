@@ -53,6 +53,7 @@ class Models:
     judge: str = "haiku"       # the second look at every finding
     ci: str = "sonnet"         # explaining CI failures, other tools' comments, re-checks
     deepcheck: str = "opus"    # the deep check: "what could break" in the riskiest areas
+    understand: str = "sonnet"  # "Understand this PR": explains one step when you open it
 
 
 @dataclass

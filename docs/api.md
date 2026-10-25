@@ -26,7 +26,7 @@ The SPA never handles the token. It uses relative URLs, and `fetch` sends the co
 |---|---|---|
 | `GET /api/health` | | `{ok: true, pr: number}` |
 | `GET /api/analysis` | | `Analysis`, merged fresh on every call. While `status` is not `complete`/`failed`, poll every 3 s. It includes `stops`, `review_summary` and `skipped_areas` for guided review (see below), with your answered stops pinned. If building the stops fails, `stops` is `[]` and `warnings` gets "Guided review unavailable: <error>"; the rest of the page still works. |
-| `GET /api/state` | | `ReviewState`, including `stop_verdicts`, `seen_hunks` and `review_body_draft` (see below). After a restore (see `prr clean`) it has `restored: {archived_at, restored_at, archive, chats, pending_comments, need_replacing, viewed_marks, message}` until dismissed; `message` is the banner text from `prr/archive.py` `message()`, e.g. "Restored your work from Oct 23: 3 chats, 5 pending comments (2 need re-placing), 12 viewed marks." |
+| `GET /api/state` | | `ReviewState`, including `stop_verdicts`, `seen_hunks`, `review_body_draft`, `understand_level` and `understood_steps` (see below). After a restore (see `prr clean`) it has `restored: {archived_at, restored_at, archive, chats, pending_comments, need_replacing, viewed_marks, message}` until dismissed; `message` is the banner text from `prr/archive.py` `message()`, e.g. "Restored your work from Oct 23: 3 chats, 5 pending comments (2 need re-placing), 12 viewed marks." |
 | `GET /api/cost` | | `CostSummary`: `{total_usd, unknown, running, breakdown: {analysis, chat, other}, runs, threads: {<thread id>: {total_usd, turns, unknown, long}}, warn_usd, over_budget, long_thread: {turns, usd}}`, all computed from the PR's `calls.jsonl`. The app shows "$12.40 spent" ("≥" when `unknown`, "so far" while `running`) and refreshes it on each analysis poll and after each chat answer. |
 | `GET /api/diff?path=` | | `{path, patch}`: the unified diff for one file, with `diff --git` header lines, ready for `parseDiff` |
 | `GET /api/file?path=&at=head\|base` | | `{path, at, content}`: full file text at the PR head or merge-base |
@@ -41,6 +41,10 @@ The SPA never handles the token. It uses relative URLs, and `fetch` sends the co
 | `PUT /api/review-body-draft` | `{body}` | `{ok: true}`: saves the Submit dialog's review summary (autosaved as you type), which `GET /api/state` returns as `review_body_draft`. At most 65,536 characters (400 otherwise). Submitting a review doesn't clear it: the app saves `""` after a successful post. |
 | `POST /api/seen` | `{path, hunks: string[]}` | `{ok: true}`: hunks of `path` that were on screen for 3 s (hunk ids below). Adds to `state.seen_hunks[path]`, keeping the newest 5,000. 404 for a file outside the PR; 400 for a bad hunk id or more than 5,000 ids. |
 | `GET /api/coverage` | | `Coverage`: what you haven't checked yet (see [Coverage before submit](#coverage-before-submit)). |
+| `GET /api/understand` | | `{steps: Step[], level: "new"\|"familiar", understood: {[stepId]: iso_time}}`: the "Understand this PR" walk in reading order, your background level (`state.understand_level`, default `"new"`) and the steps you marked "Got it" (`state.understood_steps`). Nothing is generated here (see [Understand this PR](#understand-this-pr)). |
+| `POST /api/understand/steps/{id}` | `{level: "new"\|"familiar"}` | `StepText`: one step's explanation for that level, from the cache or one Claude call. 404 for an id that isn't a step now, 400 for a bad level, 502 `{detail}` when Claude fails (the app shows "Couldn't explain this step: <detail> · Try again"; nothing is cached, so trying again calls again). |
+| `PUT /api/understand/level` | `{level: "new"\|"familiar"}` | `{level}`: "I'm new to this area" or "I know this area", saved in `state.understand_level`. 400 for a bad level. |
+| `POST /api/understand/steps/{id}/understood` | `{understood: bool}` | `{understood: {[stepId]: iso_time}}`: "Got it" (`true`; marking again keeps the first time) or taking it back (`false`), saved in `state.understood_steps`. 404 when marking a step that isn't in the walk now. |
 | `POST /api/suggestions/{id}/dismiss` | | `{dismissed_suggestions}` |
 | `POST /api/suggestions/{id}/restore` | | `{dismissed_suggestions}` |
 | `GET /api/github/threads` | | `{comments: ExistingComment[]}`: review comments already on the PR (cached for 60 s); `review_id` is the GitHub review each belongs to |
@@ -193,3 +197,47 @@ A stop whose finding was dismissed elsewhere counts as done. `skipped_areas: [{t
 - `"LEFT:<a>-<a+b-1>"` for a hunk that only deletes lines (`d` = 0).
 
 `hunkId()` in `web/src/api.ts` and `hunk_id()` in `prr/coverage.py` implement the same rule. Ids from an older head stay in `seen_hunks` until they age out (newest 5,000 per file).
+
+## Understand this PR
+
+A guided walk, before the review, for a reviewer who doesn't know the repo. Each step explains what the code did before, what changes, why, where it connects, and the words a newcomer needs. It explains; it doesn't judge. Built by `prr/understand.py`.
+
+**`Step`** (`build_steps(analysis, ctx)`, deterministic, no Claude):
+
+```
+{id: "und-<40 hex>", chapter_id, chapter_title, chapter_goal: str|null, path,
+ hunks: [{old_start, old_lines, new_start, new_lines}], role: str|null, tests: [path], skim: [path],
+ order, kind: "file"|"part"|"group", files: [path]}
+```
+
+- **Order:** the reading order: chapters, then each chapter's files. `order` is the step's place in the walk.
+- **One step per changed file** (`kind: "file"`). A file with more than 150 changed lines is split at hunk boundaries into `part` steps of up to about 150 changed lines each; one huge hunk stays one step.
+- **Tests** don't get a step of their own when they test a changed file (the test↔source pairing of `prr/classify.py`): they are listed in that file's `tests` ("Tested by"), on each of its parts. A test with nothing to join is a step.
+- **`skim`**: generated, lock, vendored and binary files, and files with no text change (a pure rename or mode change), are not steps. They are listed on their chapter's first step only (`[]` on every other step). A chapter with only such files lists them on the walk's first step.
+- **At most 40 steps.** Past that, a chapter's low-risk files (and files without notes) become one "Other changes in this chapter" step at the chapter's end: `kind: "group"`, `files` = its paths in reading order, `path` = the first of them, `hunks: []`, `role: null`, `tests` = what tests any of them. The chapter that saves the most steps is grouped first. If that is not enough, medium-risk files join their chapter's group, then high-risk ones.
+- **`id`** = `"und-"` + sha1(path | hunk ranges | head blob) (a deleted file: its base blob; a group: its paths and blobs). It stays the same across re-runs until that code changes.
+- **`role`**: the first sentence of the file's summary; `chapter_goal` is null when the chapter has none.
+
+**`StepText`** (`POST /api/understand/steps/{id}`):
+
+```
+{id, level, before: str, change: str, why: str|null, why_source: str|null, why_missing: bool,
+ connects: [{path, line, text}], terms: [{term, meaning}], look_at: [{side: "LEFT"|"RIGHT", line}],
+ cached: bool, cost_usd: number|null}
+```
+
+- `before`: what the code did before the PR (up to 3 sentences), from the base version. `change`: before vs after in plain words (up to 3 sentences).
+- `why`: the reason, only when the PR description, a commit message, a code comment or a test states it, with `why_source` saying which. Otherwise `why` and `why_source` are null and `why_missing` is true ("Not explained in the PR"). A reason Claude gives without a source counts as missing.
+- `connects`: up to 4 places that call this code or read its output, in files that exist in the PR's code (open them at `line`).
+- `terms`: up to 4 repo or domain words for a newcomer; always `[]` for `familiar`.
+- `look_at`: up to 3 lines of the step's diff to highlight; only lines the step's diff shows, and `[]` for a group.
+- `cached`: true when the text came from the cache. `cost_usd` is what making the text cost (null when unknown); a cache hit spends nothing new.
+
+**How a step's text is made.** Only when a step is opened (the app fetches the next one ahead), never during the analysis. One `claude -p --json-schema` call:
+- model `[models] understand` (sonnet); Read, Grep and Glob allowed only inside the PR's worktree, like the analysis calls; at most 12 turns and 180 s;
+- given the step's diff, the file **at the merge-base** around each hunk (`git show <merge_base>:<path>`, 40 lines each side; never the head), the PR's title, description and commit subjects, the chapter's title and goal, the file's summary and its explain and flow notes, the callers of its changed names from `impact.json`, the test files that test it, and the level: `new` explains the repo's ideas and terms, `familiar` skips background.
+- Its cost is a `calls.jsonl` line with `purpose: "understand"` (counted under "other" in `GET /api/cost`). About $0.03–0.15 per step: a small step took 10–15 s and cost about $0.03 (`familiar`) or $0.05 (`new`).
+
+**Cache:** `<pr_dir>/understand/<stepId>-<level>.json`, keyed by the prompt version, the model, the head blob(s), the merge base, the step's hunks and the level; any change makes the text again. Two requests for the same step and level make one call: the second waits for the first and reads its result (`cached: true`). Different levels or steps run side by side.
+
+**State:** `state.understand_level` (`"new"` by default) and `state.understood_steps` (`{stepId: iso_time}`). Both are kept by `prr clean` and restored on the next fetch.

@@ -1,8 +1,8 @@
 """calls.jsonl: one line per Claude call in a PR folder. Every cost total is computed from this file.
 
 A call line is {at, run_id, purpose, model, target, duration_ms, cost_usd, outcome, error}:
-- run_id: the analysis run that made the call, or null for the server (chat, review summary, CI refresh);
-- purpose: annotate | blockers | judge | deepcheck | ci | bots | recheck | synthesis | chat | summary;
+- run_id: the analysis run that made the call, or null for the server (chat, review summary, CI refresh, understand);
+- purpose: annotate | blockers | judge | deepcheck | ci | bots | recheck | synthesis | chat | summary | understand;
 - cost_usd: null when the cost is unknown (a timeout, a crash, a chat result without a cost);
 - outcome: ok | error | refused | malformed | timeout.
 
