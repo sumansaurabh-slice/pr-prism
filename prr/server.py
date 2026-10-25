@@ -807,12 +807,23 @@ def create_app(pr_dir: Path, cfg: Config) -> FastAPI:
                         reply["error"] = ev["message"]
                     elif ev["type"] == "approval":
                         reply["tools"].append({"name": f"Asked you: {ev['title']}", "summary": ev["summary"]})
+                        # Each card becomes one line in the saved answer: "Allowed: Read ~/code/billing/config.py".
+                        reply.setdefault("approvals", []).append({
+                            "id": ev["id"], "tool": ev["tool"], "title": ev["title"], "summary": ev["summary"],
+                            "decision": None, "why": None})
+                    elif ev["type"] == "approval_done":
+                        for rec in reply.get("approvals", []):
+                            if rec["id"] == ev["id"]:
+                                rec.update(decision=ev["decision"], why=ev["why"])
                     yield _sse(ev)
                 yield _sse({"type": "done"})
             finally:
                 live_streams.pop(tid, None)
                 for aid in [a for a, item in approvals.items() if item["thread"] == tid]:
                     settle(aid, {"decision": "deny", "message": "The reviewer closed the chat."}, why="closed")
+                for rec in reply.get("approvals", []):  # still waiting when the turn ended: Claude was told no
+                    if rec["decision"] is None:
+                        rec.update(decision="deny", why="closed")
                 producer.cancel()
                 running.pop(tid, None)
                 cache.pop("threads_at", None)  # the chat may have posted comments; reload them from GitHub next time
