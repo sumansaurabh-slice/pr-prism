@@ -1,0 +1,11 @@
+{
+  "name": "pr-prism",
+  "version": "0.1.0",
+  "description": "Turn a GitHub pull request into an interactive local review app, guided by Claude: a reading order, notes on the code, data flows, a deep-dive chat, and publishing your review to GitHub.",
+  "author": {
+    "name": "Suman Saurabh"
+  },
+  "homepage": "https://github.com/sumansaurabh-slice/pr-prism",
+  "repository": "https://github.com/sumansaurabh-slice/pr-prism",
+  "keywords": ["code-review", "pull-request", "github"]
+}
