@@ -2700,6 +2700,9 @@ tr.line-flash > td,
   min-height: 100%;
   padding: 16px 16px 0;
 }
+.review-end {
+  padding-bottom: 48px;
+}
 .stop-head .label-list {
   align-items: center;
   margin-top: 8px;
@@ -2789,6 +2792,10 @@ tr.line-flash > td,
   grid-auto-columns: 1fr;
   gap: 8px;
 }
+/* toasts ("Marked not a problem · Undo (u)") sit above the action bar, not over its buttons */
+.app.review-mode .toasts {
+  bottom: 96px;
+}
 
 /* ------------------------------------------------------------------ smaller screens */
 @media (max-width: 1280px) {
@@ -2871,9 +2878,15 @@ tr.line-flash > td,
     border-right: 1px solid var(--border);
     box-shadow: var(--shadow-overlay);
   }
+  /* folded: hidden from sight only, so screen readers still hear each row's place and answer */
   .stop-list-panel:not(:hover):not(:focus-within) .stop-row-text,
   .stop-list-panel:not(:hover):not(:focus-within) .stop-answer-text {
-    display: none;
+    position: absolute;
+    width: 1px;
+    height: 1px;
+    overflow: hidden;
+    clip: rect(0, 0, 0, 0);
+    white-space: nowrap;
   }
   .stop-list-panel:not(:hover):not(:focus-within) .tree-scroll {
     padding: 6px 4px;

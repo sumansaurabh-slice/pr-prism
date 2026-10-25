@@ -342,7 +342,7 @@ describe("focus and landmarks (DT15)", () => {
     fireEvent.keyDown(window, { key: "j" });
     const next = await screen.findByRole("heading", { level: 2, name: /Is this safe\?/ });
     expect(next).toHaveFocus();
-    expect(screen.getByText("Stop 3 of 4", { selector: "[aria-live='polite']" })).toBeInTheDocument();
+    expect(await screen.findByText("Stop 3 of 4", { selector: "[aria-live='polite']" })).toBeInTheDocument();
     expect(stopNav().tagName).toBe("NAV");
   });
 

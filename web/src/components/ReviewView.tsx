@@ -85,7 +85,7 @@ export function ReviewView({ route }: { route: ReviewRoute }) {
     else if (route.end) setAnnounce("End of the review");
   }, [route.stopId, route.end]); // only on a move, not when a poll changes the total
 
-  if (!route.stopId) navRef.current = {};
+  navRef.current = {}; // the stop or end screen below sets its own keys as it renders
   let main;
   if (!analysis) main = <div className="blankslate">Loading the pull request…</div>;
   else if (route.stopId && model.current) {

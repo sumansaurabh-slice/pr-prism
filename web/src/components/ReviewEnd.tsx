@@ -80,7 +80,7 @@ export function ReviewEnd({ model, navRef }: { model: ReviewModel; navRef: Mutab
 
   const go = (s: Stop) => navigate(reviewHref(s.id));
   return (
-    <section className="review-stop" aria-labelledby="review-end-title">
+    <section className="review-stop review-end" aria-labelledby="review-end-title">
       <header className="stop-head">
         <h2 id="review-end-title" className="stop-question" tabIndex={-1} ref={headingRef}>
           {real.length === 0
@@ -115,6 +115,12 @@ export function ReviewEnd({ model, navRef }: { model: ReviewModel; navRef: Mutab
 
       <CoverageLine />
 
+      <div>
+        <button className="btn btn-primary" onClick={() => setSubmitOpen(true)}>
+          Submit review
+        </button>
+      </div>
+
       {model.earlier.length > 0 && (
         <section>
           <h3 className="finding-scenario-title small">Earlier answers</h3>
@@ -135,12 +141,6 @@ export function ReviewEnd({ model, navRef }: { model: ReviewModel; navRef: Mutab
           </ul>
         </section>
       )}
-
-      <div>
-        <button className="btn btn-primary" onClick={() => setSubmitOpen(true)}>
-          Submit review
-        </button>
-      </div>
     </section>
   );
 }
