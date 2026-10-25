@@ -129,6 +129,7 @@ export interface Draft {
   id: string; path: string; side: Side; line: number; start_line: number | null; body: string;
   start_side: Side | null;   // set only when the range starts on the other side (a deleted line → RIGHT)
   source: "user" | "suggestion" | "chat"; suggestion_id: string | null;
+  origin_id?: string | null;   // the guided-review stop it was made from; its eval label follows the comment
   anchored: boolean;   // false → cannot be an inline comment; goes into the review body as a permalink
   outdated: boolean;   // from an older commit (restored after `prr clean`): read-only and never sent until re-placed
   commit_id: string; created_at: string;

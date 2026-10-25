@@ -24,6 +24,7 @@ SOURCE_ORDER = ["annotate", "blockers", "deep-check"]  # the passes that find pr
 DEEP_FIELDS = ("scenario", "question", "evidence_refs")  # what the deep check adds to a finding
 MAX_STEPS = 6           # scenario steps kept
 MAX_REFS = 4            # evidence spots kept
+NEAR_WORDS = 0.25       # near_same: this share of the first text's words must appear in the second
 
 _IDENT = re.compile(r"[A-Za-z_][A-Za-z0-9_]*")
 _WORD = re.compile(r"[a-z0-9]+")
@@ -88,6 +89,21 @@ def _words(text: str) -> set[str]:
 
 def _overlap(a: set[str], b: set[str]) -> float:
     return len(a & b) / len(a | b) if a and b else 0.0
+
+
+def near_same(path_a: str, line_a: int | None, text_a: str, path_b: str, line_b: int | None, text_b: str) -> bool:
+    """Two comments about the same issue: same file, at most NEAR_LINES lines apart, and either on the same line or
+    sharing at least NEAR_WORDS of the first text's words. A comment without a line never matches here.
+
+    The one "same issue" rule: the app's "also flagged by" (bots.same_spot) and eval's label matching
+    (labels.match_label) both call it, so eval scores a finding exactly the way the app links it.
+    """
+    if path_a != path_b or not line_a or not line_b or abs(line_a - line_b) > NEAR_LINES:
+        return False
+    if line_a == line_b:
+        return True
+    a, b = _words(text_a), _words(text_b)
+    return bool(a) and len(a & b) / len(a) >= NEAR_WORDS
 
 
 def _better(a: dict, b: dict) -> dict:

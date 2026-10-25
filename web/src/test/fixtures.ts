@@ -66,7 +66,7 @@ export function makeAnalysis(over: Partial<Analysis> = {}): Analysis {
 export function makeDraft(over: Partial<Draft> = {}): Draft {
   return {
     id: "d1", path: PATH, side: "RIGHT", line: 2, start_line: null, start_side: null, body: "Why 2?",
-    source: "user", suggestion_id: null, anchored: true, outdated: false, commit_id: "h",
+    source: "user", suggestion_id: null, origin_id: null, anchored: true, outdated: false, commit_id: "h",
     created_at: "2026-10-22T10:00:00+00:00",
     ...over,
   };

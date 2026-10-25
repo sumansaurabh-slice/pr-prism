@@ -221,7 +221,11 @@ def analyze(pr_dir: Path, cfg: Config, focus: str | None = None, force: bool = F
         pid_file.unlink(missing_ok=True)
 
 
-def _analyze(pr_dir: Path, ctx: dict, cfg: Config, focus: str | None, force: bool, echo: Callable[[str], None]) -> dict:
+def _analyze(pr_dir: Path, ctx: dict, cfg: Config, focus: str | None, force: bool, echo: Callable[[str], None],
+             mode: str = "review") -> dict:
+    """mode="eval" (`prr eval` replaying a past commit) skips what depends on the PR's life since that commit: CI,
+    other tools' comments, re-checking earlier problems, and saving history for the next round."""
+    eval_mode = mode == "eval"
     worktree = Path(ctx["worktree"])
     diffs = {f.path: f for f in diffparse.parse((pr_dir / "diff.patch").read_bytes().decode("utf-8", errors="replace"))}
     files_ctx = {f["path"]: f for f in ctx["files"]}
@@ -384,7 +388,7 @@ def _analyze(pr_dir: Path, ctx: dict, cfg: Config, focus: str | None, force: boo
             progress.update(f"Re-checked {len(results)} earlier problems: {fixed} fixed")
 
     with ThreadPoolExecutor(max_workers=2) as side:
-        list(side.map(lambda fn: fn(), [do_ci, do_comments]))
+        list(side.map(lambda fn: fn(), [] if eval_mode else [do_ci, do_comments]))
 
     partial_view = merge.build_analysis(pr_dir)
     progress.update("Looking for other code that uses the changed names")
@@ -425,7 +429,8 @@ def _analyze(pr_dir: Path, ctx: dict, cfg: Config, focus: str | None, force: boo
                     status="failed" if all_failed else "complete", finished_at=now_iso())
     analysis = merge.build_analysis(pr_dir)
     write_json(pr_dir / "analysis.json", analysis)
-    _save_history(pr_dir, ctx, analysis)
+    if not eval_mode:
+        _save_history(pr_dir, ctx, analysis)
     return analysis
 
 

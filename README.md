@@ -262,6 +262,24 @@ Submit       ─► POST /api/review/submit ─► `gh api POST /repos/{o}/{r}/p
 - **Git:** worktree checkouts run with `core.hooksPath=/dev/null` and `core.symlinks=false`, so a symbolic link in the PR is checked out as a small file holding its target and can't lead a read outside the PR.
 - **GitHub:** nothing is posted until you confirm the previewed payload.
 
+## Measure the analysis (`prr eval`)
+
+Every comment you post, from Submit review or from the chat, is saved as a label: "this is a real problem". Labels live in `~/.cache/pr-prism/<owner>__<repo>/labels.jsonl`, outside the PR folders, so `prr clean` keeps them. `prr eval` re-runs the analysis on those PRs at the commit you commented on and counts how many of your problems it finds.
+
+```bash
+prr labels import 101 102 103                  # your comments already on past PRs (only reads GitHub)
+prr labels import 104 105 --split holdout      # PRs kept out of prompt work; the Wave 2 gate is measured on them
+prr labels import 106 --reviewers all          # every human reviewer's comments, not only yours (never bots)
+prr eval                                       # shows the estimated cost and asks before it starts
+prr eval --prs 101 104 --runs 1 --max-usd 10 --yes
+```
+
+- Each labelled PR commit is analyzed 3 times (`--runs`) in a temporary folder under `~/.cache/pr-prism/_eval/`, removed at the end unless `--keep`. A commit that can't be fetched any more (force-pushed away) is skipped and listed.
+- The report shows four views: deep check off or on, and a 50% confidence floor on or off ("deep check off, floor on" is the old behavior). For each: how many of your problems were found, found but hidden by the second look, findings you said aren't problems, findings no label covers (listed, not counted as wrong), cost and time, as the mean and the min-max of the runs.
+- On held-out PRs it checks the Wave 2 gate: deep check on finds 25+ points more than off, at least 40% overall, adds at most $6 per PR, and shows at most 10 unlabelled findings per PR.
+- It costs real money: about the price of one full analysis per PR commit per run (the estimate uses each PR's most expensive earlier analysis). `--max-usd` starts no new run once that much is spent, and Ctrl-C stops the run in progress at once and still saves the report so far. The report is saved as `eval-<date>.json` next to `labels.jsonl`.
+- A PR that changes a prompt should include before and after `prr eval` numbers.
+
 ## Develop
 
 ```bash

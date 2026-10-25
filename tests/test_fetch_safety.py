@@ -78,3 +78,34 @@ def test_an_older_worktree_with_links_is_made_again(tmp_path):
     assert (wt / "key").is_symlink()
     fetch._ensure_worktree(repo, wt, sha)
     assert not fetch._has_links(wt) and (wt / "a.txt").read_text() == "a\n"
+
+
+# ---- prepare: the review inputs for one commit, shared by fetch and eval -------------------------
+
+
+def test_fetch_builds_its_inputs_with_prepare(tmp_path, tricky_repo, monkeypatch):
+    seen = []
+    real = fetch.prepare
+
+    def spy(ref, head_sha, merge_base_sha, meta, **kw):
+        seen.append((head_sha, merge_base_sha, kw["d"]))
+        return real(ref, head_sha, merge_base_sha, meta, **kw)
+
+    monkeypatch.setattr(fetch, "prepare", spy)
+    d, _ = fetch_with(tmp_path, tricky_repo, monkeypatch, "MEMBER")
+    pr = read_json(d / "context.json")["pr"]
+    assert seen == [(tricky_repo["head"], pr["merge_base_sha"], d)] and pr["head_sha"] == tricky_repo["head"]
+
+
+def test_prepare_builds_a_pinned_commit(tmp_path, tricky_repo):
+    meta = {"number": 1, "title": "t", "url": "u", "author": {"login": "alice"}, "body": "", "state": "MERGED",
+            "isDraft": False, "baseRefName": "main", "headRefName": "f", "baseRefOid": tricky_repo["base"],
+            "headRefOid": "a-later-head", "additions": None, "deletions": None, "changedFiles": None,
+            "labels": [], "commits": []}                    # GitHub's counts are for a later head: not compared
+    d = tmp_path / "pinned"
+    ctx, files = fetch.prepare(PRRef("o", "r", 1), tricky_repo["head"], tricky_repo["base"], meta,
+                               root=tricky_repo["root"], d=d)
+    assert (ctx["pr"]["head_sha"], ctx["pr"]["merge_base_sha"]) == (tricky_repo["head"], tricky_repo["base"])
+    assert (d / "diff.patch").read_bytes().decode() == tricky_repo["diff"]
+    assert read_json(d / "context.json") == ctx and ctx["warnings"] == [] and ctx["worktree"] == str(d / "worktree")
+    assert (d / "worktree" / "src" / "new_name.py").exists() and len(files) == len(ctx["files"])

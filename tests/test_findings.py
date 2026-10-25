@@ -126,6 +126,44 @@ def test_same_issue_posted_at_file_level_by_another_tool():
     assert bots.same_spot(mine, theirs) and not bots.same_spot(mine, other)
 
 
+def test_near_same_is_same_file_near_line_and_similar_words():
+    text = "Query built from user input allows SQL injection"
+    assert findings.near_same("a.py", 10, text, "a.py", 13, "SQL injection: the query uses raw user input")
+    assert not findings.near_same("a.py", 10, text, "a.py", 14, "SQL injection: the query uses raw user input")  # 4 apart
+    assert not findings.near_same("a.py", 10, text, "b.py", 10, text)                     # another file
+    assert findings.near_same("a.py", 10, text, "a.py", 10, "unrelated words entirely")    # the same line is enough
+    assert not findings.near_same("a.py", 10, text, "a.py", 11, "unrelated words entirely")
+    assert not findings.near_same("a.py", None, text, "a.py", 10, text)                    # no line: never here
+    assert not findings.near_same("a.py", 10, text, "a.py", None, text)
+    assert not findings.near_same("a.py", 10, "", "a.py", 11, text)                        # no words to compare
+
+
+def test_near_same_measures_overlap_against_the_first_text():
+    short, long = "missing null check", "missing null check " + " ".join(f"w{i}" for i in range(40))
+    # every word of the first text is in the second: a match, however long the second text is
+    assert findings.near_same("a.py", 5, short, "a.py", 7, long)
+    # the other way round only 3 of 43 words are shared
+    assert not findings.near_same("a.py", 5, long, "a.py", 7, short)
+    # exactly a quarter is enough
+    assert findings.near_same("a.py", 5, "alpha beta gamma delta", "a.py", 6, "delta and more")
+
+
+def test_same_spot_uses_near_same_for_line_comments(monkeypatch):
+    seen = []
+    real = findings.near_same
+
+    def spy(*args):
+        seen.append(args)
+        return real(*args)
+
+    monkeypatch.setattr(findings, "near_same", spy)
+    mine = {"path": "a.py", "line": 11, "title": "Query built from user input", "impact": "SQL injection"}
+    bot = {"path": "a.py", "line": 10, "title": "SQL built from user input", "body": "Use parameters."}
+    assert bots.same_spot(mine, bot)
+    assert seen == [("a.py", 11, "Query built from user input SQL injection",
+                     "a.py", 10, "SQL built from user input Use parameters.")]
+
+
 def test_rechecked_comment_titles_have_no_markdown():
     hunk = "@@ -1,2 +1,2 @@\n x = 1\n+value = compute(raw)"
     bot = {"id": 5, "user": "tool[bot]", "is_bot": True, "path": "a.py", "diff_hunk": hunk,

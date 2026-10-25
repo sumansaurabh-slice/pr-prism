@@ -217,11 +217,12 @@ export const useStore = create<Store>((set, get) => ({
   },
   deleteDraft: async (id) => {
     try {
-      await api.deleteDraft(id);
+      const res = await api.deleteDraft(id);
       set((s) => ({
         state: { ...s.state, drafts: s.state.drafts.filter((d) => d.id !== id) },
         replacing: s.replacing?.draftId === id ? null : s.replacing,
       }));
+      if (res.warning) get().toast("error", res.warning);
     } catch (e) {
       get().toast("error", (e as Error).message);
     }
