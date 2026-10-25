@@ -59,9 +59,11 @@ class ClaudeError(RuntimeError):
 
 
 def base_argv(model: str, tools: list[str], *, mcp_config: str | None = None, mcp_tools: list[str] | None = None,
-              add_dirs: list[Path] | None = None, cwd: Path | None = None) -> list[str]:
-    """With cwd, Read/Grep/Glob are allowed only inside cwd and add_dirs: a PR can't steer an analysis call into
-    reading other files (dontAsk refuses the rest)."""
+              add_dirs: list[Path] | None = None, cwd: Path | None = None,
+              read_files: list[Path] | None = None) -> list[str]:
+    """With cwd, Read/Grep/Glob are allowed only inside cwd and add_dirs, plus the single files in read_files (the
+    repo's rules, which live next to the worktree): a PR can't steer an analysis call into reading other files
+    (dontAsk refuses the rest)."""
     argv = [
         "claude", "-p", "--model", model,
         "--tools", ",".join(tools),
@@ -70,7 +72,8 @@ def base_argv(model: str, tools: list[str], *, mcp_config: str | None = None, mc
         "--strict-mcp-config",
     ]
     reads = [t for t in tools if t in READ_ONLY_TOOLS]
-    scoped = read_rules([cwd, *(add_dirs or [])]) if reads and cwd else reads
+    scoped = (read_rules([cwd, *(add_dirs or [])]) + [f"Read(/{os.path.realpath(f)})" for f in read_files or []]
+              if reads and cwd else reads)
     allowed = scoped + [t for t in tools if t not in READ_ONLY_TOOLS] + (mcp_tools or [])
     if allowed:
         argv += ["--allowedTools", *allowed]
@@ -92,7 +95,8 @@ class CallStats:
 def run_structured(prompt: str, schema: dict[str, Any], *, cwd: Path, model: str, tools: list[str] | None = None,
                    max_turns: int = 40, timeout: float = 900, add_dirs: list[Path] | None = None,
                    ledger: Ledger | None = None, purpose: str = "other", target: str = "",
-                   validate: Callable[[dict], Any] | None = None) -> tuple[dict, CallStats]:
+                   validate: Callable[[dict], Any] | None = None,
+                   read_files: list[Path] | None = None) -> tuple[dict, CallStats]:
     """One structured-output call. With a ledger, its cost goes to calls.jsonl before this returns or raises
     (a timeout's cost is unknown: the process was killed before it reported one).
 
@@ -101,7 +105,8 @@ def run_structured(prompt: str, schema: dict[str, Any], *, cwd: Path, model: str
     started = time.monotonic()
     call = {"stats": CallStats(), "outcome": "error", "error": None}
     try:
-        return _run_structured(prompt, schema, cwd, model, tools, max_turns, timeout, add_dirs, call, validate)
+        return _run_structured(prompt, schema, cwd, model, tools, max_turns, timeout, add_dirs, call, validate,
+                               read_files)
     except Exception as e:
         call["error"] = str(e)
         if isinstance(e, ClaudeError):
@@ -116,8 +121,10 @@ def run_structured(prompt: str, schema: dict[str, Any], *, cwd: Path, model: str
 
 def _run_structured(prompt: str, schema: dict[str, Any], cwd: Path, model: str, tools: list[str] | None,
                     max_turns: int, timeout: float, add_dirs: list[Path] | None, call: dict,
-                    validate: Callable[[dict], Any] | None = None) -> tuple[dict, CallStats]:
-    argv = base_argv(model, READ_ONLY_TOOLS if tools is None else tools, add_dirs=add_dirs, cwd=cwd)
+                    validate: Callable[[dict], Any] | None = None,
+                    read_files: list[Path] | None = None) -> tuple[dict, CallStats]:
+    argv = base_argv(model, READ_ONLY_TOOLS if tools is None else tools, add_dirs=add_dirs, cwd=cwd,
+                     read_files=read_files)
     argv += ["--output-format", "json", "--json-schema", json.dumps(schema), "--max-turns", str(max_turns)]
     try:
         proc = subprocess.run(argv, input=prompt, cwd=cwd, env=claude_env(), capture_output=True, text=True, timeout=timeout)

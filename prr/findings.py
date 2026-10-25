@@ -5,6 +5,8 @@
 - De-duplication: batches can overlap, so the same issue on the same line is kept once.
 - One-click check: suggested code is offered as a GitHub "suggestion" only when it plausibly replaces exactly
   the commented lines.
+- Questions for the author (category `intent`): "Why was this removed?" on a deleted line (side LEFT), or "Why this
+  special case?" on a new line (side RIGHT). Always `minor`; the comment is the polite question in `impact`.
 """
 
 from __future__ import annotations
@@ -17,6 +19,8 @@ from .diffparse import FileDiff
 
 SEVERITY_RANK = {"blocker": 0, "major": 1, "minor": 2, "nit": 3}
 SEVERITY_TEXT = {"blocker": "Blocks merge", "major": "Must fix", "minor": "Should fix", "nit": "Could improve"}
+INTENT = "intent"       # a question for the author: why was this removed or added? Not a problem report
+INTENT_TEXT = "Question for the author"
 MIN_ANCHOR = 6          # shorter anchors ("}", "end") match too much to be useful
 NEAR_LINES = 3          # two findings this close, same file and category, about the same thing, are one finding
 MIN_IDENT_OVERLAP = 0.2  # suggested code must share this much vocabulary with the code it replaces
@@ -168,7 +172,9 @@ def one_click_ok(fl: FileLines, side: str, start: int, end: int, code: str | Non
 
 
 def comment_body(f: dict) -> str:
-    """The Markdown posted to GitHub for one finding."""
+    """The Markdown posted to GitHub for one finding. A question for the author is just the polite question."""
+    if f.get("category") == INTENT:
+        return str(f.get("impact") or f["title"]).strip()
     parts = [f"**{f['title']}**", f"*{SEVERITY_TEXT.get(f['severity'], f['severity'])} · {f['category']}*"]
     if f.get("impact"):
         parts.append(f["impact"])
@@ -213,10 +219,10 @@ def place(raw: dict, path: str, fl: FileLines | None) -> dict:
         start = None
     category = str(raw.get("category") or "correctness")
     title = str(raw.get("title") or "").strip()[:120] or "Possible problem"
+    severity = raw.get("severity") if raw.get("severity") in SEVERITY_RANK and category != INTENT else "minor"
     f = {
         "id": finding_id(path, category, anchor, title), "path": path, "side": side, "line": line,
-        "start_line": start, "anchored": anchored, "anchor": anchor,
-        "severity": raw.get("severity") if raw.get("severity") in SEVERITY_RANK else "minor",
+        "start_line": start, "anchored": anchored, "anchor": anchor, "severity": severity,
         "category": category, "title": title, "impact": raw.get("impact") or "", "fix": raw.get("fix") or "",
         "suggestion": raw.get("suggestion") or None, "why": raw.get("why") or "", "evidence": raw.get("evidence") or "",
         "confidence": raw.get("confidence") if isinstance(raw.get("confidence"), int) else None,

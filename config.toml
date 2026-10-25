@@ -20,10 +20,10 @@ cluster_max_files = 8
 retries = 2
 annotate_timeout_s = 900
 synthesize_timeout_s = 1200
-deepcheck = true                 # run the deep check after the summary (adds a few minutes and roughly $2-5 per PR)
-deepcheck_max_targets = 4        # areas checked per PR, riskiest first; skipped risky areas are listed as warnings
-deepcheck_target_timeout_s = 600  # time limit for one area (a failed area retries once if the budget allows)
-deepcheck_budget_s = 900         # no area starts after this many seconds; areas still running stop 60 s later
+deepcheck = true                 # run the deep check after the summary (adds a few minutes and roughly $1 per area, $2-6 per PR)
+deepcheck_max_targets = 5        # areas checked per PR, riskiest first (3 run at a time, so 4 or 5 areas both take two rounds); skipped risky areas are listed as warnings
+deepcheck_target_timeout_s = 900  # time limit for one area (a failed area retries once if the budget allows); big PRs need about 10-15 min
+deepcheck_budget_s = 1500        # no area starts after this many seconds; areas still running stop 60 s later (5 areas run in two rounds)
 recheck_max = 20                 # after new commits: earlier problems and your comments Claude re-checks per run; the rest show "not checked"
 
 [chat]

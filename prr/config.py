@@ -64,9 +64,9 @@ class AnalysisSettings:
     annotate_timeout_s: int = 900
     synthesize_timeout_s: int = 1200
     deepcheck: bool = True             # run the deep check after the summary
-    deepcheck_max_targets: int = 4     # areas checked per PR; riskier areas past this are named as skipped
-    deepcheck_target_timeout_s: int = 600  # one area's time limit
-    deepcheck_budget_s: int = 900      # no area starts (or retries) after this; running ones stop 60 s later
+    deepcheck_max_targets: int = 5     # areas checked per PR; riskier areas past this are named as skipped
+    deepcheck_target_timeout_s: int = 900  # one area's time limit
+    deepcheck_budget_s: int = 1500     # no area starts (or retries) after this; running ones stop 60 s later
     recheck_max: int = 20              # earlier problems and comments re-checked by Claude per run; the rest: "not checked"
 
 
