@@ -201,8 +201,8 @@ This is what happens:
 ### 6. Add ai-banker's own review rules (optional)
 
 There are two places for review rules. Claude follows both in every review:
-- **The team's checklist:** commit a `.pr-prism/guidelines.md` file to ai-banker. Everyone who reviews ai-banker with PR Prism gets it, whichever way they installed it. It is read from the PR's base branch, never from the PR itself, so a PR can't change the rules it is reviewed against. A change to the file counts once it is merged.
-- **Your own checklist:** `skills/pr-prism/review-guidelines.md` in this folder (install.sh only). It applies to **all** repos you review, not only ai-banker.
+- **The team's checklist:** commit a `.pr-prism/guidelines.md` file to the repo you review. Everyone who reviews that repo with PR Prism gets it, whichever way they installed it. It is read from the PR's base branch, never from the PR itself, so a PR can't change the rules it is reviewed against. A change to the file counts once it is merged.
+- **Your own checklist:** `skills/pr-prism/review-guidelines.md` in this folder (install.sh only). It applies to **all** repos you review.
 
 Some example rules you might add:
 
