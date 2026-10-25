@@ -3004,6 +3004,7 @@ tr.line-flash > td,
 .coverage-warn {
   display: flex;
   flex-direction: column;
+  align-items: stretch;
   gap: 6px;
 }
 .coverage-list {

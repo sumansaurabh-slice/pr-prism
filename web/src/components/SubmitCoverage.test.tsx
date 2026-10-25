@@ -207,10 +207,21 @@ describe("the review summary autosaves", () => {
     expect(screen.getByRole("textbox", { name: "Summary" })).toHaveValue("Mine.\n\nCI: lint fails here.");
   });
 
+  it("re-reads the saved summary when it opens (a CI answer or another tab may have added to it)", async () => {
+    vi.spyOn(api, "state").mockResolvedValue(makeState({ review_body_draft: "Mine.\n\nCI: lint fails here." }));
+    openWith(makeCoverage(), makeState({ drafts: [makeDraft()], review_body_draft: "Mine." }));
+    await waitFor(() =>
+      expect(screen.getByRole("textbox", { name: "Summary" })).toHaveValue("Mine.\n\nCI: lint fails here."),
+    );
+    expect(api.saveReviewBody).not.toHaveBeenCalled();
+  });
+
   it("is cleared after the review is posted", async () => {
+    vi.spyOn(api, "state")
+      .mockResolvedValueOnce(makeState({ drafts: [makeDraft()], review_body_draft: "Ship it." }))
+      .mockResolvedValue(makeState({ review_body_draft: "" }));
     openWith(makeCoverage(), makeState({ drafts: [makeDraft()], review_body_draft: "Ship it." }));
     vi.spyOn(api, "submitReview").mockResolvedValue({ ok: true, review_id: 1, html_url: "https://github.com/o/r/pull/7#review-1" });
-    vi.spyOn(api, "state").mockResolvedValue(makeState({ review_body_draft: "" }));
     await screen.findByText(/comment on lines/);
     await act(async () => fireEvent.click(submitButton()));
     expect(api.submitReview).toHaveBeenCalledWith("Ship it.", "COMMENT", "analyzed");

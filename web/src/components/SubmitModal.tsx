@@ -215,13 +215,16 @@ export function SubmitModal() {
     pendingSave.current = null;
   };
 
+  const typed = useRef(false); // edited since the dialog opened
   const changeBody = (text: string) => {
+    typed.current = true;
     setBody(text);
     if (pendingSave.current) window.clearTimeout(pendingSave.current.timer);
     pendingSave.current = { text, timer: window.setTimeout(flushBody, SAVE_BODY_MS) };
   };
 
-  // Open: start from the saved summary and check coverage. Close: save what's still waiting.
+  // Open: start from the saved summary, re-read it from the server (it may have changed in another tab or by a
+  // CI stop's answer) and check coverage. Close: save what's still waiting.
   useEffect(() => {
     if (!open) {
       flushBody();
@@ -229,6 +232,7 @@ export function SubmitModal() {
     }
     const saved = useStore.getState().state.review_body_draft ?? "";
     synced.current = saved;
+    typed.current = false;
     setBody(saved);
     setCoverage({ status: "loading" });
     let live = true;
@@ -236,6 +240,14 @@ export function SubmitModal() {
       .getState()
       .load()
       .then((c) => live && setCoverage(c ? { status: "ready", coverage: c } : { status: "error" }));
+    api.state().then(
+      (st) => {
+        const latest = st.review_body_draft ?? "";
+        if (!live || typed.current || latest === useStore.getState().state.review_body_draft) return;
+        useStore.setState((s) => ({ state: { ...s.state, review_body_draft: latest } }));
+      },
+      () => {}, // the saved copy stays
+    );
     return () => {
       live = false;
     };
