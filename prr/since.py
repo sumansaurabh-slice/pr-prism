@@ -39,7 +39,6 @@ BASE_MOVED = "{base} moved; some changes may come from {base}"
 FAILED = "Couldn't compute changes since your review: {reason}"
 LIMIT = "{n} not checked (limit; raise `recheck_max`)"
 NOT_YET = "Not checked on this commit yet. Re-read the PR to check it."
-STATUSES = ("fixed", "still-open", "line-unchanged", "checking", "not-checked")
 
 
 def _log(msg: str) -> None:
