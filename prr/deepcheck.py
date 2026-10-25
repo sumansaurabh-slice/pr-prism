@@ -2,8 +2,10 @@
 
 - `pick_targets` ranks the summary's chapters, plus flows that touch high-risk files, by risk. Areas that share most
   of their files are checked as one, and only the riskiest few are kept. Without chapters, the file groups are used.
-- Each area is one structured call with Read/Grep/Glob inside the worktree. A finding must give a concrete scenario
-  with example values, one yes/no question for the reviewer, and the spots it read (`evidence_refs`).
+- Each area is one structured call with Read/Grep/Glob inside the worktree, plus the repo's own rules
+  (<pr_dir>/repo_rules.md, read at the merge-base by prr/reporules.py), which it is told to Read. A finding must give
+  a concrete scenario with example values, one yes/no question for the reviewer, and the spots it read
+  (`evidence_refs`).
 - Areas run 3 at a time inside a time budget. A failed area retries once if the budget still has a full area's time
   left. Nothing starts after the budget, and areas still running 60 s later are stopped (the `claude` process is
   killed). Every failure, refusal, malformed output and skipped area is named in `analysis.warnings`. A valid empty
@@ -13,7 +15,8 @@
   under one lock.
 
 Files in the PR folder:
-- deepcheck.json: `cache` (area results by prompt version, focus, model and the area's file blobs) and `run`, this
+- deepcheck.json: `cache` (area results by prompt version, focus, model, the repo rules' hash and the area's file
+  blobs) and `run`, this
   analysis run's areas. An area's status is waiting | running | checked | nothing-found | failed | stopped |
   skipped; checked and nothing-found both count as checked, and an area past the cap is skipped with `capped`.
 - placed_pre_deepcheck.json: the findings just before the deep check merged, shaped like analysis.json findings.
@@ -23,6 +26,7 @@ Files in the PR folder:
 from __future__ import annotations
 
 import hashlib
+import os
 import threading
 import time
 from collections import Counter
@@ -31,7 +35,7 @@ from dataclasses import dataclass
 from pathlib import Path
 from typing import Any
 
-from . import findings, judge, ledger, rubrics
+from . import findings, judge, ledger, reporules
 from .claude import ClaudeError, run_structured
 from .cluster import CHARS_PER_TOKEN
 from .config import Config
@@ -39,7 +43,7 @@ from .diffparse import FileDiff, render_for_llm
 from .models import DeepCheckOut, Finding, llm_schema
 from .util import now_iso, read_json, write_json
 
-PROMPT_VERSION = "1"    # bump when prompts/deepcheck.md changes: cached results are keyed on it
+PROMPT_VERSION = "2"    # bump when prompts/deepcheck.md changes: cached results are keyed on it
 SOURCE = "deep-check"
 FILE = "deepcheck.json"
 SNAPSHOT_FILE = "placed_pre_deepcheck.json"
@@ -211,11 +215,12 @@ def diff_section(files: list[str], diffs: dict[str, FileDiff], risk: dict[str, s
 
 
 def target_prompt(ctx: dict, t: Target, files_view: dict[str, dict], diffs: dict[str, FileDiff],
-                  risk: dict[str, str | None], already: list[dict], focus: str | None, conventions: str = "") -> str:
+                  risk: dict[str, str | None], already: list[dict], focus: str | None, rules: str = "") -> str:
+    """`rules` says where the repo's own rules are (reporules.RepoRules.pointer)."""
     from .analyze import _file_map, _pr_header, _template
 
     head = (_template("deepcheck.md", focus)
-            .replace("{{CONVENTIONS}}", conventions or "(The repo has no CLAUDE.md or AGENTS.md.)"))
+            .replace("{{REPO_RULES}}", rules or reporules.NONE))
     parts = [head, "\n---\n", _pr_header(ctx), f"\n## The area to check: {t.title}\n"]
     if t.goal:
         parts.append(f"Goal: {t.goal}\n")
@@ -240,11 +245,12 @@ def target_prompt(ctx: dict, t: Target, files_view: dict[str, dict], diffs: dict
     return "".join(parts)
 
 
-def cache_key(t: Target, ctx: dict, model: str, focus: str | None) -> str:
-    """sha256 of the prompt version, the focus, the model and the area's files with their base and head blobs."""
+def cache_key(t: Target, ctx: dict, model: str, focus: str | None, rules: str = "") -> str:
+    """sha256 of the prompt version, the focus, the model, the repo rules' hash and the area's files with their base
+    and head blobs."""
     files = {f["path"]: f for f in ctx["files"]}
     blobs = sorted(f"{p}:{files[p].get('base_blob') or ''}:{files[p].get('head_blob') or ''}" for p in t.files if p in files)
-    raw = "|".join([PROMPT_VERSION, focus or "", model, *blobs])
+    raw = "|".join([PROMPT_VERSION, focus or "", model, rules, *blobs])
     return hashlib.sha256(raw.encode()).hexdigest()[:32]
 
 
@@ -349,7 +355,8 @@ class _Run:
         self.files_view = {f["path"]: f for f in view["files"]}
         self.risk = {f["path"]: f["risk"] for f in view["files"]}
         self.shown = [f for f in view["findings"] if not f["low_confidence"]]
-        self.conventions = ""  # the repo's CLAUDE.md, set once areas are picked
+        self.rules = reporules.RepoRules("")  # the repo's own rules, read once areas are picked
+        self.rules_path: Path | None = None   # … and <pr_dir>/repo_rules.md, which each area may Read
         self.lock = threading.Lock()
         saved = read_json(pr_dir / FILE) or {}
         self.cache: dict = saved.get("cache") if isinstance(saved.get("cache"), dict) else {}
@@ -414,7 +421,7 @@ class _Run:
         """Ask, place, show as pending, second look, show again. Runs in a worker thread; never raises."""
         rec = self.recs[t.id]
         try:
-            key = cache_key(t, self.ctx, self.model, self.focus)
+            key = cache_key(t, self.ctx, self.model, self.focus, self.rules.key())
             hit = None if self.force else self.cache.get(key)
             result = hit["findings"] if hit else self.ask(t, rec)
             if result is not None:
@@ -426,7 +433,7 @@ class _Run:
         """The area's findings, or None when it failed, was stopped or never started (each named in warnings)."""
         already = [f for f in self.shown if f["path"] in t.files]
         prompt = target_prompt(self.ctx, t, self.files_view, self.diffs, self.risk, already, self.focus,
-                               self.conventions)
+                               self.rules.pointer(self.rules_path))
         last: tuple[int, str, float, bool] | None = None
         for attempt in (1, 2):
             now = time.monotonic()
@@ -455,7 +462,8 @@ class _Run:
         try:
             raw, _ = run_structured(prompt, llm_schema(DeepCheckOut), cwd=self.worktree, model=self.model,
                                     max_turns=MAX_TURNS, timeout=limit, ledger=self.progress.ledger,
-                                    purpose="deepcheck", target=t.id, validate=DeepCheckOut.model_validate)
+                                    purpose="deepcheck", target=t.id, validate=DeepCheckOut.model_validate,
+                                    read_files=[self.rules_path] if self.rules_path else None)
             out = DeepCheckOut.model_validate(raw).model_dump(mode="json")["findings"]
             with self.lock:
                 rec["duration_ms"] = int((time.monotonic() - started) * 1000)
@@ -503,7 +511,8 @@ class _Run:
                     + (f"; left out {dropped} that pointed outside the changed files" if dropped else ""))
         if pending:
             scores = judge.run(pending, self.diffs, self.cfg, self.worktree, self.judged.snapshot(),
-                               self.progress.update, ledger=self.progress.ledger, pr=self.ctx["pr"])
+                               self.progress.update, ledger=self.progress.ledger, pr=self.ctx["pr"],
+                               rules=self.rules.by_path())
             self.judged.merge({f["id"]: scores[f["id"]] for f in pending if f["id"] in scores})
         with self.lock:
             if self.closed:
@@ -564,7 +573,10 @@ def _run(pr_dir: Path, ctx: dict, cfg: Config, diffs: dict[str, FileDiff], progr
                                    clusters=read_json(pr_dir / "clusters.json"),
                                    max_targets=cfg.analysis.deepcheck_max_targets)
     r.start(chosen, skipped)
-    r.conventions = rubrics.repo_conventions(Path(ctx["repo_root"]), ctx["pr"]["merge_base_sha"]) if chosen else ""
+    if chosen:  # the repo's rules at the merge-base (analyze already wrote them; this is the same file)
+        r.rules = reporules.read(Path(ctx["repo_root"]), ctx["pr"]["merge_base_sha"], reporules.changed_paths(ctx))
+        written = reporules.write(pr_dir, r.rules)
+        r.rules_path = Path(os.path.realpath(written)) if written else None
     if not chosen:
         r.close()
         r.report("Deep check: no risky areas to check")

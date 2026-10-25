@@ -11,8 +11,8 @@ def test_every_prompt_gets_the_plain_language_rules():
         assert "10th-class" in text
         assert "the retry logic" in text
         left = set(re.findall(r"\{\{([A-Z_]+)\}\}", text))
-        # the reviewer prompt gets its checklists and the repo's conventions per batch (annotate_prompt)
-        assert left == ({"RUBRICS", "CONVENTIONS"} if name == "annotate.md" else set()), f"unfilled placeholder in {name}: {left}"
+        # the reviewer prompt gets its checklists and the repo's own rules per batch (annotate_prompt)
+        assert left == ({"RUBRICS", "REPO_RULES"} if name == "annotate.md" else set()), f"unfilled placeholder in {name}: {left}"
     assert "{{STYLE}}" in (PROMPTS_DIR / "chat_system.md").read_text()
 
 

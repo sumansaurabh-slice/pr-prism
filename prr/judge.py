@@ -11,6 +11,9 @@ cites, which Python reads from the worktree; a spot that doesn't exist is shown 
 A question for the author (category `intent`) is scored on another question: is the change real, and do the PR's
 title, description, commit messages and code leave it unexplained? Those findings go in their own batches, which
 also get the PR's text. Their verdict keeps a hash of that text (`pr`), so an edited description scores them again.
+
+A finding that breaks one of the repo's own rules (category `repo-rule`) also shows the rule lines it cites, read by
+Python from the rule files at the merge-base (prr/reporules.py); a rule it cites that isn't there says so.
 """
 
 from __future__ import annotations
@@ -29,6 +32,8 @@ from .diffparse import FileDiff, render_for_llm
 from .findings import INTENT
 from .ledger import Ledger
 from .models import llm_schema
+from .reporules import CATEGORY as REPO_RULE
+from .reporules import cited
 from .util import now_iso
 
 MIN_SCORE = 5  # hide only findings the second look rejects; it only sees the hunk, so "can't confirm" (5-7) stays shown
@@ -112,7 +117,8 @@ def pr_key(pr: dict | None) -> str | None:
     return hashlib.sha1(pr_text(pr).encode()).hexdigest()[:12] if pr else None
 
 
-def _render(f: dict, diffs: dict[str, FileDiff], cwd: Path | None = None) -> str:
+def _render(f: dict, diffs: dict[str, FileDiff], cwd: Path | None = None,
+            rules: dict[str, list[str]] | None = None) -> str:
     parts = [f"### {f['id']}", f"File: {f['path']}, line {f['line']} ({f['side']})",
              f"Severity: {f['severity']} · {f['category']}", f"Title: {f['title']}", f"Impact: {f['impact']}",
              f"Fix: {f['fix']}"]
@@ -122,6 +128,10 @@ def _render(f: dict, diffs: dict[str, FileDiff], cwd: Path | None = None) -> str
         parts.append(f"Suggested code:\n```\n{f['suggestion']}\n```")
     parts += [f"Why: {f['why']}", f"Evidence: {f['evidence'] or 'none given'}",
               f"Code (>> marks the line the finding is on):\n```\n{code_around(f, diffs)}\n```"]
+    if f.get("category") == REPO_RULE:
+        spots = cited(f"{f.get('evidence') or ''}\n{f.get('why') or ''}", rules or {})
+        parts.append("The rule it cites, from the repo's rule files:\n"
+                     + (spots or "rule not found (it cites no line of the repo's rule files)"))
     if f.get("scenario") or f.get("evidence_refs"):  # from the deep check
         steps = "\n".join(f"{i}. {step}" for i, step in enumerate(f.get("scenario") or [], 1))
         parts.append("How it could happen:\n" + (steps or "(no steps given)"))
@@ -137,12 +147,14 @@ def _stale(f: dict, verdict: dict, key: str | None) -> bool:
 
 
 def run(findings: list[dict], diffs: dict[str, FileDiff], cfg: Config, cwd: Path, cache: dict,
-        echo: Callable[[str], None], ledger: Ledger | None = None, pr: dict | None = None) -> dict:
+        echo: Callable[[str], None], ledger: Ledger | None = None, pr: dict | None = None,
+        rules: dict[str, list[str]] | None = None) -> dict:
     """Score findings not yet in `cache` ({id: {score, verdict, reason}}). Returns the updated cache.
 
     A finding the judge could not score gets a failure marker, {id: {failed: true, reason, at}}, so the app can
     tell "not second-checked" from "waiting for its second look". Marked findings are tried again next run.
     `pr` (context.json's pr) is what questions for the author are checked against; their verdicts keep its hash.
+    `rules` (path → lines, reporules.RepoRules.by_path) is where a repo-rule finding's cited rule is looked up.
     """
     from .analyze import style_rules
 
@@ -159,7 +171,7 @@ def run(findings: list[dict], diffs: dict[str, FileDiff], cfg: Config, cwd: Path
     def one(batch: list[dict]) -> list[Score]:
         about_pr = ("## The pull request (for the questions to the author)\n\n" + pr_text(pr) + "\n\n---\n\n"
                     if any(f.get("category") == INTENT for f in batch) else "")
-        prompt = head + "\n---\n\n" + about_pr + "\n\n".join(_render(f, diffs, cwd) for f in batch)
+        prompt = head + "\n---\n\n" + about_pr + "\n\n".join(_render(f, diffs, cwd, rules) for f in batch)
         raw, _ = run_structured(prompt, llm_schema(JudgeOut), cwd=cwd, model=cfg.models.judge, tools=[],
                                 max_turns=3, timeout=300, ledger=ledger, purpose="judge",
                                 target=",".join(f["id"] for f in batch))

@@ -2,8 +2,9 @@
 ("what could break") → analysis.json.
 
 Progress goes to progress.json after every step, so the web app fills in while this runs.
-Annotations are cached per file by (path, blobs, prompt version, focus), so a re-run after the PR
-changes only re-annotates files that changed.
+Annotations are cached per file by (path, blobs, prompt version, focus, the repo rules' hash), so a re-run after the
+PR changes only re-annotates files that changed. The repo's own rules (prr/reporules.py) are read at the merge-base
+into <pr_dir>/repo_rules.md; each batch gets the part that applies to its files.
 """
 
 from __future__ import annotations
@@ -17,7 +18,7 @@ from pathlib import Path
 from typing import Any, Callable
 
 from . import (blockers, bots, ci, cluster, cost, deepcheck, diffparse, filekinds, findings, github, impact, judge,
-               ledger, merge, recheck, rubrics, since)
+               ledger, merge, recheck, reporules, rubrics, since)
 from .claude import ClaudeError, run_structured
 from .config import GUIDELINES_FILE, PROMPTS_DIR, Config
 from .models import AnnotateOut, SynthesisOut, llm_schema
@@ -111,9 +112,10 @@ def _file_map(ctx: dict, highlight: set[str]) -> str:
     return "\n".join(lines)
 
 
-def annotate_prompt(ctx: dict, c: cluster.Cluster, idx: int, total: int, focus: str | None, conventions: str = "") -> str:
+def annotate_prompt(ctx: dict, c: cluster.Cluster, idx: int, total: int, focus: str | None, rules: str = "") -> str:
+    """`rules` is the repo rules' excerpt for this batch (reporules.RepoRules.excerpt)."""
     head = (_template("annotate.md", focus, ctx).replace("{{RUBRICS}}", rubrics.rubrics_for(c.paths))
-            .replace("{{CONVENTIONS}}", conventions or "(The repo has no CLAUDE.md or AGENTS.md.)"))
+            .replace("{{REPO_RULES}}", rules or reporules.NONE))
     return head + cluster_files(ctx, c, idx, total)
 
 
@@ -275,7 +277,12 @@ def _analyze(pr_dir: Path, ctx: dict, cfg: Config, focus: str | None, force: boo
     diffs = {f.path: f for f in diffparse.parse((pr_dir / "diff.patch").read_bytes().decode("utf-8", errors="replace"))}
     files_ctx = {f["path"]: f for f in ctx["files"]}
     clusters = cluster.build(ctx, diffs, cfg.analysis.cluster_tokens, cfg.analysis.cluster_max_files)
-    keys = {(c.id, it.path, it.part): cluster.cache_key(files_ctx[it.path], it, PROMPT_VERSION, focus)
+    # The repo's own rules, from the merge-base: changed rules mean every batch is read again.
+    rules = reporules.read(Path(ctx["repo_root"]), ctx["pr"]["merge_base_sha"], reporules.changed_paths(ctx))
+    rules_file = reporules.write(pr_dir, rules)
+    rules_path = Path(os.path.realpath(rules_file)) if rules_file else None
+    rules_key = rules.key()
+    keys = {(c.id, it.path, it.part): cluster.cache_key(files_ctx[it.path], it, PROMPT_VERSION, focus, rules_key)
             for c in clusters for it in c.items}
     write_json(pr_dir / "clusters.json", {"prompt_version": PROMPT_VERSION, "clusters": [
         {"id": c.id, "tokens": c.tokens,
@@ -298,7 +305,6 @@ def _analyze(pr_dir: Path, ctx: dict, cfg: Config, focus: str | None, force: boo
     if force:
         (pr_dir / "synthesis.json").unlink(missing_ok=True)
 
-    conventions = rubrics.repo_conventions(Path(ctx["repo_root"]), ctx["pr"]["merge_base_sha"])
     blocker_head = (PROMPTS_DIR / "blockers.md").read_text().replace("{{STYLE}}", style_rules())
 
     def structured(prompt: str, schema: type, model: str, *, purpose: str, target: str,
@@ -308,7 +314,8 @@ def _analyze(pr_dir: Path, ctx: dict, cfg: Config, focus: str | None, force: boo
             try:
                 raw, _ = run_structured(prompt, llm_schema(schema), cwd=worktree, model=model, tools=tools,
                                         timeout=timeout or cfg.analysis.annotate_timeout_s, max_turns=turns,
-                                        ledger=progress.ledger, purpose=purpose, target=target)
+                                        ledger=progress.ledger, purpose=purpose, target=target,
+                                        read_files=[rules_path] if rules_path else None)
                 return schema.model_validate(raw).model_dump(mode="json")
             except (ClaudeError, ValueError) as e:
                 last_err = e
@@ -318,7 +325,7 @@ def _analyze(pr_dir: Path, ctx: dict, cfg: Config, focus: str | None, force: boo
         idx = clusters.index(c) + 1
         docs_only = all(files_ctx[p]["category"] == "docs" for p in c.paths)
         model = cfg.models.docs if docs_only else cfg.models.annotate
-        prompt = annotate_prompt(ctx, c, idx, len(clusters), focus, conventions)
+        prompt = annotate_prompt(ctx, c, idx, len(clusters), focus, rules.excerpt(c.paths, rules_path))
         try:
             out = structured(prompt, AnnotateOut, model, purpose="annotate", target=f"group {idx}")
         except ClaudeError as e:
@@ -392,7 +399,7 @@ def _analyze(pr_dir: Path, ctx: dict, cfg: Config, focus: str | None, force: boo
     progress.update("Taking a second look at every finding")
     placed = merge.placed_findings(pr_dir, ctx)
     verdicts = judge.run(placed, diffs, cfg, worktree, read_json(pr_dir / "judge.json") or {}, progress.update,
-                         ledger=progress.ledger, pr=ctx["pr"])
+                         ledger=progress.ledger, pr=ctx["pr"], rules=rules.by_path())
     write_json(pr_dir / "judge.json", verdicts)
 
     # CI results, other review tools' comments, and re-checking earlier problems run side by side.

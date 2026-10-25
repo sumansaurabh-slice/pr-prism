@@ -19,8 +19,9 @@ NoteKind = Literal["explain", "risk", "flow", "test-gap"]
 # blocker = blocks merge (only from the rule pass, confirmed in code); major = must fix; minor = should fix; nit = could improve
 Severity = Literal["blocker", "major", "minor", "nit"]
 # intent = a question for the author ("Why was this removed?"), not a problem report; always minor (findings.INTENT)
+# repo-rule = breaks one of the reviewed repo's own rules (CLAUDE.md, AGENTS.md, …; prr/reporules.py)
 FindingCategory = Literal["security", "correctness", "performance", "concurrency", "reliability", "data",
-                          "observability", "design", "testing", "maintainability", "intent"]
+                          "observability", "design", "testing", "maintainability", "intent", "repo-rule"]
 FindingStatus = Literal["new", "still-open"]
 # judge = scored by the second look; rule = a blocker the code check confirmed; carried = an earlier round's finding,
 # keeping its earlier verdict; pending = waiting for its second look; none = the second look failed ("not second-checked")
@@ -61,7 +62,8 @@ class FindingOut(BaseModel):
     fix: str = Field(description="One clear instruction: the better option, not a list of options")
     suggestion: str | None = Field(default=None, description="Drop-in replacement code for exactly the commented line(s), or null")
     why: str = Field(description="Short reasoning in Markdown, 1-4 sentences")
-    evidence: str = Field(description="What you read to confirm it, as path:line plus a short quote; or 'diff only'")
+    evidence: str = Field(description="What you read to confirm it, as path:line plus a short quote; or 'diff only' "
+                                      "(for repo-rule: the rule's path:line and a quote of it)")
     confidence: int = Field(description="0-100: how sure you are this is a real problem")
 
 

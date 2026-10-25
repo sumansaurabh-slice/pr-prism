@@ -341,17 +341,18 @@ def test_twins_merge_their_sources_and_keep_the_deep_check_text(tricky_repo):
 # --------------------------------------------------------------------------------------
 
 
-def test_cache_key_changes_with_model_focus_prompt_and_code(monkeypatch):
+def test_cache_key_changes_with_model_focus_prompt_rules_and_code(monkeypatch):
     ctx = ctx_of("a.py", "b.py")
     t = deepcheck.Target("chapter:x", "X", ["a.py", "b.py"])
     key = deepcheck.cache_key(t, ctx, "opus", None)
     assert deepcheck.cache_key(deepcheck.Target("other", "Y", ["b.py", "a.py"]), ctx, "opus", None) == key
     assert deepcheck.cache_key(t, ctx, "sonnet", None) != key
     assert deepcheck.cache_key(t, ctx, "opus", "retries") != key
+    assert deepcheck.cache_key(t, ctx, "opus", None, "rules-hash") != key   # the repo's rules changed
     ctx["files"][1]["head_blob"] = "h1"
     assert deepcheck.cache_key(t, ctx, "opus", None) != key
     ctx["files"][1]["head_blob"] = "h0"
-    monkeypatch.setattr(deepcheck, "PROMPT_VERSION", "2")
+    monkeypatch.setattr(deepcheck, "PROMPT_VERSION", deepcheck.PROMPT_VERSION + "-next")
     assert deepcheck.cache_key(t, ctx, "opus", None) != key
 
 
@@ -516,10 +517,10 @@ def test_parallel_second_looks_never_lose_each_others_scores(tmp_path, tricky_re
     snapshots: dict[str, set[str]] = {}
     real_run, real_merge = judge.run, deepcheck.JudgeStore.merge
 
-    def judge_run(found, diffs, cfg, cwd, cache, echo, ledger=None, pr=None):
+    def judge_run(found, diffs, cfg, cwd, cache, echo, ledger=None, **kw):
         who = "A" if found[0]["title"] == "A problem" else "B"
         snapshots[who] = set(cache)
-        out = real_run(found, diffs, cfg, cwd, cache, echo, ledger=ledger, pr=pr)
+        out = real_run(found, diffs, cfg, cwd, cache, echo, ledger=ledger, **kw)
         if who == "A":
             a_judged.set()
         return out
