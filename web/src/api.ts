@@ -34,6 +34,10 @@ async function request<T>(method: string, url: string, body?: unknown): Promise<
 
 const q = encodeURIComponent;
 
+/** `warning`: it worked, but "Couldn't save this answer for eval" (labels.jsonl); shown as a toast. */
+export interface Done { ok: boolean; warning?: string }
+export interface SubmitResult extends Done { review_id: number; html_url: string }
+
 export interface NewDraft {
   path: string; side: Side; line: number; start_line?: number | null; start_side?: Side | null; body: string;
   source: Draft["source"]; suggestion_id?: string | null;
@@ -50,7 +54,7 @@ export const api = {
     request<{ reviewed: Record<string, string> }>("PUT", "/api/reviewed", { path, reviewed }),
   createDraft: (d: NewDraft) => request<Draft>("POST", "/api/drafts", d),
   updateDraft: (id: string, body: string) => request<Draft>("PATCH", `/api/drafts/${q(id)}`, { body }),
-  deleteDraft: (id: string) => request<{ ok: boolean }>("DELETE", `/api/drafts/${q(id)}`),
+  deleteDraft: (id: string) => request<Done>("DELETE", `/api/drafts/${q(id)}`),
   replaceDraft: (id: string, place: DraftPlace) => request<Draft>("POST", `/api/drafts/${q(id)}/replace`, place),
   dismissRestored: () => request<{ ok: boolean }>("POST", "/api/restored/dismiss"),
   dismissSuggestion: (id: string) =>
@@ -62,7 +66,7 @@ export const api = {
     request<ReviewPreview>("POST", "/api/review/preview", { body, event }),
   draftSummary: () => request<{ body: string }>("POST", "/api/review/draft-summary"),
   submitReview: (body: string, event: ReviewEvent, commit: "analyzed" | "current") =>
-    request<{ ok: boolean; review_id: number; html_url: string }>("POST", "/api/review/submit", { body, event, commit }),
+    request<SubmitResult>("POST", "/api/review/submit", { body, event, commit }),
   threads: () => request<ChatThread[]>("GET", "/api/chat/threads"),
   createThread: (title?: string) => request<ChatThread>("POST", "/api/chat/threads", { title }),
   deleteThread: (id: string) => request<{ ok: boolean }>("DELETE", `/api/chat/threads/${q(id)}`),

@@ -5,6 +5,7 @@ from __future__ import annotations
 import json
 import os
 import subprocess
+import sys
 from typing import Any
 
 from . import anchors
@@ -85,6 +86,21 @@ def submit(owner: str, repo: str, number: int, payload: dict) -> dict:
 def post_comment(owner: str, repo: str, number: int, comment: dict) -> dict:
     """One inline review comment, posted right away (needs commit_id, path, line, side, body)."""
     return _post(f"repos/{owner}/{repo}/pulls/{number}/comments", comment, "comment")
+
+
+def review_comments(owner: str, repo: str, number: int, review_id: Any) -> list[dict]:
+    """The line comments of one review just posted, as GitHub stored them ({id, path, line, body}), so each posted
+    comment's eval label carries its GitHub id. Read-only; empty in a dry run, and on any failure (the ids are only
+    used to match the comment with a later `prr labels import`)."""
+    if _dry_run() or not review_id:
+        return []
+    try:
+        out = gh("api", "--paginate", f"repos/{owner}/{repo}/pulls/{number}/reviews/{review_id}/comments?per_page=100",
+                 "--jq", ".[] | {id, path, line, body}", timeout=30)
+    except (CommandError, subprocess.TimeoutExpired) as e:
+        print(f"[prr] could not read the posted review's comment ids: {str(e)[:200]}", file=sys.stderr, flush=True)
+        return []
+    return [json.loads(line) for line in out.splitlines() if line.strip()]
 
 
 def existing_comments(owner: str, repo: str, number: int) -> list[dict]:

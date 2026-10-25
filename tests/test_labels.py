@@ -1,12 +1,19 @@
-"""E3 labels: labels.jsonl (append, lock, compaction, what counts toward recall) and match_label."""
+"""E3 labels: labels.jsonl (append, lock, compaction, what counts toward recall), match_label, and the label writes
+from posting and from deleting a pending comment. Nothing here reaches GitHub (PRR_GITHUB_DRY_RUN=1 and fakes)."""
 
 import fcntl
 import os
 import stat
+from types import SimpleNamespace
 
 import pytest
+from fastapi.testclient import TestClient
 
-from prr import labels
+from prr import chat_tools, github, labels, server
+from prr.config import Config
+from prr.server import Guard, create_app
+from prr.state import StateStore
+from tests.test_merge import make_pr_dir
 
 
 def mode(path) -> int:
@@ -176,3 +183,141 @@ def test_posted_drafts_get_their_github_ids():
         ("problem", "posted", "h", "b", "me")}
     moved = labels.for_posted({"number": 7, "head_sha": "h", "merge_base_sha": "b"}, out, commit_id="h2", author="me")
     assert {r["merge_base_sha"] for r in moved} == {None}              # posted on a newer head: eval works it out
+
+
+# ---- label writes: the app's Submit, the chat's posts, and deleting a pending comment ---------------
+
+PORT = 40125
+TOKEN = "labels-token"
+ORIGIN = {"origin": f"http://127.0.0.1:{PORT}"}
+
+
+@pytest.fixture()
+def pr(tmp_path, tricky_repo, monkeypatch):
+    """A PR folder where the cache keeps it (<cache>/o__r/pr-1), with the app and the chat tools on it."""
+    monkeypatch.setenv("PRR_GITHUB_DRY_RUN", "1")
+    monkeypatch.setattr(github, "current_head", lambda owner, repo, number: "h")
+    monkeypatch.setattr(server, "viewer_login", lambda: "me")
+    pr_dir = tmp_path / "o__r" / "pr-1"
+    pr_dir.mkdir(parents=True)
+    make_pr_dir(pr_dir, tricky_repo["diff"])
+    (pr_dir / "diff.patch").write_text(tricky_repo["diff"])
+    client = TestClient(Guard(create_app(pr_dir, Config()), TOKEN, PORT), base_url=f"http://127.0.0.1:{PORT}")
+    client.cookies.set("prr_session", TOKEN)
+    return SimpleNamespace(client=client, dir=pr_dir, repo=tmp_path / "o__r", cfg=Config())
+
+
+def add(pr, line: int, body: str, **extra) -> dict:
+    r = pr.client.post("/api/drafts", json={"path": "src/core.py", "side": "RIGHT", "line": line, "body": body, **extra},
+                       headers=ORIGIN)
+    assert r.status_code == 200, r.text
+    return r.json()
+
+
+def with_origin(pr, draft: dict, origin: str) -> None:
+    """Guided review (Wave 3) sets origin_id from the stop; until then, set it the way it will be stored."""
+    StateStore(pr.dir).update(lambda s: next(d for d in s["drafts"] if d["id"] == draft["id"]).update(origin_id=origin))
+
+
+def test_new_drafts_have_no_origin(pr):
+    assert add(pr, 22, "x")["origin_id"] is None
+
+
+def test_submit_saves_a_problem_label_per_posted_comment(pr, monkeypatch):
+    first = add(pr, 22, "Check the inserted lines", start_line=21)
+    with_origin(pr, first, "s-1")
+    add(pr, 15, "This line is outside the diff")
+    monkeypatch.setattr(github, "submit", lambda o, r, n, payload: {"id": 9, "html_url": "u", "user": {"login": "me"}})
+    asked = []
+
+    def ids(owner, repo, number, review_id):
+        asked.append((owner, repo, number, review_id))
+        return [{"id": 501, "path": "src/core.py", "line": 22, "body": "Check the inserted lines"}]
+
+    monkeypatch.setattr(github, "review_comments", ids)
+    r = pr.client.post("/api/review/submit", json={"body": "Notes", "event": "COMMENT"}, headers=ORIGIN)
+    assert r.status_code == 200 and "warning" not in r.json()
+    assert asked == [("o", "r", 1, 9)]
+    rows = labels.read(pr.repo)
+    assert [(x["kind"], x["source"], x["pr"], x["commit_id"], x["path"], x["line"], x["side"], x["gh_comment_id"],
+             x["origin_id"], x["author"], x["text"]) for x in rows] == [
+        ("problem", "posted", 1, "h", "src/core.py", 22, "RIGHT", 501, "s-1", "me", "Check the inserted lines"),
+        ("problem", "posted", 1, "h", "src/core.py", 15, "RIGHT", None, None, "me", "This line is outside the diff")]
+    assert {x["merge_base_sha"] for x in rows} == {"b"}
+
+
+def test_a_failed_label_write_keeps_the_post_and_warns(pr, monkeypatch):
+    def busy(folder, rows, timeout=labels.LOCK_TIMEOUT_S):
+        raise TimeoutError("labels.lock stayed busy for 5 s")
+
+    monkeypatch.setattr(labels, "write", busy)
+    add(pr, 22, "first")
+    r = pr.client.post("/api/review/submit", json={"body": "Notes", "event": "COMMENT"}, headers=ORIGIN)
+    assert r.status_code == 200
+    assert r.json()["ok"] and r.json()["warning"] == "Couldn't save this answer for eval"
+    s = StateStore(pr.dir).load()
+    assert s["drafts"] == [] and len(s["submitted"]) == 1                   # the review itself went through
+
+    text, err = chat_tools.call_tool(pr.dir, pr.cfg, "post_comment", {"path": "src/core.py", "line": 22, "body": "x"})
+    assert not err and "Posted the comment" in text and "Couldn't save this answer for eval" in text
+
+
+def test_chat_posts_pass_each_comment_to_record(pr, monkeypatch):
+    seen = []
+    real = chat_tools._record
+
+    def spy(pr_dir, html_url, event, comments, **kw):
+        seen.append(kw.get("posted"))
+        return real(pr_dir, html_url, event, comments, **kw)
+
+    monkeypatch.setattr(chat_tools, "_record", spy)
+    monkeypatch.setattr(github, "post_comment", lambda o, r, n, c: {"id": 77, "html_url": "u", "user": {"login": "me"}})
+    text, err = chat_tools.call_tool(pr.dir, pr.cfg, "post_comment",
+                                     {"path": "src/core.py", "line": 22, "body": "Posted from the chat"})
+    assert not err, text
+
+    pending = add(pr, 5, "Sent with the review")
+    with_origin(pr, pending, "s-9")
+    monkeypatch.setattr(github, "submit", lambda o, r, n, payload: {"id": 8, "html_url": "u", "user": {"login": "me"}})
+    monkeypatch.setattr(github, "review_comments", lambda o, r, n, rid: [
+        {"id": 88, "path": "src/core.py", "line": 5, "body": "Sent with the review"}])
+    text, err = chat_tools.call_tool(pr.dir, pr.cfg, "post_review", {"body": "Done", "include_pending": True})
+    assert not err, text
+
+    assert seen == [
+        [{"path": "src/core.py", "line": 22, "side": "RIGHT", "body": "Posted from the chat", "gh_comment_id": 77}],
+        [{"path": "src/core.py", "line": 5, "side": "RIGHT", "body": "Sent with the review", "gh_comment_id": 88,
+          "origin_id": "s-9"}]]
+    rows = labels.read(pr.repo)
+    assert [(x["gh_comment_id"], x["origin_id"], x["source"], x["author"]) for x in rows] == [
+        (77, None, "posted", "me"), (88, "s-9", "posted", "me")]
+    # a review with only a summary posts no comments and saves no labels
+    text, err = chat_tools.call_tool(pr.dir, pr.cfg, "post_review", {"body": "One more thing"})
+    assert not err and len(labels.read(pr.repo)) == 2
+
+
+def test_deleting_a_comment_made_from_an_answer_retracts_it(pr):
+    plain, answered = add(pr, 22, "my own"), add(pr, 5, "from a stop")
+    with_origin(pr, answered, "s-3")
+    labels.append(pr.repo, pr=1, kind="problem", source="verdict", origin_id="s-3", stop_kind="finding",
+                  path="src/core.py", side="RIGHT", line=5, commit_id="h", text="Real problem")
+    assert len(labels.load(pr.repo)) == 1
+
+    assert pr.client.delete(f"/api/drafts/{plain['id']}", headers=ORIGIN).json() == {"ok": True}
+    assert len(labels.read(pr.repo)) == 1                                    # nothing to take back
+    assert pr.client.delete(f"/api/drafts/{answered['id']}", headers=ORIGIN).json() == {"ok": True}
+    assert [x["kind"] for x in labels.read(pr.repo)] == ["problem", "retracted"]
+    assert labels.load(pr.repo) == []
+
+
+def test_a_failed_retraction_still_deletes_and_warns(pr, monkeypatch):
+    answered = add(pr, 5, "from a stop")
+    with_origin(pr, answered, "s-3")
+
+    def full_disk(folder, rows, timeout=labels.LOCK_TIMEOUT_S):
+        raise OSError(28, "No space left on device")
+
+    monkeypatch.setattr(labels, "write", full_disk)
+    r = pr.client.delete(f"/api/drafts/{answered['id']}", headers=ORIGIN)
+    assert r.json() == {"ok": True, "warning": "Couldn't save this answer for eval"}
+    assert StateStore(pr.dir).load()["drafts"] == []

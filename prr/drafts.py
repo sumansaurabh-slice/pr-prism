@@ -4,7 +4,8 @@ Both ways of posting a review (the app's Submit and the chat's post_review) use 
 is never sent twice and never lost:
 - claim_for_post marks the drafts this post will send with `posting` = its post id, under the state lock. Drafts
   another post already holds, and outdated ones, are skipped.
-- finish_post, after GitHub accepted the review, removes only the claimed drafts and records the review.
+- finish_post, after GitHub accepted the review, removes only the claimed drafts, records the review and saves a
+  problem label per posted comment for `prr eval` (prr/labels.py).
 - release, on any failure, takes the marks off so the drafts are pending again.
 """
 
@@ -15,7 +16,7 @@ import uuid
 from datetime import datetime, timezone
 from typing import NamedTuple
 
-from . import anchors
+from . import anchors, labels
 from .state import StateStore
 from .util import now_iso
 
@@ -23,8 +24,10 @@ SOURCES = ("user", "suggestion", "chat")
 
 
 def new_draft(ctx: dict, path: str, side: str, line: int, body: str, *, start_line: int | None = None,
-              start_side: str | None = None, source: str = "user", suggestion_id: str | None = None) -> dict:
-    """A draft dict for state.json. Raises ValueError when the input can't be a comment on this PR."""
+              start_side: str | None = None, source: str = "user", suggestion_id: str | None = None,
+              origin_id: str | None = None) -> dict:
+    """A draft dict for state.json. Raises ValueError when the input can't be a comment on this PR.
+    `origin_id` is the guided-review stop it was made from (null otherwise): its eval label follows the comment."""
     fc = next((f for f in ctx["files"] if f["path"] == path), None)
     if fc is None:
         raise ValueError(f"{path} is not part of this PR")
@@ -43,7 +46,8 @@ def new_draft(ctx: dict, path: str, side: str, line: int, body: str, *, start_li
     return {
         "id": uuid.uuid4().hex[:12], "path": path, "side": side, "line": line, "start_line": start,
         "start_side": start_side, "body": body, "source": source if source in SOURCES else "user",
-        "suggestion_id": suggestion_id, "anchored": anchors.check(fc, side, line, start, start_side) is None,
+        "suggestion_id": suggestion_id, "origin_id": origin_id,
+        "anchored": anchors.check(fc, side, line, start, start_side) is None,
         "outdated": False, "commit_id": ctx["pr"]["head_sha"], "created_at": now_iso(),
     }
 
@@ -103,13 +107,16 @@ def claim_for_post(store: StateStore, post_id: str, now: float | None = None) ->
     return store.update(apply)
 
 
-def finish_post(store: StateStore, post_id: str, record: dict) -> None:
-    """GitHub has the review: remove the drafts this post claimed (and only those) and record the review."""
+def finish_post(store: StateStore, post_id: str, record: dict, posted: list[dict] | None = None) -> str | None:
+    """GitHub has the review: remove the drafts this post claimed (and only those) and record the review. Then save
+    `posted` (labels.for_posted: a problem label per posted comment). Returns labels.SAVE_FAILED when those couldn't
+    be saved; the post itself still counts."""
     def apply(s: dict) -> None:
         s["drafts"] = [d for d in s["drafts"] if not (post_id and d.get("posting") == post_id)]
         s["submitted"].append(record)
 
     store.update(apply)
+    return labels.save(store.path.parent, posted or [])
 
 
 def release(store: StateStore, post_id: str) -> None:

@@ -26,7 +26,7 @@ from fastapi import FastAPI, HTTPException
 from fastapi.responses import Response, StreamingResponse
 from pydantic import BaseModel
 
-from . import archive, chat_tools, cost, github, merge, policy
+from . import archive, chat_tools, cost, github, labels, merge, policy
 from .analyze import style_rules
 from .drafts import STARTUP_EXPIRY_S, claim_for_post, finish_post, is_posting, new_draft, postable, release, release_stale
 from .claude import ChatProcess, ClaudeError, run_structured, stream_chat
@@ -425,13 +425,20 @@ def create_app(pr_dir: Path, cfg: Config) -> FastAPI:
 
     @app.delete("/api/drafts/{draft_id}")
     def delete_draft(draft_id: str) -> dict:
-        def apply(s: dict) -> None:
-            if any(d["id"] == draft_id and is_posting(d) for d in s["drafts"]):
+        def apply(s: dict) -> dict | None:
+            gone = next((d for d in s["drafts"] if d["id"] == draft_id), None)
+            if gone is not None and is_posting(gone):
                 raise HTTPException(409, BEING_POSTED)
             s["drafts"] = [d for d in s["drafts"] if d["id"] != draft_id]
+            return gone
 
-        store.update(apply)
-        return {"ok": True}
+        gone = store.update(apply)
+        out: dict[str, Any] = {"ok": True}
+        # A comment made from a "Real problem" answer, deleted before it was posted: that answer is taken back.
+        warning = labels.save(pr_dir, labels.retracted(ctx()["pr"], gone)) if gone and gone.get("origin_id") else None
+        if warning:
+            out["warning"] = warning
+        return out
 
     @app.post("/api/suggestions/{sid}/dismiss")
     def dismiss(sid: str) -> dict:
@@ -537,9 +544,16 @@ def create_app(pr_dir: Path, cfg: Config) -> FastAPI:
             raise
         record = {"review_id": res.get("id"), "html_url": res.get("html_url", ""), "event": body.event,
                   "comments": len(payload["comments"]), "at": now_iso()}
-        finish_post(store, post_id, record)
+        # Each posted comment is a problem label for `prr eval`; saving them never fails the post (a warning toast).
+        ids = github.review_comments(pr["owner"], pr["repo"], pr["number"], res.get("id")) if claim.drafts else []
+        posted = labels.for_posted(pr, labels.posted_drafts(claim.drafts, ids), commit_id=payload["commit_id"],
+                                   author=info["viewer"])
+        warning = finish_post(store, post_id, record, posted)
         cache.pop("threads_at", None)
-        return {"ok": True, "review_id": record["review_id"], "html_url": record["html_url"]}
+        out = {"ok": True, "review_id": record["review_id"], "html_url": record["html_url"]}
+        if warning:
+            out["warning"] = warning
+        return out
 
     @app.post("/api/review/draft-summary")
     async def draft_summary() -> dict:

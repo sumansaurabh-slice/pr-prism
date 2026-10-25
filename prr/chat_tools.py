@@ -22,7 +22,7 @@ import uuid
 from pathlib import Path
 from typing import Any
 
-from . import anchors, github, policy
+from . import anchors, github, labels, policy
 from .config import Config
 from .drafts import claim_for_post, finish_post, new_draft, release
 from .gitgh import viewer_login
@@ -95,10 +95,23 @@ def tool_list(cfg: Config) -> list[dict]:
     return tools
 
 
-def _record(pr_dir: Path, html_url: str, event: str, comments: int, review_id: Any = None, post_id: str = "") -> None:
-    """Note the post in state.json. For a review with pending comments, also remove the ones it claimed (only those)."""
-    finish_post(StateStore(pr_dir), post_id, {"review_id": review_id, "html_url": html_url, "event": event,
-                                              "comments": comments, "at": now_iso(), "source": "chat"})
+def _record(pr_dir: Path, html_url: str, event: str, comments: int, review_id: Any = None, post_id: str = "",
+            posted: list[dict] | None = None, author: str | None = None) -> str | None:
+    """Note the post in state.json. For a review with pending comments, also remove the ones it claimed (only those).
+    `posted` is each comment that went to GitHub ({path, line, side, body, gh_comment_id, origin_id?}): each becomes a
+    problem label for `prr eval`. Returns a warning when those labels couldn't be saved."""
+    pr = read_json(pr_dir / "context.json")["pr"]
+    rows = labels.for_posted(pr, posted or [], commit_id=pr["head_sha"], author=author)
+    return finish_post(StateStore(pr_dir), post_id, {"review_id": review_id, "html_url": html_url, "event": event,
+                                                     "comments": comments, "at": now_iso(), "source": "chat"}, rows)
+
+
+def _author(res: dict) -> str | None:
+    return (res.get("user") or {}).get("login") or None
+
+
+def _with_warning(text: str, warning: str | None) -> str:
+    return f"{text} ({warning}; the post itself is fine.)" if warning else text
 
 
 def call_tool(pr_dir: Path, cfg: Config, name: str, args: dict) -> tuple[str, bool]:
@@ -136,8 +149,11 @@ def call_tool(pr_dir: Path, cfg: Config, name: str, args: dict) -> tuple[str, bo
             res = github.post_comment(pr["owner"], pr["repo"], pr["number"], comment)
         except github.ReviewError as e:
             return str(e), True
-        _record(pr_dir, res.get("html_url", ""), "COMMENT", 1, review_id=res.get("id"))
-        return f"Posted the comment on {where} to GitHub: {res.get('html_url', '')}", False
+        posted = [{"path": draft["path"], "line": draft["line"], "side": draft["side"], "body": draft["body"],
+                   "gh_comment_id": res.get("id") or None}]
+        warning = _record(pr_dir, res.get("html_url", ""), "COMMENT", 1, review_id=res.get("id"), posted=posted,
+                          author=_author(res))
+        return _with_warning(f"Posted the comment on {where} to GitHub: {res.get('html_url', '')}", warning), False
 
     # post_review
     event = args.get("event") or "COMMENT"
@@ -165,7 +181,10 @@ def call_tool(pr_dir: Path, cfg: Config, name: str, args: dict) -> tuple[str, bo
         if isinstance(e, github.ReviewError):
             return str(e), True
         raise
-    _record(pr_dir, res.get("html_url", ""), event, len(payload["comments"]), review_id=res.get("id"), post_id=post_id)
+    sent = claim.drafts if claim else []
+    ids = github.review_comments(pr["owner"], pr["repo"], pr["number"], res.get("id")) if sent else []
+    warning = _record(pr_dir, res.get("html_url", ""), event, len(payload["comments"]), review_id=res.get("id"),
+                      post_id=post_id, posted=labels.posted_drafts(sent, ids), author=_author(res))
     kind = {"COMMENT": "comment", "APPROVE": "approval", "REQUEST_CHANGES": "request for changes"}[event]
     text = f"Posted the review ({kind}, {len(payload['comments'])} line comments) to GitHub: {res.get('html_url', '')}"
     if claim and claim.busy:
@@ -173,7 +192,7 @@ def call_tool(pr_dir: Path, cfg: Config, name: str, args: dict) -> tuple[str, bo
     if claim and claim.outdated:
         text += (f" {claim.outdated} pending comments are from an older commit and were not sent; the reviewer can "
                  "re-place or delete them in the app.")
-    return text, False
+    return _with_warning(text, warning), False
 
 
 def serve_stdio(pr_dir: Path, cfg: Config) -> None:
