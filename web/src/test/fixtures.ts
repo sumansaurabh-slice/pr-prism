@@ -58,7 +58,8 @@ export function makeAnalysis(over: Partial<Analysis> = {}): Analysis {
       status: "complete", clusters_total: 1, clusters_done: 1, clusters_failed: 0, message: "", started_at: null,
       finished_at: null, log: [], cost_usd: 0, deepcheck_total: 0, deepcheck_done: 0, deepcheck_cost_usd: 0,
     },
-    repair_log: [], warnings: [],
+    repair_log: [], warnings: [], skipped_areas: [], stops: [],
+    review_summary: { places: 0, more_places: 0, quiet_files: 1, minutes_left: 0 },
     ...over,
   };
 }
@@ -73,7 +74,10 @@ export function makeDraft(over: Partial<Draft> = {}): Draft {
 }
 
 export function makeState(over: Partial<ReviewState> = {}): ReviewState {
-  return { reviewed: {}, dismissed_suggestions: [], drafts: [], threads: [], submitted: [], ...over };
+  return {
+    reviewed: {}, dismissed_suggestions: [], drafts: [], threads: [], submitted: [], stop_verdicts: {}, seen_hunks: {},
+    review_body_draft: "", ...over,
+  };
 }
 
 export function makeCost(over: Partial<CostSummary> = {}): CostSummary {

@@ -279,6 +279,15 @@ def warnings(pr_dir: Path) -> list[str]:
     return list(data["run"].get("warnings", [])) if data else []
 
 
+def skipped(pr_dir: Path) -> list[dict]:
+    """[{title, reason}]: the areas this run didn't check (failed, stopped, or skipped for time), and high-risk areas
+    over the area limit. Coverage before submit counts each as not checked; "checked, nothing found" is checked."""
+    data = _current(pr_dir)
+    targets = data["run"].get("targets", []) if data else []
+    return [{"title": t["title"], "reason": t.get("reason") or t["status"]} for t in targets
+            if t.get("status") in ("failed", "stopped", "skipped") and (not t.get("capped") or t.get("high"))]
+
+
 def write_snapshot(pr_dir: Path, ctx: dict) -> list[dict]:
     """placed_pre_deepcheck.json: the findings before the deep check merges, in analysis.json's finding shape."""
     from .merge import build_findings
@@ -383,7 +392,7 @@ class _Run:
         """analysis.json as it stands now (call with the lock held)."""
         from .merge import build_analysis
 
-        write_json(self.pr_dir / "analysis.json", build_analysis(self.pr_dir))
+        write_json(self.pr_dir / "analysis.json", build_analysis(self.pr_dir, max_stops=self.cfg.review.max_stops))
 
     def report(self, msg: str) -> None:
         """progress.json: areas done, and the deep check's cost so far, in total and per area."""
@@ -544,7 +553,7 @@ def _run(pr_dir: Path, ctx: dict, cfg: Config, diffs: dict[str, FileDiff], progr
     if not off:
         progress.update("Deep check: picking the riskiest areas", status="deepchecking", deepcheck_total=0,
                         deepcheck_done=0, deepcheck_cost_usd=0.0)
-    view = build_analysis(pr_dir)
+    view = build_analysis(pr_dir, with_stops=False)
     r = _Run(pr_dir, ctx, cfg, diffs, progress, focus, force, view, enabled=not off)
     r.save()                          # this run has no deep-check findings yet
     write_snapshot(pr_dir, ctx)       # "deep check off", for eval

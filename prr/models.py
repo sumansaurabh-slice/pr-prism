@@ -29,6 +29,9 @@ ImpactKind = Literal["callers", "breaking", "migration", "config", "perf", "secu
 FlowNodeKind = Literal["entry", "logic", "store", "external", "test"]
 # deepchecking: the deep check ("what could break") runs after the summary; its findings arrive one area at a time
 ProgressStatus = Literal["fetched", "annotating", "synthesizing", "deepchecking", "complete", "failed"]
+# guided review: where a stop came from, and the reviewer's answer to it
+StopKind = Literal["finding", "risk_note", "look_for", "ci", "bot"]
+Verdict = Literal["real", "not", "unsure"]
 
 
 # --------------------------------------------------------------------------------------
@@ -354,6 +357,49 @@ class Progress(BaseModel):
     deepcheck_cost_usd: float = 0.0  # the deep check's share of cost_usd
 
 
+class Stop(BaseModel):
+    """Guided review: one place that needs a human, with one question (prr/stops.py)."""
+    id: str                        # "stop-" + 40 hex; stable across re-runs (never built from a finding's title)
+    kind: StopKind
+    path: str | None               # None for a CI check
+    side: Side | None
+    line: int | None
+    start_line: int | None
+    question: str                  # the heading: one plain question
+    scenario: list[str] = []       # "How it could happen" (deep-check findings)
+    claude_view: str | None        # what Claude thinks, shown muted after the code (Markdown)
+    confidence: int | None         # the finding's "% sure"
+    judge_score: int | None        # the second look's 1-10
+    second_look: SecondLook | None
+    severity: str | None
+    category: str | None
+    finding_id: str | None
+    bot_comment_id: int | None
+    check_name: str | None
+    comment_body: str | None       # what "Real problem" pre-fills (for a CI check: what it adds to the review summary)
+    chapter: str | None            # the reading-order chapter's id (analysis.chapters[].id)
+    order: int                     # position in reading order: chapter, file, line
+    more: bool                     # past the cap: listed under "N more places"
+    low_confidence: bool           # a finding the second look hides: listed only with "Include low-confidence findings"
+    sources: list[str] = []        # what found it: annotate, blockers, deep-check, ci, bots
+    changed_lines: int = 0         # changed lines in the stop's hunk (the whole file for a look_for item)
+    dropped: bool = False          # an answer whose stop is gone or hidden by the second look ("earlier answer")
+
+
+class ReviewSummary(BaseModel):
+    """The Overview's plan box: "N places need a human · M files have nothing flagged · ~K min"."""
+    places: int = 0                # stops listed (not "more", not low confidence, not dropped)
+    more_places: int = 0           # stops past the cap
+    quiet_files: int = 0           # files with no stop at all
+    minutes_left: int = 0          # Σ over unanswered listed stops of 2 + min(5, changed_lines // 20)
+
+
+class SkippedArea(BaseModel):
+    """A deep-check area this run didn't check (failed, stopped, or skipped); counted as not checked (E5)."""
+    title: str
+    reason: str
+
+
 class Analysis(BaseModel):
     schema_version: int = SCHEMA_VERSION
     status: ProgressStatus
@@ -372,6 +418,9 @@ class Analysis(BaseModel):
     progress: Progress
     repair_log: list[str]
     warnings: list[str] = []       # what didn't run fully, e.g. a deep-check area that failed or was skipped
+    skipped_areas: list[SkippedArea] = []  # deep-check areas this run didn't check
+    stops: list[Stop] = []         # guided review, in reading order (prr/stops.py)
+    review_summary: ReviewSummary = Field(default_factory=ReviewSummary)
 
 
 # --------------------------------------------------------------------------------------

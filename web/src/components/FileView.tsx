@@ -1,4 +1,4 @@
-import { useCallback, useEffect, useMemo, useRef, useState, type MouseEvent, type ReactNode } from "react";
+import { useCallback, useEffect, useMemo, useRef, useState, type MouseEvent, type ReactNode, type RefObject } from "react";
 import {
   Decoration, Diff, Hunk, getChangeKey, isDelete, isInsert, parseDiff, tokenize,
   type ChangeData, type FileData, type HunkData, type HunkTokens, type TokenizeOptions,
@@ -12,7 +12,9 @@ import protobuf from "refractor/protobuf";
 import graphql from "refractor/graphql";
 import hcl from "refractor/hcl";
 import docker from "refractor/docker";
-import { api } from "../api";
+import { api, hunkId } from "../api";
+import { answerLabel, findingAnswer, useFindingAnswer, type FindingAnswer } from "../answers";
+import { isSeen, markHunkSeen, SEEN_AFTER_MS } from "../coverage";
 import { registerFileNav, stepFile } from "../keyboard";
 import { InlineText, Markdown } from "../markdown";
 import { goFile, navigate, fileHref, useNavTick } from "../router";
@@ -25,7 +27,7 @@ for (const lang of [jsx, tsx, toml, protobuf, graphql, hcl, docker]) refractor.r
 
 // ------------------------------------------------------------------ helpers
 
-const diffCache = new Map<string, string>();
+export const diffCache = new Map<string, string>(); // path → patch, shared with the Review view's hunks
 const fileCache = new Map<string, string>();
 
 const EXT_LANG: Record<string, string> = {
@@ -38,7 +40,7 @@ const EXT_LANG: Record<string, string> = {
   pl: "perl", m: "objectivec", ini: "ini", mk: "makefile", diff: "diff",
 };
 
-function languageOf(path: string): string | null {
+export function languageOf(path: string): string | null {
   const base = splitPath(path).base;
   if (/^dockerfile/i.test(base)) return "docker";
   if (/^makefile$/i.test(base)) return "makefile";
@@ -49,7 +51,7 @@ function languageOf(path: string): string | null {
 
 // react-diff-view 3 was written against refractor 2 (highlight → node[]); refractor 5 returns a root.
 type HighlightOptions = Extract<TokenizeOptions, { highlight: true }>;
-const refractorAdapter = {
+export const refractorAdapter = {
   highlight: (value: string, language: string) => refractor.highlight(value, language).children,
 } as unknown as HighlightOptions["refractor"];
 
@@ -244,16 +246,62 @@ function NoteCard({ note, index }: { note: Note; index: number }) {
   );
 }
 
+/** Your answer to a finding as a label (design D20). */
+export function AnswerLabel({ answer, small }: { answer: FindingAnswer; small?: boolean }) {
+  const l = answerLabel(answer);
+  if (!l) return null;
+  return (
+    <span className={`Label Label--${l.variant}${small ? " Label--small" : ""}`} title={l.title}>
+      {l.text}
+    </span>
+  );
+}
+
+/** Where a pending comment shows: on its diff line, or (not on a diff line) in its file's floating notes. */
+export function commentHref(d: Draft): string {
+  return d.anchored && !d.outdated ? fileHref(d.path, d.start_side ? d.line : (d.start_line ?? d.line), d.side) : fileHref(d.path);
+}
+
+/** "Open your comment": show your pending comment for a finding. In its file it is on the page; elsewhere, go there. */
+export function openComment(d: Draft) {
+  const card = document.querySelector(`.file-view [data-draft="${d.id}"]`);
+  if (card) {
+    flash(card);
+    card.querySelector<HTMLButtonElement>(".rc-actions .btn:not(.btn-invisible)")?.focus({ preventScroll: true });
+  } else if (d.outdated) {
+    useStore.getState().setDraftsOpen(true);
+  } else {
+    navigate(commentHref(d));
+  }
+}
+
 function FindingCard({ f }: { f: Finding }) {
   const addDraft = useStore((st) => st.addDraft);
   const dismiss = useStore((st) => st.dismissSuggestion);
+  const answerStop = useStore((st) => st.answerStop);
+  const answer = useFindingAnswer(f);
+  const mine = answer.draft; // already in your review: open that comment instead of adding a second one
   const [editing, setEditing] = useState(false);
   const [body, setBody] = useState(f.comment_body);
-  const accept = (text: string) =>
-    void addDraft({
-      path: f.path, side: f.side, line: f.line, start_line: f.start_line, body: text,
-      source: "suggestion", suggestion_id: f.id,
-    });
+  const adding = useRef(false);
+  const accept = async (text: string) => {
+    if (adding.current) return; // a second click while the first is saving
+    adding.current = true;
+    try {
+      const d = await addDraft({
+        path: f.path, side: f.side, line: f.line, start_line: f.start_line, body: text,
+        source: "suggestion", suggestion_id: f.id,
+      });
+      if (!d) return;
+      setEditing(false);
+      // Adding it to your review is the same answer as "Real problem" on its stop, so the place counts as checked
+      // (and the server reuses this comment instead of making a second one).
+      const stop = useStore.getState().analysis?.stops?.find((s) => s.finding_id === f.id);
+      if (stop && !answer.verdict) await answerStop(stop, "real");
+    } finally {
+      adding.current = false;
+    }
+  };
   const by = f.source.startsWith("rule:") ? "Blocker check" : "Claude";
   return (
     <div className={`review-comment finding sev-${f.severity}${f.low_confidence ? " low" : ""}`} data-finding={f.id}>
@@ -269,11 +317,15 @@ function FindingCard({ f }: { f: Finding }) {
             Also flagged by {b.replace(/\[bot\]$/, "")}
           </span>
         ))}
+        <AnswerLabel answer={answer} />
         <span className="rc-meta">{lineText(f.side, f.start_line ?? f.line, f.line)}</span>
       </div>
       <div className="rc-body">
-        {editing ? (
+        {editing && !mine ? (
           <textarea className="input comment-input" value={body} autoFocus onChange={(e) => setBody(e.target.value)} rows={8} />
+        ) : mine ? (
+          // In your review: your comment (on this line) says the rest.
+          <div className="finding-title">{f.title}</div>
         ) : (
           <>
             <div className="finding-title">{f.title}</div>
@@ -316,12 +368,16 @@ function FindingCard({ f }: { f: Finding }) {
         )}
       </div>
       <div className="rc-actions">
-        {editing ? (
+        {mine ? (
+          <button className="btn btn-sm" onClick={() => openComment(mine)}>
+            Open your comment
+          </button>
+        ) : editing ? (
           <>
             <button className="btn btn-sm" onClick={() => setEditing(false)}>
               Cancel
             </button>
-            <button className="btn btn-primary btn-sm" disabled={!body.trim()} onClick={() => accept(body)}>
+            <button className="btn btn-primary btn-sm" disabled={!body.trim()} onClick={() => void accept(body)}>
               Add to my review
             </button>
           </>
@@ -333,7 +389,7 @@ function FindingCard({ f }: { f: Finding }) {
             <button className="btn btn-sm" onClick={() => setEditing(true)}>
               Edit first
             </button>
-            <button className="btn btn-primary btn-sm" onClick={() => accept(f.comment_body)}>
+            <button className="btn btn-primary btn-sm" onClick={() => void accept(f.comment_body)}>
               Add to my review
             </button>
           </>
@@ -639,6 +695,61 @@ function placeOn(path: string, s: Anchor) {
     });
 }
 
+/** On screen: at least half of it, or (for a tall hunk) at least half the screen. */
+function onScreen(e: IntersectionObserverEntry): boolean {
+  if (!e.isIntersecting) return false;
+  const screenHeight = e.rootBounds?.height ?? window.innerHeight;
+  return e.intersectionRatio >= 0.5 || e.intersectionRect.height >= screenHeight / 2;
+}
+
+/**
+ * Coverage (E5): a hunk on screen for 3 s counts as seen. Each one is sent once, batched per file, with the
+ * backend's hunk id (hunkId in api.ts). The diff draws each hunk as a `tbody.diff-hunk`, in hunk order.
+ */
+function useSeenHunks(container: RefObject<HTMLDivElement | null>, path: string, hunks: HunkData[], on: boolean) {
+  useEffect(() => {
+    const root = container.current;
+    if (!on || !root || typeof IntersectionObserver === "undefined") return;
+    const ids = new Map<Element, string>();
+    root.querySelectorAll("tbody.diff-hunk").forEach((el, i) => {
+      const h = hunks[i];
+      if (!h) return;
+      const id = hunkId({ old_start: h.oldStart, old_lines: h.oldLines, new_start: h.newStart, new_lines: h.newLines });
+      if (!isSeen(path, id)) ids.set(el, id);
+    });
+    if (!ids.size) return;
+    const timers = new Map<Element, number>();
+    const observer = new IntersectionObserver(
+      (entries) => {
+        for (const e of entries) {
+          const id = ids.get(e.target);
+          if (!id) continue;
+          if (onScreen(e)) {
+            if (timers.has(e.target)) continue;
+            timers.set(
+              e.target,
+              window.setTimeout(() => {
+                timers.delete(e.target);
+                observer.unobserve(e.target);
+                markHunkSeen(path, id);
+              }, SEEN_AFTER_MS),
+            );
+          } else {
+            window.clearTimeout(timers.get(e.target));
+            timers.delete(e.target);
+          }
+        }
+      },
+      { threshold: [0, 0.25, 0.5, 0.75, 1] },
+    );
+    ids.forEach((_, el) => observer.observe(el));
+    return () => {
+      observer.disconnect();
+      timers.forEach((t) => window.clearTimeout(t));
+    };
+  }, [container, path, hunks, on]);
+}
+
 /** "Click a line in the diff to move this comment there · Esc to cancel", while Re-place waits for a pick. */
 function ReplaceBanner() {
   const cancel = useStore((s) => s.cancelReplace);
@@ -726,6 +837,7 @@ export function FileView({ path, line, side, full }: { path: string; line: numbe
 
   const showFull = !inPR || full || (file?.binary ?? false);
   const fullAt: "head" | "base" = file?.status === "deleted" ? "base" : "head";
+  useSeenHunks(containerRef, path, hunks, inPR && !showFull && hunks.length > 0);
 
   // ---- navigation to ?line=
   useEffect(() => {
@@ -860,15 +972,12 @@ export function FileView({ path, line, side, full }: { path: string; line: numbe
       .sort((a, b) => (index.keyOrder.get(a.key ?? "") ?? 1e9) - (index.keyOrder.get(b.key ?? "") ?? 1e9));
   }, [notes, index]);
 
-  const acceptedIds = useMemo(
-    () => new Set(state.drafts.map((d) => d.suggestion_id).filter(Boolean) as string[]),
-    [state.drafts],
-  );
+  // A finding already in your review keeps its card, labelled "In your review" with "Open your comment" (design D20).
   const dismissed = useMemo(() => new Set(state.dismissed_suggestions), [state.dismissed_suggestions]);
   const [showLow, setShowLow] = useState(false);
   const fileSuggestions = useMemo(
-    () => (analysis?.findings ?? []).filter((s) => s.path === path && !acceptedIds.has(s.id)),
-    [analysis, path, acceptedIds],
+    () => (analysis?.findings ?? []).filter((s) => s.path === path),
+    [analysis, path],
   );
   const lowFindings = useMemo(
     () => fileSuggestions.filter((s) => s.low_confidence && !dismissed.has(s.id)),
@@ -990,6 +1099,10 @@ export function FileView({ path, line, side, full }: { path: string; line: numbe
                 <div key={s.id} className="dismissed-item">
                   <SeverityLabel severity={s.severity} />
                   <span className="dismissed-text">{s.title}</span>
+                  <AnswerLabel
+                    answer={findingAnswer(s, analysis?.stops ?? [], state.stop_verdicts ?? {}, state.drafts)}
+                    small
+                  />
                   <button className="btn btn-sm" onClick={() => void restoreSuggestion(s.id)}>
                     Show again
                   </button>

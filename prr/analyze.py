@@ -390,7 +390,7 @@ def _analyze(pr_dir: Path, ctx: dict, cfg: Config, focus: str | None, force: boo
     with ThreadPoolExecutor(max_workers=2) as side:
         list(side.map(lambda fn: fn(), [] if eval_mode else [do_ci, do_comments]))
 
-    partial_view = merge.build_analysis(pr_dir)
+    partial_view = merge.build_analysis(pr_dir, with_stops=False)
     progress.update("Looking for other code that uses the changed names")
     symbols = {f["path"]: f["changed_symbols"] for f in partial_view["files"] if f["changed_symbols"]}
     impact_data = impact.compute(Path(ctx["repo_root"]), ctx["pr"]["head_sha"], set(files_ctx), symbols)
@@ -427,7 +427,7 @@ def _analyze(pr_dir: Path, ctx: dict, cfg: Config, focus: str | None, force: boo
                   skip="Claude could not read any group of files" if all_failed else None)
     progress.update(f"Analysis {'failed' if all_failed else 'complete'} (≈${progress.data['cost_usd']:.2f})",
                     status="failed" if all_failed else "complete", finished_at=now_iso())
-    analysis = merge.build_analysis(pr_dir)
+    analysis = merge.build_analysis(pr_dir, max_stops=cfg.review.max_stops)
     write_json(pr_dir / "analysis.json", analysis)
     if not eval_mode:
         _save_history(pr_dir, ctx, analysis)

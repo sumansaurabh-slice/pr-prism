@@ -1,4 +1,5 @@
 import { useEffect } from "react";
+import { goNextUnchecked } from "./coverage";
 import { goFile, navigate, parseHash } from "./router";
 import { fileByPath, fileMap, hiddenByPrefs, reviewOrder, useStore } from "./store";
 
@@ -12,6 +13,25 @@ let fileNav: FileNav | null = null;
 export function registerFileNav(nav: FileNav | null) {
   fileNav = nav;
 }
+
+/** The Review view registers these while mounted. Its keys apply there only; elsewhere n, ? and c keep their
+ * meanings (next note, this list, comment). */
+export interface ReviewNav {
+  real: () => void;    // y
+  not: () => void;     // n
+  unsure: () => void;  // ?
+  chat: () => void;    // c
+  next: () => void;    // j
+  prev: () => void;    // k
+  undo: () => void;    // u
+}
+let reviewNav: ReviewNav | null = null;
+export function registerReviewNav(nav: ReviewNav | null) {
+  reviewNav = nav;
+}
+const REVIEW_KEYS: Record<string, keyof ReviewNav> = {
+  y: "real", n: "not", "?": "unsure", c: "chat", j: "next", k: "prev", u: "undo",
+};
 
 function isTyping(target: EventTarget | null): boolean {
   if (!(target instanceof HTMLElement)) return false;
@@ -56,6 +76,12 @@ export function useGlobalKeys() {
       if (isTyping(e.target) || onApprovalCard(e.target)) return;
       if (st.submitOpen) return;
       const route = parseHash(window.location.hash);
+      if (route.view === "review" && reviewNav && REVIEW_KEYS[e.key]) {
+        if (st.helpOpen || st.draftsOpen) return; // a window is open over the stop: no answer from behind it
+        reviewNav[REVIEW_KEYS[e.key]]();
+        e.preventDefault();
+        return;
+      }
       switch (e.key) {
         case "j":
           stepFile(1);
@@ -83,6 +109,9 @@ export function useGlobalKeys() {
         case "o":
           navigate("#/overview");
           break;
+        case "]":
+          void goNextUnchecked();
+          break;
         case "?":
           st.setHelpOpen(!st.helpOpen);
           break;
@@ -105,6 +134,19 @@ export const SHORTCUTS: [string, string][] = [
   ["/", "Go to the chat box"],
   ["r", "Mark this file as viewed, or not viewed"],
   ["o", "Go to the overview"],
+  ["]", "Next place you haven't checked yet"],
   ["?", "Show or hide this list"],
   ["Esc", "Close a window, stop moving a comment, or clear the picked lines"],
+];
+
+/** The Review view's keys; the help lists them first while you are in the view. */
+export const REVIEW_SHORTCUTS: [string, string][] = [
+  ["y", "Real problem: opens the comment (a CI failure goes in your review summary)"],
+  ["n", "Not a problem, and go to the next stop"],
+  ["?", "Not sure, and go to the next stop"],
+  ["c", "Ask in chat about this stop"],
+  ["u", "Undo your last answer while its message shows"],
+  ["j / k", "Next / previous stop"],
+  ["⌘/Ctrl + Enter", "Save the comment and go to the next stop"],
+  ["Esc", "Keep the comment and stay on this stop"],
 ];

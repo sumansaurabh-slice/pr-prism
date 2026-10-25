@@ -19,7 +19,7 @@
     "head_sha": "dddddddddddddddddddddddddddddddddddddddd",
     "additions": 65,
     "deletions": 7,
-    "changed_files": 6,
+    "changed_files": 7,
     "labels": [
       "webhooks"
     ],
@@ -315,6 +315,46 @@
       "kind_reason": null
     },
     {
+      "path": "app/config/settings.py",
+      "old_path": null,
+      "status": "modified",
+      "additions": 3,
+      "deletions": 1,
+      "binary": false,
+      "category": "config",
+      "generated": false,
+      "sensitive": false,
+      "minutes": 1,
+      "base_blob": "bbbbbbb",
+      "head_blob": "ccccccc",
+      "tests_for": null,
+      "tested_by": [],
+      "hunks": [
+        {
+          "id": "H1",
+          "old_start": 3,
+          "old_lines": 6,
+          "new_start": 3,
+          "new_lines": 8,
+          "header": "from pydantic_settings import BaseSettings"
+        }
+      ],
+      "annotated": true,
+      "risk": "high",
+      "summary": "Raises the webhook timeout to 30 s and adds settings for the retry loop.",
+      "look_for": [
+        "Is a 30 s timeout safe inside the request path?",
+        "Do deploys set `WEBHOOK_MAX_ATTEMPTS`, or rely on the default?"
+      ],
+      "notes": [],
+      "changed_symbols": [
+        "Settings"
+      ],
+      "is_test": false,
+      "is_docs": false,
+      "kind_reason": null
+    },
+    {
       "path": "poetry.lock",
       "old_path": null,
       "status": "modified",
@@ -363,6 +403,10 @@
         {
           "path": "app/delivery/retry.py",
           "why_now": "The retry helper has no webhook knowledge, so read it before its caller."
+        },
+        {
+          "path": "app/config/settings.py",
+          "why_now": "The settings the retry loop reads."
         }
       ]
     },
@@ -731,12 +775,463 @@
       "sources": [
         "annotate"
       ]
+    },
+    {
+      "id": "s5",
+      "path": "tests/delivery/test_retry.py",
+      "side": "RIGHT",
+      "line": 1,
+      "start_line": null,
+      "anchored": true,
+      "anchor": "import pytest",
+      "severity": "nit",
+      "category": "maintainability",
+      "title": "`pytest` is imported but not used",
+      "impact": "An unused import; lint may flag it.",
+      "fix": "Remove the import.",
+      "suggestion": null,
+      "one_click": false,
+      "why": "Nothing in the file uses `pytest`.",
+      "evidence": "diff only",
+      "confidence": 60,
+      "judge_score": 3,
+      "judge_reason": "Harmless; lint would catch it.",
+      "low_confidence": true,
+      "second_look": "judge",
+      "source": "claude",
+      "note": null,
+      "status": "new",
+      "also_flagged_by": [],
+      "comment_body": "**`pytest` is imported but not used**\n\n*Could improve · maintainability*\n\nRemove the import.",
+      "scenario": [],
+      "question": null,
+      "evidence_refs": [],
+      "sources": [
+        "annotate"
+      ]
     }
   ],
-  "bot_findings": [],
-  "ci": null,
+  "bot_findings": [
+    {
+      "comment_id": 9101,
+      "bot": "review-bot[bot]",
+      "path": "app/delivery/retry.py",
+      "line": 10,
+      "side": "RIGHT",
+      "severity": "minor",
+      "title": "`max_attempts=0` gives `range(-1)`: no retries and no error",
+      "body": "`max_attempts=0` gives `range(-1)`, so `with_retry` makes one call and never retries. Validate it.",
+      "html_url": "https://github.com/acme/hooks/pull/482#discussion_r9101",
+      "verdict": "agree",
+      "verdict_reason": "Nothing checks `max_attempts`; a 0 from settings would silently turn retries off."
+    }
+  ],
+  "ci": {
+    "fetched_at": "2026-10-21T12:02:00Z",
+    "head_sha": "dddddddddddddddddddddddddddddddddddddddd",
+    "annotations": [],
+    "checks": [
+      {
+        "name": "unit-tests",
+        "kind": "check",
+        "state": "fail",
+        "url": "https://github.com/acme/hooks/actions/runs/1",
+        "app": "GitHub Actions",
+        "summary": "1 failed, 41 passed",
+        "log_tail": "FAILED tests/api/test_webhooks.py::test_redeliver",
+        "explanation": {
+          "summary": "`test_redeliver` still expects `delivered` in the response.",
+          "cause": "This PR removed `delivered` from the redeliver response.",
+          "caused_by_pr": "yes",
+          "related": [
+            {
+              "path": "app/api/webhooks.py",
+              "line": 13
+            }
+          ],
+          "fix": "Update `test_redeliver` to check `status` and `attempts`, or keep `delivered` for now."
+        }
+      },
+      {
+        "name": "lint",
+        "kind": "check",
+        "state": "pass",
+        "url": null,
+        "app": "GitHub Actions",
+        "summary": null,
+        "log_tail": null,
+        "explanation": null
+      }
+    ]
+  },
   "rechecked": [],
   "warnings": [
     "Deep check couldn't finish \"Behavior & API surface\" (area chapter:c2, model opus, try 2, 10m 0s): timed out after 10m 0s."
-  ]
+  ],
+  "skipped_areas": [
+    {
+      "title": "Behavior & API surface",
+      "reason": "timed out after 10m 0s"
+    }
+  ],
+  "stops": [
+    {
+      "id": "stop-40b2cea321a74162d63d3a21ccae9bb188213d04",
+      "kind": "ci",
+      "path": null,
+      "side": null,
+      "line": null,
+      "start_line": null,
+      "question": "Is this failure caused by this PR? `unit-tests` fails.",
+      "scenario": [],
+      "claude_view": "`test_redeliver` still expects `delivered` in the response.\n\nThis PR removed `delivered` from the redeliver response.\n\nClaude thinks this PR caused it.",
+      "confidence": null,
+      "judge_score": null,
+      "second_look": null,
+      "severity": null,
+      "category": null,
+      "finding_id": null,
+      "bot_comment_id": null,
+      "check_name": "unit-tests",
+      "comment_body": "The `unit-tests` check fails. `test_redeliver` still expects `delivered` in the response.\n\nFix: Update `test_redeliver` to check `status` and `attempts`, or keep `delivered` for now.",
+      "chapter": null,
+      "order": 0,
+      "more": false,
+      "low_confidence": false,
+      "sources": [
+        "ci"
+      ],
+      "changed_lines": 0,
+      "dropped": false
+    },
+    {
+      "id": "stop-ce6c5f7f52ad877af0ce34dd6d6aa5251afcd3ad",
+      "kind": "finding",
+      "path": "app/models/webhook.py",
+      "side": "RIGHT",
+      "line": 8,
+      "start_line": null,
+      "question": "Is this a real problem? `RETRYING` is never set",
+      "scenario": [],
+      "claude_view": "`RETRYING` is never set. Drop it, or set it in `send()` between attempts.",
+      "confidence": 70,
+      "judge_score": null,
+      "second_look": "pending",
+      "severity": "nit",
+      "category": "correctness",
+      "finding_id": "s4",
+      "bot_comment_id": null,
+      "check_name": null,
+      "comment_body": "`RETRYING` is never set. Drop it, or set it in `send()` between attempts.",
+      "chapter": "c1",
+      "order": 1,
+      "more": true,
+      "low_confidence": false,
+      "sources": [
+        "annotate"
+      ],
+      "changed_lines": 11,
+      "dropped": false
+    },
+    {
+      "id": "stop-255f95e9de919327ff6699f7c57a9c96aeba66bf",
+      "kind": "risk_note",
+      "path": "app/models/webhook.py",
+      "side": "LEFT",
+      "line": 10,
+      "start_line": null,
+      "question": "Is this safe? Removing `delivered` breaks every reader of `delivery.delivered`, including `app/api/webhooks.py:13` and code outside this PR.",
+      "scenario": [],
+      "claude_view": null,
+      "confidence": null,
+      "judge_score": null,
+      "second_look": null,
+      "severity": null,
+      "category": null,
+      "finding_id": null,
+      "bot_comment_id": null,
+      "check_name": null,
+      "comment_body": "Removing `delivered` breaks every reader of `delivery.delivered`, including `app/api/webhooks.py:13` and code outside this PR.",
+      "chapter": "c1",
+      "order": 2,
+      "more": false,
+      "low_confidence": false,
+      "sources": [
+        "annotate"
+      ],
+      "changed_lines": 11,
+      "dropped": false
+    },
+    {
+      "id": "stop-94b06f3a959e4ace2ac862b85f6a4f934985969f",
+      "kind": "bot",
+      "path": "app/delivery/retry.py",
+      "side": "RIGHT",
+      "line": 10,
+      "start_line": null,
+      "question": "Do you agree with review-bot[bot]: `max_attempts=0` gives `range(-1)`: no retries and no error?",
+      "scenario": [],
+      "claude_view": "Nothing checks `max_attempts`; a 0 from settings would silently turn retries off.",
+      "confidence": null,
+      "judge_score": null,
+      "second_look": null,
+      "severity": "minor",
+      "category": null,
+      "finding_id": null,
+      "bot_comment_id": 9101,
+      "check_name": null,
+      "comment_body": "> review-bot[bot]: `max_attempts=0` gives `range(-1)`: no retries and no error",
+      "chapter": "c1",
+      "order": 3,
+      "more": false,
+      "low_confidence": false,
+      "sources": [
+        "bots"
+      ],
+      "changed_lines": 23,
+      "dropped": false
+    },
+    {
+      "id": "stop-5f7d909562a655e4f9de3b7364a6aee40a0bb9e0",
+      "kind": "finding",
+      "path": "app/delivery/retry.py",
+      "side": "RIGHT",
+      "line": 14,
+      "start_line": null,
+      "question": "Is this a real problem? `retry_on=(Exception,)` is very broad",
+      "scenario": [],
+      "claude_view": "`retry_on=(Exception,)` is very broad. Could callers opt in to specific exceptions instead?",
+      "confidence": 60,
+      "judge_score": null,
+      "second_look": "rule",
+      "severity": "minor",
+      "category": "correctness",
+      "finding_id": "s2",
+      "bot_comment_id": null,
+      "check_name": null,
+      "comment_body": "`retry_on=(Exception,)` is very broad. Could callers opt in to specific exceptions instead?",
+      "chapter": "c1",
+      "order": 4,
+      "more": false,
+      "low_confidence": false,
+      "sources": [
+        "blockers"
+      ],
+      "changed_lines": 23,
+      "dropped": false
+    },
+    {
+      "id": "stop-ea1466fcee3b28b1590977483fa3240322b8223b",
+      "kind": "risk_note",
+      "path": "app/delivery/retry.py",
+      "side": "RIGHT",
+      "line": 23,
+      "start_line": 19,
+      "question": "Is this safe? `retry_on` defaults to `Exception`, so programming errors (e.g. `KeyError`) are retried and slept on too.",
+      "scenario": [],
+      "claude_view": null,
+      "confidence": null,
+      "judge_score": null,
+      "second_look": null,
+      "severity": null,
+      "category": null,
+      "finding_id": null,
+      "bot_comment_id": null,
+      "check_name": null,
+      "comment_body": "`retry_on` defaults to `Exception`, so programming errors (e.g. `KeyError`) are retried and slept on too.",
+      "chapter": "c1",
+      "order": 5,
+      "more": false,
+      "low_confidence": false,
+      "sources": [
+        "annotate"
+      ],
+      "changed_lines": 23,
+      "dropped": false
+    },
+    {
+      "id": "stop-60035def66b9bf4c6c8c9df6f9d4eec9949acd1c",
+      "kind": "look_for",
+      "path": "app/config/settings.py",
+      "side": "RIGHT",
+      "line": 6,
+      "start_line": null,
+      "question": "Is a 30 s timeout safe inside the request path?",
+      "scenario": [],
+      "claude_view": null,
+      "confidence": null,
+      "judge_score": null,
+      "second_look": null,
+      "severity": null,
+      "category": null,
+      "finding_id": null,
+      "bot_comment_id": null,
+      "check_name": null,
+      "comment_body": null,
+      "chapter": "c1",
+      "order": 6,
+      "more": false,
+      "low_confidence": false,
+      "sources": [
+        "annotate"
+      ],
+      "changed_lines": 4,
+      "dropped": false
+    },
+    {
+      "id": "stop-2753f74bbe698186c2df35fe2414a46eb94282ef",
+      "kind": "look_for",
+      "path": "app/config/settings.py",
+      "side": "RIGHT",
+      "line": 6,
+      "start_line": null,
+      "question": "Do deploys set `WEBHOOK_MAX_ATTEMPTS`, or rely on the default?",
+      "scenario": [],
+      "claude_view": null,
+      "confidence": null,
+      "judge_score": null,
+      "second_look": null,
+      "severity": null,
+      "category": null,
+      "finding_id": null,
+      "bot_comment_id": null,
+      "check_name": null,
+      "comment_body": null,
+      "chapter": "c1",
+      "order": 7,
+      "more": true,
+      "low_confidence": false,
+      "sources": [
+        "annotate"
+      ],
+      "changed_lines": 4,
+      "dropped": false
+    },
+    {
+      "id": "stop-5555555555555555555555555555555555555555",
+      "kind": "finding",
+      "path": "app/delivery/sender.py",
+      "side": "RIGHT",
+      "line": 12,
+      "start_line": null,
+      "question": "Is this a real problem? `attempts` is counted before the POST",
+      "scenario": [],
+      "claude_view": null,
+      "confidence": null,
+      "judge_score": null,
+      "second_look": null,
+      "severity": null,
+      "category": null,
+      "finding_id": "s9",
+      "bot_comment_id": null,
+      "check_name": null,
+      "comment_body": null,
+      "chapter": "c2",
+      "order": 8,
+      "more": false,
+      "low_confidence": false,
+      "sources": [],
+      "changed_lines": 0,
+      "dropped": true
+    },
+    {
+      "id": "stop-49b805a3a5cd4a30964944701edfc35e85d067b8",
+      "kind": "finding",
+      "path": "app/delivery/sender.py",
+      "side": "RIGHT",
+      "line": 17,
+      "start_line": null,
+      "question": "Should a 4xx answer other than 429 stop the retries at once?",
+      "scenario": [
+        "A customer deletes their webhook endpoint, so it now answers `404`.",
+        "`send()` raises `HTTPStatusError`, and `with_retry` catches it.",
+        "The delivery is tried 5 more times over about 2 minutes; every try gets the same `404`.",
+        "The worker is busy the whole time, so other deliveries in the queue wait."
+      ],
+      "claude_view": "Retrying on `HTTPStatusError` also retries 4xx responses, which will never succeed. Retry only on 5xx and 429?\n\n**Risk note:** `HTTPStatusError` covers 4xx too. A 404 or 400 is retried 5 times even though it can never succeed.",
+      "confidence": 80,
+      "judge_score": 7,
+      "second_look": "judge",
+      "severity": "major",
+      "category": "correctness",
+      "finding_id": "s1",
+      "bot_comment_id": null,
+      "check_name": null,
+      "comment_body": "Retrying on `HTTPStatusError` also retries 4xx responses, which will never succeed. Retry only on 5xx and 429?",
+      "chapter": "c2",
+      "order": 9,
+      "more": false,
+      "low_confidence": false,
+      "sources": [
+        "annotate",
+        "deep-check"
+      ],
+      "changed_lines": 17,
+      "dropped": false
+    },
+    {
+      "id": "stop-56be811986943335b6b4b35c23f3748623ab2bba",
+      "kind": "finding",
+      "path": "app/api/webhooks.py",
+      "side": "RIGHT",
+      "line": 13,
+      "start_line": null,
+      "question": "Is this a real problem? This removes `delivered` from a public response",
+      "scenario": [],
+      "claude_view": "This removes `delivered` from a public response. Can we keep it for one release?\n\n```suggestion\n    return {\"id\": result.id, \"delivered\": result.status == DeliveryStatus.DELIVERED, \"status\": result.status, \"attempts\": result.attempts}\n```\n\n**Risk note:** Response shape changes: `delivered` is removed. External consumers relying on it will break.",
+      "confidence": 35,
+      "judge_score": null,
+      "second_look": "none",
+      "severity": "blocker",
+      "category": "correctness",
+      "finding_id": "s3",
+      "bot_comment_id": null,
+      "check_name": null,
+      "comment_body": "This removes `delivered` from a public response. Can we keep it for one release?\n\n```suggestion\n    return {\"id\": result.id, \"delivered\": result.status == DeliveryStatus.DELIVERED, \"status\": result.status, \"attempts\": result.attempts}\n```",
+      "chapter": "c2",
+      "order": 10,
+      "more": false,
+      "low_confidence": false,
+      "sources": [
+        "annotate"
+      ],
+      "changed_lines": 2,
+      "dropped": false
+    },
+    {
+      "id": "stop-1f40762a3731d000af6a4c05e667d64276b6b07a",
+      "kind": "finding",
+      "path": "tests/delivery/test_retry.py",
+      "side": "RIGHT",
+      "line": 1,
+      "start_line": null,
+      "question": "Is this a real problem? `pytest` is imported but not used",
+      "scenario": [],
+      "claude_view": "An unused import; lint may flag it.\n\nNothing in the file uses `pytest`.",
+      "confidence": 60,
+      "judge_score": 3,
+      "second_look": "judge",
+      "severity": "nit",
+      "category": "maintainability",
+      "finding_id": "s5",
+      "bot_comment_id": null,
+      "check_name": null,
+      "comment_body": "**`pytest` is imported but not used**\n\n*Could improve · maintainability*\n\nRemove the import.",
+      "chapter": "c2",
+      "order": 11,
+      "more": false,
+      "low_confidence": true,
+      "sources": [
+        "annotate"
+      ],
+      "changed_lines": 17,
+      "dropped": false
+    }
+  ],
+  "review_summary": {
+    "places": 8,
+    "more_places": 2,
+    "quiet_files": 2,
+    "minutes_left": 14
+  }
 }

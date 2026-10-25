@@ -34,3 +34,6 @@ ask_before_actions = true   # the chat is full Claude Code; commands, edits, rea
 
 [budget]
 warn_usd = 0   # a PR's total spend (analysis + chat + other checks) above this shows "over your $N limit" in the app; 0 = off. A warning only: nothing is stopped
+
+[review]
+max_stops = 12   # guided review lists at most this many places to check, riskiest first; answered ones always stay listed, and the rest show as "N more places"

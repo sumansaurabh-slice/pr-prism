@@ -53,12 +53,18 @@ class BudgetSettings:
 
 
 @dataclass
+class ReviewSettings:
+    max_stops: int = 12  # guided review lists at most this many places (answered ones always stay); the rest: "N more"
+
+
+@dataclass
 class Config:
     cache_dir: Path = Path("~/.cache/pr-prism").expanduser()
     models: Models = field(default_factory=Models)
     analysis: AnalysisSettings = field(default_factory=AnalysisSettings)
     chat: ChatSettings = field(default_factory=ChatSettings)
     budget: BudgetSettings = field(default_factory=BudgetSettings)
+    review: ReviewSettings = field(default_factory=ReviewSettings)
 
 
 def _flag(value: object) -> bool:
@@ -88,6 +94,9 @@ def load_config() -> Config:
     for key, value in raw.get("budget", {}).items():
         if hasattr(cfg.budget, key):
             setattr(cfg.budget, key, float(value))
+    for key, value in raw.get("review", {}).items():
+        if hasattr(cfg.review, key):
+            setattr(cfg.review, key, int(value))
     return cfg
 
 

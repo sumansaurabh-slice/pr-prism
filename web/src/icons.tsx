@@ -115,6 +115,13 @@ export const IconSearch = (p: IconProps) => (
   </Svg>
 );
 
+export const IconEye = (p: IconProps) => (
+  <Svg {...p}>
+    <path d="M1.25 8S3.75 3.25 8 3.25 14.75 8 14.75 8 12.25 12.75 8 12.75 1.25 8 1.25 8Z" />
+    <circle cx="8" cy="8" r="2" />
+  </Svg>
+);
+
 export const IconSparkle = (p: IconProps) => (
   <Svg {...p} fill>
     <path d="M8 1.25 9.5 6.5 14.75 8 9.5 9.5 8 14.75 6.5 9.5 1.25 8 6.5 6.5Z" />
@@ -130,6 +137,39 @@ export const IconX = (p: IconProps) => (
 export const IconLink = (p: IconProps) => (
   <Svg {...p}>
     <path d="M6.5 9.5a2.75 2.75 0 0 0 3.9 0l2.35-2.35a2.75 2.75 0 0 0-3.9-3.9l-.85.85M9.5 6.5a2.75 2.75 0 0 0-3.9 0L3.25 8.85a2.75 2.75 0 0 0 3.9 3.9l.85-.85" />
+  </Svg>
+);
+
+// ---- guided review: the Review tab and the answer icons (each always shown with its text)
+
+export const IconChecklist = (p: IconProps) => (
+  <Svg {...p}>
+    <path d="M2 3.5 3.25 4.75 5.5 2.5M2 8.5l1.25 1.25L5.5 7.5M8 3.75h6M8 8.75h6M8 13.25h6M2.5 13.25h2" />
+  </Svg>
+);
+
+/** Real problem. */
+export const IconAlert = (p: IconProps) => (
+  <Svg {...p}>
+    <circle cx="8" cy="8" r="6.25" />
+    <path d="M8 4.75v3.75" />
+    <circle cx="8" cy="11.1" r="0.6" fill="currentColor" stroke="none" />
+  </Svg>
+);
+
+/** Not sure. */
+export const IconQuestion = (p: IconProps) => (
+  <Svg {...p}>
+    <circle cx="8" cy="8" r="6.25" />
+    <path d="M6.1 6.2a1.95 1.95 0 0 1 3.8.55c0 1.3-1.9 1.6-1.9 2.75" />
+    <circle cx="8" cy="11.6" r="0.6" fill="currentColor" stroke="none" />
+  </Svg>
+);
+
+/** Open: not answered yet. */
+export const IconCircle = (p: IconProps) => (
+  <Svg {...p}>
+    <circle cx="8" cy="8" r="5.5" />
   </Svg>
 );
 

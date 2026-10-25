@@ -25,17 +25,22 @@ The SPA never handles the token. It uses relative URLs, and `fetch` sends the co
 | Method & path | Body | Returns |
 |---|---|---|
 | `GET /api/health` | | `{ok: true, pr: number}` |
-| `GET /api/analysis` | | `Analysis`, merged fresh on every call. While `status` is not `complete`/`failed`, poll every 3 s. |
-| `GET /api/state` | | `ReviewState`. After a restore (see `prr clean`) it has `restored: {archived_at, restored_at, archive, chats, pending_comments, need_replacing, viewed_marks, message}` until dismissed; `message` is the banner text from `prr/archive.py` `message()`, e.g. "Restored your work from Oct 23: 3 chats, 5 pending comments (2 need re-placing), 12 viewed marks." |
+| `GET /api/analysis` | | `Analysis`, merged fresh on every call. While `status` is not `complete`/`failed`, poll every 3 s. It includes `stops`, `review_summary` and `skipped_areas` for guided review (see below), with your answered stops pinned. If building the stops fails, `stops` is `[]` and `warnings` gets "Guided review unavailable: <error>"; the rest of the page still works. |
+| `GET /api/state` | | `ReviewState`, including `stop_verdicts`, `seen_hunks` and `review_body_draft` (see below). After a restore (see `prr clean`) it has `restored: {archived_at, restored_at, archive, chats, pending_comments, need_replacing, viewed_marks, message}` until dismissed; `message` is the banner text from `prr/archive.py` `message()`, e.g. "Restored your work from Oct 23: 3 chats, 5 pending comments (2 need re-placing), 12 viewed marks." |
 | `GET /api/cost` | | `CostSummary`: `{total_usd, unknown, running, breakdown: {analysis, chat, other}, runs, threads: {<thread id>: {total_usd, turns, unknown, long}}, warn_usd, over_budget, long_thread: {turns, usd}}`, all computed from the PR's `calls.jsonl`. The app shows "$12.40 spent" ("≥" when `unknown`, "so far" while `running`) and refreshes it on each analysis poll and after each chat answer. |
 | `GET /api/diff?path=` | | `{path, patch}`: the unified diff for one file, with `diff --git` header lines, ready for `parseDiff` |
 | `GET /api/file?path=&at=head\|base` | | `{path, at, content}`: full file text at the PR head or merge-base |
 | `PUT /api/reviewed` | `{path, reviewed: bool}` | `{reviewed: Record<path, blob>}` |
-| `POST /api/drafts` | `{path, side, line, start_line?, body, source, suggestion_id?}` | `Draft`. Comments outside a hunk are accepted with `anchored: false`. `origin_id` is the guided-review stop the draft came from (null until guided review sets it). |
+| `POST /api/drafts` | `{path, side, line, start_line?, body, source, suggestion_id?, origin_id?}` | `Draft`. Comments outside a hunk are accepted with `anchored: false`. `origin_id` is the guided-review stop the draft came from: "Real problem" sets it, and a look_for stop's comment editor passes it when it saves. It must be a stop id (400 otherwise). |
 | `PATCH /api/drafts/{id}` | `{body}` | `Draft`. 409 `{detail}` while a post is sending this draft ("…being posted…"), or while the draft is `outdated` (read-only until re-placed) |
 | `DELETE /api/drafts/{id}` | | `{ok: true}`, or 409 `{detail}` ("…being posted…") while a post is sending this draft. Deleting a draft with an `origin_id` takes back that "Real problem" answer in `labels.jsonl`; if that write fails the draft is still deleted and the reply adds `warning: "Couldn't save this answer for eval"` (shown as a toast). |
 | `POST /api/drafts/{id}/replace` | `{side, line, start_line?, start_side?}` | `Draft` on the new line, with `outdated: false` and `commit_id` = the analyzed head. Checked like `POST /api/drafts` (400 with `{detail}`); 404 for an unknown id; 409 while it is being posted. |
 | `POST /api/restored/dismiss` | | `{ok: true}`: removes `restored` (the one-time "Restored your work" summary) from the state |
+| `POST /api/stops/{id}/verdict` | `{verdict: "real"\|"not"\|"unsure", opened_at?}` | `{verdict: StopVerdict, draft: Draft\|null, dismissed: string\|null, review_body_draft: string\|null, warning?}`: your answer to a guided-review stop and what it did (see [Guided review](#guided-review)). 400 for a bad id or verdict, 404 for an id that was never a stop here, 409 "This stop changed; reload" for a stop that is gone. |
+| `DELETE /api/stops/{id}/verdict` | | `{ok, kept_draft: Draft\|null, restored: string\|null, review_body_draft: string\|null, warning?}`: Undo, or the first half of "Change answer". 409 "…being posted…" while its comment is being posted. |
+| `PUT /api/review-body-draft` | `{body}` | `{ok: true}`: saves the Submit dialog's review summary (autosaved as you type), which `GET /api/state` returns as `review_body_draft`. At most 65,536 characters (400 otherwise). Submitting a review doesn't clear it: the app saves `""` after a successful post. |
+| `POST /api/seen` | `{path, hunks: string[]}` | `{ok: true}`: hunks of `path` that were on screen for 3 s (hunk ids below). Adds to `state.seen_hunks[path]`, keeping the newest 5,000. 404 for a file outside the PR; 400 for a bad hunk id or more than 5,000 ids. |
+| `GET /api/coverage` | | `Coverage`: what you haven't checked yet (see [Coverage before submit](#coverage-before-submit)). |
 | `POST /api/suggestions/{id}/dismiss` | | `{dismissed_suggestions}` |
 | `POST /api/suggestions/{id}/restore` | | `{dismissed_suggestions}` |
 | `GET /api/github/threads` | | `{comments: ExistingComment[]}`: review comments already on the PR |
@@ -91,3 +96,68 @@ The card reads top to bottom:
 4. **the buttons**: Deny, then `always_text` (only when `always`; its tooltip is `always_title`), then Allow ("Post" on post cards). Guard cards (`guard: true`, posting or sending out after outside data) offer only Deny and Post / "Allow once".
 
 Each button's accessible name includes the action ("Allow: Read ~/code/billing/config.py"). No key approves a card, and global shortcuts ignore keys pressed on one. A new card is read out by an `aria-live="polite"` region and never takes focus from the message box.
+
+## Guided review
+
+`Analysis.stops` is a short list of places that need a human, each with one question, in reading order (chapter, then file, then line; failing CI checks first). Built by `prr/stops.py` `build_stops`.
+
+**`Stop`:** `{id, kind, path, side, line, start_line, question, scenario, claude_view, confidence, judge_score, second_look, severity, category, finding_id, bot_comment_id, check_name, comment_body, chapter, order, more, low_confidence, sources, changed_lines, dropped}`.
+- `id` is `stop-<40 hex>`. It stays the same across re-runs: it hashes the kind, path, side, anchor text and a source key (a finding's category and anchor, never its title; a note's text; a look_for item's text; the check name; the other tool's comment id).
+- `kind` and its question:
+
+  | `kind` | From | `question` | "Real problem" (`real`) does |
+  |---|---|---|---|
+  | `finding` | a finding (shown, or waiting for its second look) | its deep-check `question`, else "Is this a real problem? <title>" | makes a pending comment from `comment_body` (the finding's), or reuses the one made before (`origin_id` = stop id) or the finding's own "Add to my review" comment |
+  | `risk_note` | a risk note in a high- or medium-risk file | "Is this safe? <note>" | makes a pending comment at the note's lines, pre-filled with the note |
+  | `look_for` | a "things to check" item of a high-risk file with no other stop | the item | nothing yet: the app opens a comment editor at `line` (the file's first changed line) and saves with `origin_id`; a cancelled editor answers `unsure` |
+  | `ci` | a failing check this PR caused or may have caused, or that Claude couldn't explain | "Is this failure caused by this PR? `<name>` fails." | adds `comment_body` (the failure and Claude's fix) to `review_body_draft`, once |
+  | `bot` | another review tool's finding Claude agrees with | "Do you agree with <bot>: <title>?" | makes a pending comment at its line, pre-filled with a one-line quote |
+- `claude_view` is what Claude thinks (Markdown), shown muted after the code. Notes or other tools' comments within 3 lines of a stop (same file and side) are folded into it: a finding takes in a note or another tool's comment, another tool's comment takes in a note, and two notes become one. Two findings never merge, and an answered stop is never folded in.
+- At most `[review] max_stops` (12) stops are listed, by priority: blocker and major findings; deep-check findings; CI; other tools' findings; minor findings; risk notes in high-risk files; risk notes in medium-risk files; look_for items; nit findings. The rest have `more: true` ("N more places"). A stop you answered stays listed whatever the cap.
+- `low_confidence: true`: a finding the second look hides. It is outside the cap and the counts; show it only with the Review view's "Include low-confidence findings" switch.
+- `dropped: true`: a stop you answered that is gone, or that the second look now hides ("earlier answer", "Second look dropped this"). It is rebuilt from the answer's `anchor`; answering it again gets 409, Undo works.
+- `changed_lines` is the number of added and deleted lines in the stop's hunk (a look_for item: the whole file's).
+
+**`review_summary`:** `{places, more_places, quiet_files, minutes_left}` for the plan box ("4 places need a human · 61 files have nothing flagged · ~25 min").
+- `places`: listed stops (`more`, `low_confidence` and `dropped` all false).
+- `more_places`: stops with `more`.
+- `quiet_files`: files with no stop at all (a file whose stops are all past the cap is not quiet).
+- `minutes_left`: the sum, over listed stops not answered yet, of 2 + min(5, floor(`changed_lines` / 20)).
+
+A stop whose finding was dismissed elsewhere counts as done. `skipped_areas: [{title, reason}]` lists the deep-check areas this run didn't check (failed, stopped, skipped for time, or a high-risk area over the area limit); "Nothing risky found" should show only when the analysis is complete and it is empty.
+
+**Answers** (`state.stop_verdicts[stopId]`): `{verdict, at, head_sha, anchor, opened_at, answered_at}`. `anchor` is where the stop was: `{kind, path, side, line, start_line, question, finding_id, bot_comment_id, check_name}`.
+- `POST /api/stops/{id}/verdict`:
+  - `real` does what the table says. It is idempotent: a second `real` returns the same draft and adds nothing. A comment made from a text with a link outside `github.com/<owner>/<repo>` has `outside_link: true`.
+  - `not` also dismisses the finding (`dismissed` = its id).
+  - `unsure` only records.
+  - Answering again with the same verdict changes nothing. A different verdict replaces the answer but doesn't undo the old one's effects: for "Change answer", call `DELETE` first.
+  - Each answer is an eval label (`labels.jsonl`, keyed by the stop id): `real` → problem, `not` → not-problem; `unsure` makes none and retracts an earlier `real`/`not`. If that write fails the answer is still saved and the reply adds `warning: "Couldn't save this answer for eval"`.
+- `DELETE /api/stops/{id}/verdict` removes the answer and what it did:
+  - after `not`: the finding is restored (`restored` = its id);
+  - after `real` on a CI stop: its text is taken out of `review_body_draft` (if still there unchanged), and the new text is returned;
+  - after `real` on other stops: the comment is deleted if its body is unchanged from `comment_body`; an edited one is kept and returned as `kept_draft`, so the app can ask "Keep your comment?" (delete it with `DELETE /api/drafts/{id}`);
+  - a `retracted` label is appended for an earlier `real`/`not`.
+  - An id with no answer returns `{ok: true, …null}`.
+
+## Coverage before submit
+
+`GET /api/coverage` returns `prr/coverage.py` `coverage(analysis, state)`:
+
+```
+{not_checked: [{stop_id, path, line, question, kind}], unsure: [{stop_id, path, line, question}],
+ skipped_areas: [{title, reason}], high_risk_unseen: {hunks, files, by_file: {[path]: {seen, total}}},
+ low_confidence, running, count}
+```
+
+- **Not checked** (one definition for the Overview, the Review progress and the Submit warning): stops with no answer, including "more places", and not dismissed elsewhere; listed stops first, then "more", each in reading order. Any answer counts as checked; `unsure` also lists the "Not sure" ones.
+- `count` = `not_checked.length + skipped_areas.length`: the warning number ("2 places not checked yet").
+- `high_risk_unseen`: hunks of high-risk files that were never on screen for 3 s and hold no answered stop ("High-risk code not seen: 12 hunks in 3 files"). `by_file` covers every high-risk file with hunks and feeds "2 of 5 risky hunks seen" on file rows. Not part of `count`.
+- `low_confidence`: unanswered findings the second look hides ("Low confidence, not checked: N"). Not part of `count`.
+- `running`: the analysis is still running ("Analysis still running; this list may grow").
+
+**Hunk ids** (`POST /api/seen`, `state.seen_hunks`): computed by the app from each hunk's header `@@ -a,b +c,d @@`:
+- `"RIGHT:<c>-<c+d-1>"` for a hunk with new lines (the new line range);
+- `"LEFT:<a>-<a+b-1>"` for a hunk that only deletes lines (`d` = 0).
+
+`hunkId()` in `web/src/api.ts` and `hunk_id()` in `prr/coverage.py` implement the same rule. Ids from an older head stay in `seen_hunks` until they age out (newest 5,000 per file).

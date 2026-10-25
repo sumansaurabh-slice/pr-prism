@@ -17,6 +17,9 @@ export type ReviewEvent = "COMMENT" | "APPROVE" | "REQUEST_CHANGES" | "PENDING";
 // carried = from the previous round, keeping its verdict; pending = waiting for its second look;
 // none = the second look failed ("not second-checked"; never hidden)
 export type SecondLook = "judge" | "rule" | "carried" | "pending" | "none";
+// guided review: where a stop came from, and the reviewer's answer (Real problem / Not a problem / Not sure)
+export type StopKind = "finding" | "risk_note" | "look_for" | "ci" | "bot";
+export type Verdict = "real" | "not" | "unsure";
 
 export interface Commit { sha: string; headline: string; author: string }
 
@@ -114,6 +117,45 @@ export interface Progress {
   deepcheck_cost_usd: number;   // the deep check's share of cost_usd
 }
 
+/**
+ * Guided review: one place that needs a human, with one question (prr/stops.py). `id` is stable across re-runs.
+ * Listed stops are those with `more`, `low_confidence` and `dropped` all false; `more` = past the cap ("N more
+ * places"); `low_confidence` = a finding the second look hides (listed only with "Include low-confidence findings");
+ * `dropped` = an answer whose stop is gone or now hidden ("earlier answer", "Second look dropped this").
+ */
+export interface Stop {
+  id: string;                   // "stop-<40 hex>"; the route is #/review/<id>
+  kind: StopKind;
+  path: string | null; side: Side | null; line: number | null; start_line: number | null;  // path null for CI
+  question: string;             // the heading (may hold Markdown inline code)
+  scenario: string[];           // "How it could happen" (deep-check findings)
+  claude_view: string | null;   // Claude's view, shown muted after the code (Markdown)
+  confidence: number | null;    // "% sure"
+  judge_score: number | null;   // "second look 7/10"
+  second_look: SecondLook | null;
+  severity: string | null; category: string | null;
+  finding_id: string | null; bot_comment_id: number | null; check_name: string | null;
+  comment_body: string | null;  // what "Real problem" pre-fills (CI: what it adds to the review summary)
+  chapter: string | null;       // the reading-order chapter's id (Analysis.chapters[].id)
+  order: number;                // position in reading order (chapter, file, line; CI first)
+  more: boolean;
+  low_confidence: boolean;
+  sources: string[];            // annotate, blockers, deep-check, ci, bots
+  changed_lines: number;        // changed lines in the stop's hunk (the whole file for a look_for item)
+  dropped: boolean;
+}
+
+/** The Overview's plan box: "N places need a human · M files have nothing flagged · ~K min". */
+export interface ReviewSummary {
+  places: number;               // listed stops
+  more_places: number;          // stops past the cap
+  quiet_files: number;          // files with no stop at all
+  minutes_left: number;         // Σ over unanswered listed stops of 2 + min(5, floor(changed_lines / 20))
+}
+
+/** A deep-check area this run didn't check (failed, stopped or skipped); it counts as not checked. */
+export interface SkippedArea { title: string; reason: string }
+
 export interface Analysis {
   schema_version: number; status: ProgressStatus; focus: string | null; pr: PRInfo;
   summary: Summary | null; files: FileEntry[]; chapters: Chapter[]; flows: Flow[];
@@ -121,6 +163,9 @@ export interface Analysis {
   findings: Finding[]; bot_findings: BotFinding[]; ci: CIInfo | null; rechecked: Rechecked[];
   progress: Progress; repair_log: string[];
   warnings: string[];           // what didn't run fully, e.g. a deep-check area that failed or was skipped
+  skipped_areas: SkippedArea[]; // "Nothing risky found" only when the analysis is complete and this is empty
+  stops: Stop[];                // guided review, in reading order, pinned by your answers
+  review_summary: ReviewSummary;
 }
 
 // ---- state.json ----
@@ -130,6 +175,7 @@ export interface Draft {
   start_side: Side | null;   // set only when the range starts on the other side (a deleted line → RIGHT)
   source: "user" | "suggestion" | "chat"; suggestion_id: string | null;
   origin_id?: string | null;   // the guided-review stop it was made from; its eval label follows the comment
+  outside_link?: boolean;      // made by "Real problem" from a text with a link outside github.com/<owner>/<repo>
   anchored: boolean;   // false → cannot be an inline comment; goes into the review body as a permalink
   outdated: boolean;   // from an older commit (restored after `prr clean`): read-only and never sent until re-placed
   commit_id: string; created_at: string;
@@ -147,7 +193,10 @@ export interface RestoredSummary {
   message: string;     // the banner text, from prr/archive.py message(); added by GET /api/state
 }
 
-export interface ContextChip { path: string; side: Side; start: number; end: number; text: string; label: string }
+export interface ContextChip {
+  path: string; side: Side; start: number; end: number; text: string; label: string;
+  stop_id?: string;  // a guided-review stop ("Ask in chat"): clicking the chip goes back to #/review/<id>
+}
 export interface ToolEvent { name: string; summary: string }
 
 export interface ChatMessage {
@@ -172,6 +221,22 @@ export interface SubmittedReview {
   source?: "chat"; // posted by the chat instead of the Submit review button
 }
 
+/** Where a stop was when it was answered, so an answer whose stop disappears still lists as an earlier answer. */
+export interface StopAnchor {
+  kind: StopKind; path: string | null; side: Side | null; line: number | null; start_line: number | null;
+  question: string; finding_id: string | null; bot_comment_id: number | null; check_name: string | null;
+}
+
+/** state.stop_verdicts[stopId] */
+export interface StopVerdict {
+  verdict: Verdict;
+  at: string;                  // when it was saved (server time)
+  head_sha: string;            // the analyzed head it was answered on
+  anchor: StopAnchor;
+  opened_at: string | null;    // when the stop was opened (sent by the app)
+  answered_at: string;
+}
+
 export interface ReviewState {
   reviewed: Record<string, string>;      // path → head_blob at the time it was marked reviewed
   dismissed_suggestions: string[];
@@ -179,6 +244,41 @@ export interface ReviewState {
   threads: ChatThread[];
   submitted: SubmittedReview[];
   restored?: RestoredSummary;
+  stop_verdicts: Record<string, StopVerdict>;
+  seen_hunks: Record<string, string[]>;  // path → hunk ids on screen for 3 s (hunkId in api.ts)
+  review_body_draft: string;             // the Submit dialog's review summary, autosaved
+}
+
+/** POST /api/stops/{id}/verdict */
+export interface VerdictResult {
+  verdict: StopVerdict;
+  draft: Draft | null;               // real on a finding, risk note or other tool's stop: the comment to edit
+  dismissed: string | null;          // not on a finding: the finding id it dismissed
+  review_body_draft: string | null;  // real on a CI stop: the review summary with the fix added
+  warning?: string;                  // "Couldn't save this answer for eval" (the answer itself is saved)
+}
+
+/** DELETE /api/stops/{id}/verdict (Undo, or the first half of "Change answer") */
+export interface UndoResult {
+  ok: boolean;
+  kept_draft: Draft | null;          // an edited "Real problem" comment that was kept: ask "Keep your comment?"
+  restored: string | null;           // the finding a "Not a problem" answer had dismissed, now back
+  review_body_draft: string | null;  // a CI "Real problem" taken out of the review summary: the new text
+  warning?: string;
+}
+
+/** GET /api/coverage: what hasn't been checked yet (prr/coverage.py). */
+export interface Coverage {
+  not_checked: { stop_id: string; path: string | null; line: number | null; question: string; kind: StopKind }[];
+  unsure: { stop_id: string; path: string | null; line: number | null; question: string }[];
+  skipped_areas: SkippedArea[];
+  high_risk_unseen: {
+    hunks: number; files: number;
+    by_file: Record<string, { seen: number; total: number }>;  // "2 of 5 risky hunks seen"
+  };
+  low_confidence: number;            // "Low confidence, not checked: N"
+  running: boolean;                  // "Analysis still running; this list may grow"
+  count: number;                     // the warning: not_checked.length + skipped_areas.length
 }
 
 export interface ExistingComment {

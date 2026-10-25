@@ -1,8 +1,8 @@
 import { create } from "zustand";
 import { api, type NewDraft } from "./api";
 import type {
-  Analysis, ChatThread, ContextChip, CostSummary, Draft, DraftPlace, ExistingComment, FileEntry, ReviewState, Side,
-  Trust,
+  Analysis, ChatThread, ContextChip, CostSummary, Draft, DraftPlace, ExistingComment, FileEntry, ReviewState, Side, Stop,
+  Trust, UndoResult, Verdict, VerdictResult,
 } from "./types";
 
 /** Picked lines. `start` is on `startSide`, `end` is on `side`; they differ only for a range that starts on a
@@ -18,7 +18,10 @@ export interface Selection {
   keys: string[]; // diff change keys in the range, in diff order (empty in full-file view)
 }
 
-export interface Toast { id: number; kind: "info" | "error" | "success"; text: string }
+/** A toast's buttons, e.g. "Undo (u)" on "Marked not a problem". */
+export interface ToastAction { label: string; run: () => void }
+export interface Toast { id: number; kind: "info" | "error" | "success"; text: string; actions?: ToastAction[] }
+export interface ToastOptions { actions?: ToastAction[]; ms?: number }
 
 /** The "Hide …" checkboxes in the file list. They also decide which files j/k and "Mark viewed & next" visit. */
 export interface ViewPrefs { hideViewed: boolean; hideTests: boolean; hideDocs: boolean }
@@ -50,6 +53,15 @@ interface Store {
   composer: { path: string; startSide: Side; side: Side; start: number; end: number; body: string } | null;
   toasts: Toast[];
   prefs: ViewPrefs;
+
+  // ---- guided review (the Review view)
+  includeLow: boolean;           // "Include low-confidence findings" (the Review view's own switch)
+  freshStops: string[];          // stops that arrived on a later poll ("1 new stop earlier in the list"), until opened
+  lastAnswer: { stopId: string; verdict: Verdict; toastId: number } | null; // what u undoes while its toast shows
+  // Change answer or Undo kept an edited "Real problem" comment: "Keep your comment?" on that stop. `then` is the
+  // new answer to save once you choose (Change answer), null for Undo.
+  keepAsk: { stopId: string; draft: Draft; then: Verdict | null } | null;
+  chatRail: boolean;             // the Review view below 1280 px: the chat is a rail that opens as an overlay
 
   loadAnalysis: () => Promise<void>;
   loadState: () => Promise<void>;
@@ -84,12 +96,23 @@ interface Store {
   openComposer: (c: { path: string; startSide: Side; side: Side; start: number; end: number; body?: string }) => void;
   setComposerBody: (body: string) => void;
   closeComposer: () => void;
-  toast: (kind: Toast["kind"], text: string) => void;
+  toast: (kind: Toast["kind"], text: string, opts?: ToastOptions) => number;
   dropToast: (id: number) => void;
   setPref: (key: keyof ViewPrefs, value: boolean) => void;
+
+  setIncludeLow: (on: boolean) => void;
+  seenStop: (id: string) => void;
+  answerStop: (stop: Stop, verdict: Verdict, openedAt?: string) => Promise<VerdictResult | null>;
+  undoAnswer: (stopId: string) => Promise<UndoResult | null>;
+  setLastAnswer: (a: Store["lastAnswer"]) => void;
+  setKeepAsk: (k: Store["keepAsk"]) => void;
+  setChatRail: (on: boolean) => void;
 }
 
-const emptyState: ReviewState = { reviewed: {}, dismissed_suggestions: [], drafts: [], threads: [], submitted: [] };
+const emptyState: ReviewState = {
+  reviewed: {}, dismissed_suggestions: [], drafts: [], threads: [], submitted: [], stop_verdicts: {}, seen_hunks: {},
+  review_body_draft: "",
+};
 
 function readLS(key: string): string | null {
   try {
@@ -137,12 +160,22 @@ export const useStore = create<Store>((set, get) => ({
     hideTests: readLS(PREF_KEYS.hideTests) === "1",
     hideDocs: readLS(PREF_KEYS.hideDocs) === "1",
   },
+  includeLow: readLS("prr.includeLow") === "1",
+  freshStops: [],
+  lastAnswer: null,
+  keepAsk: null,
+  chatRail: false,
 
   loadAnalysis: async () => {
     void get().loadCost(); // the header total moves with the analysis ("so far" while it runs)
     try {
       const analysis = await api.analysis();
-      set({ analysis, analysisError: null });
+      set((s) => {
+        // Stops that land on a later poll (the analysis is still running) are "new" until you open them.
+        const known = s.analysis ? new Set((s.analysis.stops ?? []).map((x) => x.id)) : null;
+        const added = known ? (analysis.stops ?? []).filter((x) => !known.has(x.id)).map((x) => x.id) : [];
+        return { analysis, analysisError: null, freshStops: added.length ? [...s.freshStops, ...added] : s.freshStops };
+      });
     } catch (e) {
       set({ analysisError: (e as Error).message });
     }
@@ -299,7 +332,7 @@ export const useStore = create<Store>((set, get) => ({
   dismissAutoChip: (path) => set((s) => ({ dismissedAutoChip: { ...s.dismissedAutoChip, [path]: true } })),
   askClaude: (c, prompt) => {
     if (c) get().addChip(c);
-    writeLS("prr.chatOpen", "1");
+    if (!get().chatRail) writeLS("prr.chatOpen", "1");
     set((s) => ({
       chatOpen: true,
       chatFocusTick: s.chatFocusTick + 1,
@@ -308,7 +341,7 @@ export const useStore = create<Store>((set, get) => ({
   },
   setChatInput: (chatInput) => set({ chatInput }),
   setChatOpen: (open) => {
-    writeLS("prr.chatOpen", open ? "1" : "0");
+    if (!get().chatRail) writeLS("prr.chatOpen", open ? "1" : "0"); // the rail's overlay doesn't change your choice
     set({ chatOpen: open });
   },
   setActiveThread: (id) => {
@@ -325,12 +358,86 @@ export const useStore = create<Store>((set, get) => ({
     writeLS(PREF_KEYS[key], value ? "1" : "0");
     set((s) => ({ prefs: { ...s.prefs, [key]: value } }));
   },
-  toast: (kind, text) => {
+  toast: (kind, text, opts) => {
     const id = ++toastSeq;
-    set((s) => ({ toasts: [...s.toasts.slice(-3), { id, kind, text }] }));
-    window.setTimeout(() => get().dropToast(id), kind === "error" ? 7000 : 3500);
+    set((s) => ({ toasts: [...s.toasts.slice(-3), { id, kind, text, actions: opts?.actions }] }));
+    window.setTimeout(() => get().dropToast(id), opts?.ms ?? (kind === "error" ? 7000 : 3500));
+    return id;
   },
-  dropToast: (id) => set((s) => ({ toasts: s.toasts.filter((t) => t.id !== id) })),
+  dropToast: (id) =>
+    set((s) => ({
+      toasts: s.toasts.filter((t) => t.id !== id),
+      lastAnswer: s.lastAnswer?.toastId === id ? null : s.lastAnswer,
+    })),
+
+  setIncludeLow: (on) => {
+    writeLS("prr.includeLow", on ? "1" : "0");
+    set({ includeLow: on });
+  },
+  seenStop: (id) => set((s) => (s.freshStops.includes(id) ? { freshStops: s.freshStops.filter((x) => x !== id) } : s)),
+  // POST /api/stops/{id}/verdict, then what it did: the "Real problem" comment, the dismissed finding, or the CI
+  // text added to the review summary.
+  answerStop: async (stop, verdict, openedAt) => {
+    try {
+      const res = await api.answerStop(stop.id, verdict, openedAt);
+      set((s) => {
+        const st = s.state;
+        const d = res.draft;
+        const drafts = !d
+          ? st.drafts
+          : st.drafts.some((x) => x.id === d.id)
+            ? st.drafts.map((x) => (x.id === d.id ? d : x))
+            : [...st.drafts, d];
+        const dismissed =
+          res.dismissed && !st.dismissed_suggestions.includes(res.dismissed)
+            ? [...st.dismissed_suggestions, res.dismissed]
+            : st.dismissed_suggestions;
+        return {
+          state: {
+            ...st, drafts, dismissed_suggestions: dismissed,
+            stop_verdicts: { ...st.stop_verdicts, [stop.id]: res.verdict },
+            review_body_draft: res.review_body_draft ?? st.review_body_draft,
+          },
+        };
+      });
+      if (res.warning) get().toast("error", res.warning);
+      return res;
+    } catch (e) {
+      get().toast("error", `Could not save your answer: ${(e as Error).message}`);
+      return null;
+    }
+  },
+  // DELETE /api/stops/{id}/verdict: Undo, or the first half of "Change answer". An unedited "Real problem" comment
+  // goes with the answer; an edited one is kept (kept_draft), so the view can ask "Keep your comment?".
+  undoAnswer: async (stopId) => {
+    try {
+      const res = await api.undoAnswer(stopId);
+      set((s) => {
+        const st = s.state;
+        return {
+          state: {
+            ...st,
+            stop_verdicts: withoutKey(st.stop_verdicts, stopId),
+            drafts: st.drafts.filter((d) => d.origin_id !== stopId || d.id === res.kept_draft?.id),
+            dismissed_suggestions: res.restored
+              ? st.dismissed_suggestions.filter((x) => x !== res.restored)
+              : st.dismissed_suggestions,
+            review_body_draft: res.review_body_draft ?? st.review_body_draft,
+          },
+          lastAnswer: s.lastAnswer?.stopId === stopId ? null : s.lastAnswer,
+        };
+      });
+      if (res.warning) get().toast("error", res.warning);
+      return res;
+    } catch (e) {
+      get().toast("error", `Could not take back your answer: ${(e as Error).message}`);
+      return null;
+    }
+  },
+  setLastAnswer: (lastAnswer) => set({ lastAnswer }),
+  setKeepAsk: (keepAsk) => set({ keepAsk }),
+  // Entering the rail hides the chat without touching your saved choice; leaving it brings that choice back.
+  setChatRail: (on) => set({ chatRail: on, chatOpen: on ? false : readLS("prr.chatOpen") !== "0" }),
 }));
 
 // ---------- derived helpers ----------
