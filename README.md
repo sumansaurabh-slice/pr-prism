@@ -323,7 +323,7 @@ Every comment you post, from Submit review or from the chat, is saved as a label
 prr labels import 101 102 103                  # your comments already on past PRs (only reads GitHub)
 prr labels import 104 105 --split holdout      # PRs kept out of prompt work; the Wave 2 gate is measured on them
 prr labels import 106 --reviewers all          # every human reviewer's comments, not only yours (never bots)
-prr labels import 102 103 --split holdout2 --written-by human   # reviewed before PR Prism existed: all yours
+prr labels import 107 108 --split holdout2 --written-by human   # reviewed before PR Prism existed: all yours
 prr labels tag                                 # fill in who wrote the labels saved before that was recorded
 prr labels tag --prs 101 --written-by human    # re-tag a PR's labels: you wrote these comments
 prr labels tag --prs 105 --split holdout2      # move a PR to another split
