@@ -100,8 +100,10 @@ def _record(pr_dir: Path, html_url: str, event: str, comments: int, review_id: A
     """Note the post in state.json. For a review with pending comments, also remove the ones it claimed (only those).
     `posted` is each comment that went to GitHub ({path, line, side, body, gh_comment_id, origin_id?}): each becomes a
     problem label for `prr eval`. Returns a warning when those labels couldn't be saved."""
-    pr = read_json(pr_dir / "context.json")["pr"]
-    rows = labels.for_posted(pr, posted or [], commit_id=pr["head_sha"], author=author)
+    def rows() -> list[dict]:
+        pr = read_json(pr_dir / "context.json")["pr"]
+        return labels.for_posted(pr, posted or [], commit_id=pr["head_sha"], author=author)
+
     return finish_post(StateStore(pr_dir), post_id, {"review_id": review_id, "html_url": html_url, "event": event,
                                                      "comments": comments, "at": now_iso(), "source": "chat"}, rows)
 

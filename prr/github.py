@@ -97,10 +97,10 @@ def review_comments(owner: str, repo: str, number: int, review_id: Any) -> list[
     try:
         out = gh("api", "--paginate", f"repos/{owner}/{repo}/pulls/{number}/reviews/{review_id}/comments?per_page=100",
                  "--jq", ".[] | {id, path, line, body}", timeout=30)
-    except (CommandError, subprocess.TimeoutExpired) as e:
+        return [json.loads(line) for line in out.splitlines() if line.strip()]
+    except Exception as e:  # noqa: BLE001 — the review is already posted; never fail it over this
         print(f"[prr] could not read the posted review's comment ids: {str(e)[:200]}", file=sys.stderr, flush=True)
         return []
-    return [json.loads(line) for line in out.splitlines() if line.strip()]
 
 
 def existing_comments(owner: str, repo: str, number: int) -> list[dict]:

@@ -11,10 +11,11 @@ is never sent twice and never lost:
 
 from __future__ import annotations
 
+import sys
 import time
 import uuid
 from datetime import datetime, timezone
-from typing import NamedTuple
+from typing import Callable, NamedTuple
 
 from . import anchors, labels
 from .state import StateStore
@@ -107,16 +108,24 @@ def claim_for_post(store: StateStore, post_id: str, now: float | None = None) ->
     return store.update(apply)
 
 
-def finish_post(store: StateStore, post_id: str, record: dict, posted: list[dict] | None = None) -> str | None:
-    """GitHub has the review: remove the drafts this post claimed (and only those) and record the review. Then save
-    `posted` (labels.for_posted: a problem label per posted comment). Returns labels.SAVE_FAILED when those couldn't
-    be saved; the post itself still counts."""
+def finish_post(store: StateStore, post_id: str, record: dict,
+                labels_for: Callable[[], list[dict]] | None = None) -> str | None:
+    """GitHub has the review: remove the drafts this post claimed (and only those) and record the review. Only then
+    make and save the eval labels (`labels_for`: a problem label per posted comment), so nothing that goes wrong there
+    can leave posted drafts behind to be sent again. Returns labels.SAVE_FAILED when the labels couldn't be saved."""
     def apply(s: dict) -> None:
         s["drafts"] = [d for d in s["drafts"] if not (post_id and d.get("posting") == post_id)]
         s["submitted"].append(record)
 
     store.update(apply)
-    return labels.save(store.path.parent, posted or [])
+    if labels_for is None:
+        return None
+    try:
+        rows = labels_for()
+    except Exception as e:  # noqa: BLE001 — the review is on GitHub; only its eval labels are lost
+        print(f"[prr] could not make the eval labels for this post: {type(e).__name__}: {e}", file=sys.stderr, flush=True)
+        return labels.SAVE_FAILED
+    return labels.save(store.path.parent, rows)
 
 
 def release(store: StateStore, post_id: str) -> None:

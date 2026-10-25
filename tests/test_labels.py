@@ -265,6 +265,21 @@ def test_a_failed_label_write_keeps_the_post_and_warns(pr, monkeypatch):
     assert not err and "Posted the comment" in text and "Couldn't save this answer for eval" in text
 
 
+def test_a_bug_in_making_labels_never_leaves_posted_drafts_behind(pr, monkeypatch):
+    def broken(*a, **k):
+        raise KeyError("head_sha")
+
+    monkeypatch.setattr(labels, "for_posted", broken)
+    add(pr, 22, "first")
+    r = pr.client.post("/api/review/submit", json={"body": "Notes", "event": "COMMENT"}, headers=ORIGIN)
+    assert r.status_code == 200 and r.json()["warning"] == "Couldn't save this answer for eval"
+    add(pr, 5, "second")
+    text, err = chat_tools.call_tool(pr.dir, pr.cfg, "post_review", {"body": "More", "include_pending": True})
+    assert not err and "Couldn't save this answer for eval" in text
+    s = StateStore(pr.dir).load()
+    assert s["drafts"] == [] and len(s["submitted"]) == 2                   # nothing can be posted twice
+
+
 def test_chat_posts_pass_each_comment_to_record(pr, monkeypatch):
     seen = []
     real = chat_tools._record

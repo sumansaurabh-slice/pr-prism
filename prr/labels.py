@@ -170,11 +170,12 @@ def posted_drafts(drafts: list[dict], gh_comments: list[dict]) -> list[dict]:
     for d in drafts:
         if d.get("outdated"):
             continue
-        hit = next((c for c in left if c.get("path") == d["path"] and (c.get("body") or "").strip() == d["body"].strip()
-                    and c.get("line") in (d["line"], None)), None) if d.get("anchored") else None
+        body = (d.get("body") or "").strip()
+        hit = next((c for c in left if c.get("path") == d.get("path") and (c.get("body") or "").strip() == body
+                    and c.get("line") in (d.get("line"), None)), None) if d.get("anchored") else None
         if hit:
             left.remove(hit)
-        out.append({"path": d["path"], "line": d["line"], "side": d["side"], "body": d["body"],
+        out.append({"path": d.get("path"), "line": d.get("line"), "side": d.get("side"), "body": d.get("body") or "",
                     "origin_id": d.get("origin_id"), "gh_comment_id": hit.get("id") if hit else None})
     return out
 

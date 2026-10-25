@@ -435,9 +435,11 @@ def create_app(pr_dir: Path, cfg: Config) -> FastAPI:
         gone = store.update(apply)
         out: dict[str, Any] = {"ok": True}
         # A comment made from a "Real problem" answer, deleted before it was posted: that answer is taken back.
-        warning = labels.save(pr_dir, labels.retracted(ctx()["pr"], gone)) if gone and gone.get("origin_id") else None
-        if warning:
-            out["warning"] = warning
+        pr = (read_json(pr_dir / "context.json") or {}).get("pr")
+        if gone and gone.get("origin_id") and pr:
+            warning = labels.save(pr_dir, labels.retracted(pr, gone))
+            if warning:
+                out["warning"] = warning
         return out
 
     @app.post("/api/suggestions/{sid}/dismiss")
@@ -544,11 +546,13 @@ def create_app(pr_dir: Path, cfg: Config) -> FastAPI:
             raise
         record = {"review_id": res.get("id"), "html_url": res.get("html_url", ""), "event": body.event,
                   "comments": len(payload["comments"]), "at": now_iso()}
-        # Each posted comment is a problem label for `prr eval`; saving them never fails the post (a warning toast).
-        ids = github.review_comments(pr["owner"], pr["repo"], pr["number"], res.get("id")) if claim.drafts else []
-        posted = labels.for_posted(pr, labels.posted_drafts(claim.drafts, ids), commit_id=payload["commit_id"],
-                                   author=info["viewer"])
-        warning = finish_post(store, post_id, record, posted)
+        def posted() -> list[dict]:
+            """Each posted comment is a problem label for `prr eval` (made after the drafts are safely removed)."""
+            ids = github.review_comments(pr["owner"], pr["repo"], pr["number"], res.get("id")) if claim.drafts else []
+            return labels.for_posted(pr, labels.posted_drafts(claim.drafts, ids), commit_id=payload["commit_id"],
+                                     author=info["viewer"])
+
+        warning = finish_post(store, post_id, record, posted)  # a label that can't be saved only adds a warning
         cache.pop("threads_at", None)
         out = {"ok": True, "review_id": record["review_id"], "html_url": record["html_url"]}
         if warning:
