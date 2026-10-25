@@ -1,3 +1,5 @@
+import json
+import os
 from pathlib import Path
 
 from prr.claude import StreamTranslator, base_argv
@@ -55,15 +57,49 @@ def test_nested_session_env_is_scrubbed(monkeypatch):
     assert env["CLAUDE_CODE_USE_BEDROCK"] == "1" and env["ANTHROPIC_API_KEY"] == "k"
 
 
-def test_chat_is_full_claude_code_with_approvals():
+def _allowed(argv: list[str]) -> list[str]:
+    i = argv.index("--allowedTools") + 1
+    out = []
+    while i < len(argv) and not argv[i].startswith("--"):
+        out.append(argv[i])
+        i += 1
+    return out
+
+
+def test_chat_is_full_claude_code_with_approvals(tmp_path):
     from prr.claude import APPROVAL_TOOL, chat_argv
-    argv = chat_argv("opus", mcp_config="{}", system_file=Path("/s.md"), add_dirs=[Path("/pr")], ask_first=True,
-                     session_id="sid", resume=False)
+    wt, pr = tmp_path / "pr" / "worktree", tmp_path / "pr"
+    wt.mkdir(parents=True)
+    argv = chat_argv("opus", mcp_config="{}", system_file=Path("/s.md"), add_dirs=[pr], ask_first=True,
+                     session_id="sid", resume=False, roots=[wt, pr], pr_dir=pr)
     assert "--tools" not in argv and "--strict-mcp-config" not in argv     # every tool and the reviewer's connectors
     assert argv[argv.index("--setting-sources") + 1] == "user"             # never the PR's own settings or hooks
     assert argv[argv.index("--permission-prompt-tool") + 1] == APPROVAL_TOOL
     assert argv[argv.index("--permission-mode") + 1] == "default"
-    assert "Bash(git blame *)" in argv and "Bash(rm *)" not in argv
+    allowed = _allowed(argv)
+    # no bare read tools and no shell rules: reads are scoped to the roots, and the hook decides every command
+    assert not {"Read", "Grep", "Glob", "LS", "NotebookRead"} & set(allowed)
+    assert not any(a.startswith("Bash") for a in allowed) and "mcp__prprism" not in allowed
+    assert "mcp__codegraph" not in allowed and "mcp__prprism__post_comment" not in allowed
+    real = os.path.realpath(wt)
+    assert f"Read(/{real}/**)" in allowed and "mcp__prprism__add_pending_comment" in allowed
+    assert f"Read(/{os.path.realpath(pr)}/server.json)" in argv[argv.index("--disallowedTools") + 1:]
+
+    hooks = json.loads(argv[argv.index("--settings") + 1])["hooks"]["PreToolUse"]
+    assert [h["matcher"] for h in hooks] == ["Bash|Read|Grep|Glob|LS|NotebookRead", "mcp__.*", "WebFetch|WebSearch"]
+    command = hooks[0]["hooks"][0]["command"]
+    assert " -P -m prr.policy" in command and "--bypass" not in command and hooks[0]["hooks"][0]["timeout"] == 960
+
     no_ask = chat_argv("opus", mcp_config="{}", system_file=Path("/s.md"), add_dirs=[], ask_first=False,
-                       session_id="sid", resume=True)
+                       session_id="sid", resume=True, roots=[wt], pr_dir=pr)
     assert no_ask[no_ask.index("--permission-mode") + 1] == "bypassPermissions" and "--resume" in no_ask
+    denied = no_ask[no_ask.index("--disallowedTools") + 1:]
+    assert f"Read(/{os.path.realpath(os.path.expanduser('~/.ssh'))}/**)" in denied
+    assert "--bypass" in json.loads(no_ask[no_ask.index("--settings") + 1])["hooks"]["PreToolUse"][0]["hooks"][0]["command"]
+
+
+def test_analysis_reads_are_scoped_to_the_worktree(tmp_path):
+    argv = base_argv("opus", ["Read", "Grep", "Glob"], cwd=tmp_path)
+    allowed = _allowed(argv)
+    assert allowed == [f"Read(/{os.path.realpath(tmp_path)}/**)"]
+    assert argv[argv.index("--tools") + 1] == "Read,Grep,Glob"

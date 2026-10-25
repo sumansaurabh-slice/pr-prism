@@ -35,6 +35,18 @@ def _resolve(args: argparse.Namespace, cfg: Config) -> tuple[PRRef, Path, Path]:
 # --------------------------------------------------------------------------------------
 
 
+def broad_allow_rules(settings: Path) -> list[str]:
+    """Allow rules in your Claude Code settings that skip the question for every web fetch, every command, or all of
+    an MCP server's tools. The chat loads your settings (`--setting-sources user`), so in a normal chat turn these
+    run without a card; in a turn that already touched outside data, PR Prism asks anyway."""
+    data = read_json(settings)
+    perms = data.get("permissions") if isinstance(data, dict) else None
+    rules = perms.get("allow") if isinstance(perms, dict) else None
+    return [r for r in (rules if isinstance(rules, list) else []) if isinstance(r, str) and (
+        r in ("*", "WebFetch", "WebFetch(*)", "WebFetch(domain:*)", "WebSearch", "Bash", "Bash(*)", "Bash(:*)")
+        or (r.startswith("mcp__") and (r.count("__") == 1 or r.endswith("__*"))))]
+
+
 def cmd_doctor(args: argparse.Namespace, cfg: Config) -> int:
     ok = True
 
@@ -62,6 +74,14 @@ def cmd_doctor(args: argparse.Namespace, cfg: Config) -> int:
     installed = link.exists() and link.resolve() == SKILL_DIR.resolve()
     check("skill installed at ~/.claude/skills/pr-prism", installed, "run ./install.sh", required=False)
     check("codegraph (optional, for blast radius)", shutil.which("codegraph") is not None, "optional", required=False)
+    broad = broad_allow_rules(Path("~/.claude/settings.json").expanduser())
+    check("Claude Code settings ask before web fetches, any command and MCP tools", not broad,
+          f"~/.claude/settings.json allows {', '.join(broad)} without asking, so the chat does too, except in a turn "
+          "that read outside data", required=False)
+    check("the chat asks before actions", cfg.chat.ask_before_actions,
+          "ask_before_actions = false: commands, edits and Jira/Slack actions run without asking. Reads outside the PR "
+          "and commands that print the environment are still blocked, but a program the chat runs can read or send "
+          "anything", required=False)
     try:
         root = repo_root(args.repo or ".")
         check(f"inside git repo {root}", True)

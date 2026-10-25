@@ -79,15 +79,27 @@ def test_mcp_server_speaks_the_protocol(tmp_path, tricky_repo):
 
 
 def test_approval_rules(tmp_path, tricky_repo, monkeypatch):
-    make_pr_dir(tmp_path, tricky_repo["diff"])
-    # read-only connector lookups run without asking; actions that change things are asked about
-    assert chat_tools.auto_allowed("mcp__claude_ai_Atlassian__getJiraIssue")
-    assert chat_tools.auto_allowed("mcp__claude_ai_Slack__slack_read_channel")
-    assert not chat_tools.auto_allowed("mcp__claude_ai_Atlassian__createJiraIssue")
-    assert not chat_tools.auto_allowed("mcp__claude_ai_Slack__slack_send_message")
-    assert not chat_tools.auto_allowed("Bash")
-    assert chat_tools.approval_keys("Bash", {"command": "npm test -- --watch"}) == ["Bash:npm test"]
-    assert chat_tools.auto_allowed("Bash", {"command": "awk 'NR==5{print}' a.py | head"})
+    from prr import policy
+    from prr.util import write_json
+
+    ctx = make_pr_dir(tmp_path, tricky_repo["diff"])
+    (tmp_path / "wt").mkdir()
+    ctx["worktree"], ctx["pr"]["author_association"] = str(tmp_path / "wt"), "MEMBER"
+    write_json(tmp_path / "context.json", ctx)
+    monkeypatch.setenv("PATH", "/usr/bin:/bin")
+
+    def decide(tool: str, inp: dict | None = None, **kw) -> str:
+        return policy.decide(tool, inp or {}, pr_dir=tmp_path, thread_id="t1", **kw)["decision"]
+
+    # read-only connector lookups run without asking (on a teammate's PR); actions that change things are asked about
+    assert decide("mcp__claude_ai_Atlassian__getJiraIssue") == "allow"
+    assert decide("mcp__claude_ai_Slack__slack_read_channel") == "allow"
+    assert decide("mcp__claude_ai_Atlassian__createJiraIssue") == "ask"
+    assert decide("mcp__claude_ai_Slack__slack_send_message") == "ask"
+    assert decide("Bash", {"command": "ls"}) == "ask"                      # the approval tool can't see the shell's folder
+    assert decide("Bash", {"command": "awk 'NR==5{print}' a.py | head"}, cwd=ctx["worktree"]) == "allow"   # the hook can
+    assert policy.approval_keys("Bash", {"command": "npm test -- --watch"}, sc=policy.scope(tmp_path),
+                                cwd=ctx["worktree"]) == ["Bash:npm test"]
 
     lookup = {"tool_name": "mcp__claude_ai_Atlassian__getJiraIssue", "input": {"issueIdOrKey": "ATI-1"}}
     assert chat_tools.approve(tmp_path, lookup)["behavior"] == "allow"
