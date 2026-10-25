@@ -1,11 +1,14 @@
-import { Fragment, useState } from "react";
+import { useState } from "react";
 import { api } from "../api";
 import { IconCheck, IconX } from "../icons";
 import { Markdown } from "../markdown";
 import { fileHref } from "../router";
 import { splitPath, useStore } from "../store";
 import type { CICheck, Finding, Severity } from "../types";
-import { DeepCheckDetail, DeepCheckLabel, SecondLookLabel, SeverityLabel } from "./FileView";
+import { findingAnswer, type FindingAnswer } from "../answers";
+import {
+  AnswerLabel, commentHref, DeepCheckDetail, DeepCheckLabel, openComment, SecondLookLabel, SeverityLabel,
+} from "./FileView";
 import { RefList } from "./Overview";
 
 const RANK: Record<Severity, number> = { blocker: 0, major: 1, minor: 2, nit: 3 };
@@ -38,15 +41,59 @@ export function BlockerBanner() {
   );
 }
 
+/** One problem: the title's link covers the whole row, and "Open your comment" sits above it. */
+function FindingRow({ f, answer, muted }: { f: Finding; answer: FindingAnswer; muted: boolean }) {
+  const mine = answer.draft;
+  return (
+    <>
+      <div className={`Box-row finding-row${muted ? " answered-not" : ""}`}>
+        <SeverityLabel severity={f.severity} />
+        <a className="finding-row-title finding-row-link" href={fileHref(f.path, f.line, f.side)}>
+          {f.title}
+        </a>
+        <DeepCheckLabel f={f} small />
+        <SecondLookLabel look={f.second_look} small />
+        {f.status === "still-open" && <span className="Label Label--attention Label--small">still open</span>}
+        <AnswerLabel answer={answer} small />
+        {mine && (
+          <a
+            className="finding-row-answer"
+            href={commentHref(mine)}
+            onClick={(e) => {
+              e.preventDefault();
+              openComment(mine);
+            }}
+          >
+            Open your comment
+          </a>
+        )}
+        <span className="color-muted small mono">{where(f.path, f.line)}</span>
+      </div>
+      {(f.question || (f.scenario ?? []).length > 0) && (
+        <div className="finding-row-deep">
+          <DeepCheckDetail f={f} collapsed />
+        </div>
+      )}
+    </>
+  );
+}
+
 export function FindingsBox() {
   const findings = useStore((s) => s.analysis?.findings ?? []);
   const dismissed = useStore((s) => s.state.dismissed_suggestions);
+  const stops = useStore((s) => s.analysis?.stops);
+  const verdicts = useStore((s) => s.state.stop_verdicts);
+  const drafts = useStore((s) => s.state.drafts);
   const [showAll, setShowAll] = useState(false);
-  const shown = findings.filter((f) => !f.low_confidence && !dismissed.includes(f.id));
+  // Your answer shows on each row (design D20). "Not a problem" dismissed the finding; it stays listed, last.
+  const answers = new Map(findings.map((f) => [f.id, findingAnswer(f, stops ?? [], verdicts ?? {}, drafts)]));
+  const saidNot = (f: Finding) => answers.get(f.id)?.verdict === "not" && !answers.get(f.id)?.draft;
+  const shown = findings.filter((f) => !f.low_confidence && (!dismissed.includes(f.id) || saidNot(f)));
   const low = findings.length - shown.length;
   if (!findings.length) return null;
-  const counts = (["blocker", "major", "minor", "nit"] as Severity[]).map((s) => [s, shown.filter((f) => f.severity === s).length] as const);
-  const list = [...shown].sort((a, b) => RANK[a.severity] - RANK[b.severity]);
+  const open = shown.filter((f) => !saidNot(f));
+  const counts = (["blocker", "major", "minor", "nit"] as Severity[]).map((s) => [s, open.filter((f) => f.severity === s).length] as const);
+  const list = [...shown].sort((a, b) => Number(saidNot(a)) - Number(saidNot(b)) || RANK[a.severity] - RANK[b.severity]);
   const visible = showAll ? list : list.slice(0, 8);
   return (
     <section className="Box">
@@ -59,22 +106,8 @@ export function FindingsBox() {
         ))}
         {low > 0 && <span className="color-muted small">+{low} low confidence (hidden)</span>}
       </div>
-      {visible.map((f: Finding) => (
-        <Fragment key={f.id}>
-          <a className="Box-row finding-row" href={fileHref(f.path, f.line, f.side)}>
-            <SeverityLabel severity={f.severity} />
-            <span className="finding-row-title">{f.title}</span>
-            <DeepCheckLabel f={f} small />
-            <SecondLookLabel look={f.second_look} small />
-            {f.status === "still-open" && <span className="Label Label--attention Label--small">still open</span>}
-            <span className="color-muted small mono">{where(f.path, f.line)}</span>
-          </a>
-          {(f.question || (f.scenario ?? []).length > 0) && (
-            <div className="finding-row-deep">
-              <DeepCheckDetail f={f} collapsed />
-            </div>
-          )}
-        </Fragment>
+      {visible.map((f) => (
+        <FindingRow key={f.id} f={f} answer={answers.get(f.id)!} muted={saidNot(f)} />
       ))}
       {list.length > 8 && (
         <div className="Box-row">

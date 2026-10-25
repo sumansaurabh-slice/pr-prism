@@ -115,6 +115,13 @@ export const IconSearch = (p: IconProps) => (
   </Svg>
 );
 
+export const IconEye = (p: IconProps) => (
+  <Svg {...p}>
+    <path d="M1.25 8S3.75 3.25 8 3.25 14.75 8 14.75 8 12.25 12.75 8 12.75 1.25 8 1.25 8Z" />
+    <circle cx="8" cy="8" r="2" />
+  </Svg>
+);
+
 export const IconSparkle = (p: IconProps) => (
   <Svg {...p} fill>
     <path d="M8 1.25 9.5 6.5 14.75 8 9.5 9.5 8 14.75 6.5 9.5 1.25 8 6.5 6.5Z" />

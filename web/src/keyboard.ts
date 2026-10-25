@@ -1,4 +1,5 @@
 import { useEffect } from "react";
+import { goNextUnchecked } from "./coverage";
 import { goFile, navigate, parseHash } from "./router";
 import { fileByPath, fileMap, hiddenByPrefs, reviewOrder, useStore } from "./store";
 
@@ -108,6 +109,9 @@ export function useGlobalKeys() {
         case "o":
           navigate("#/overview");
           break;
+        case "]":
+          void goNextUnchecked();
+          break;
         case "?":
           st.setHelpOpen(!st.helpOpen);
           break;
@@ -130,6 +134,7 @@ export const SHORTCUTS: [string, string][] = [
   ["/", "Go to the chat box"],
   ["r", "Mark this file as viewed, or not viewed"],
   ["o", "Go to the overview"],
+  ["]", "Next place you haven't checked yet"],
   ["?", "Show or hide this list"],
   ["Esc", "Close a window, stop moving a comment, or clear the picked lines"],
 ];
