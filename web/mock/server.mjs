@@ -73,6 +73,14 @@ async function api(req, res, url) {
   if (p === "/api/health") return send(res, 200, { ok: true, pr: analysis.pr.number });
   if (p === "/api/analysis") return send(res, 200, analysis);
   if (p === "/api/state") return send(res, 200, state);
+  if (p === "/api/trust") return send(res, 200, { author: analysis.pr.author, association: "CONTRIBUTOR", trusted: false, state: "outside" });
+  if (p === "/api/cost") {
+    return send(res, 200, {
+      total_usd: 3.42, unknown: false, running: false, breakdown: { analysis: 2.1, chat: 1.2, other: 0.12 }, runs: [],
+      threads: Object.fromEntries(state.threads.map((t) => [t.id, { total_usd: 1.2, turns: 2, unknown: false, long: false }])),
+      warn_usd: 0, over_budget: false, long_thread: { turns: 15, usd: 3 },
+    });
+  }
   if (p === "/api/diff") {
     const path = url.searchParams.get("path");
     return patches.has(path) ? send(res, 200, { path, patch: patches.get(path) }) : send(res, 404, { detail: "not in diff" });
