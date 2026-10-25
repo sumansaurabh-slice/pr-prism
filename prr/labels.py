@@ -52,6 +52,7 @@ SOURCES = ("verdict", "posted", "imported")
 SPLITS = ("train", "holdout")
 NO_EXACT_LINE = ("ci", "look_for")  # verdicts on these stops are kept, but they have no exact line to find
 SAVE_FAILED = "Couldn't save this answer for eval"
+SHA = re.compile(r"[0-9a-f]{40}")
 _PR_FOLDER = re.compile(r"pr-\d+")
 
 
@@ -299,6 +300,8 @@ def merge_base_for(root: Path, remote: str, ref: PRRef, meta: dict, commit: str)
     None when nothing works."""
     if meta.get("state") != "OPEN":
         return meta.get("baseRefOid")
+    if not SHA.fullmatch(commit or ""):  # only a full commit id ever reaches git's command line
+        return None
     base_ref = f"refs/pr-prism/{ref.number}/base"
     try:
         if not _have_commit(root, commit):

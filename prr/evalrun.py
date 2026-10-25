@@ -20,7 +20,6 @@ be replayed. Nothing here writes to GitHub: the only GitHub calls are `gh pr vie
 
 from __future__ import annotations
 
-import re
 import shutil
 import sys
 import time
@@ -46,7 +45,6 @@ VIEWS: dict[str, dict[str, Any]] = {
 }
 GATE_ON, GATE_OFF = "on", "off"  # the gate isolates the deep check: both sides use today's rule (no floor)
 GATE = {"gain_points": 25.0, "on_recall": 0.40, "added_usd": 6.0, "unlabelled": 10.0}
-_SHA = re.compile(r"[0-9a-f]{40}")
 _METRICS = ("recall", "found", "countable", "hidden", "not_problem", "unlabelled_per_pr", "judge_hidden_rate",
             "cost_usd_per_pr", "deepcheck_usd_per_pr", "time_s_per_pr")
 
@@ -138,11 +136,11 @@ def _meta_at(meta: dict, sha: str) -> dict:
 def prepare_pair(pair: dict, meta: dict, *, root: Path, remote: str, ref: PRRef, folder: Path) -> dict:
     """Fetch and pin the pair's commit and its merge base, then build its inputs with fetch.prepare. Raises Skip."""
     sha = pair["commit_id"]
-    if not _SHA.fullmatch(sha or ""):
+    if not labels.SHA.fullmatch(sha or ""):
         raise Skip(f"{sha!r} is not a full commit id")
     _pin(root, remote, sha)
     base = pair.get("merge_base_sha") or labels.merge_base_for(root, remote, ref, meta, sha)
-    if not base or not _SHA.fullmatch(base):
+    if not base or not labels.SHA.fullmatch(base):
         raise Skip("couldn't work out where the PR's diff starts (its merge base)")
     if not git_ok("cat-file", "-e", f"{base}^{{commit}}", cwd=root):
         try:
