@@ -135,3 +135,17 @@ index 8888888..9999999 100644
  description = "The next generation HTTP client."
  optional = false
  python-versions = ">=3.8"
+diff --git a/app/config/settings.py b/app/config/settings.py
+index bbbbbbb..ccccccc 100644
+--- a/app/config/settings.py
++++ b/app/config/settings.py
+@@ -3,6 +3,8 @@ from pydantic_settings import BaseSettings
+ class Settings(BaseSettings):
+     database_url: str
+     redis_url: str
+-    webhook_timeout_s: float = 10.0
++    webhook_timeout_s: float = 30.0
++    webhook_max_attempts: int = 5
++    webhook_backoff_cap_s: float = 30.0
+     log_level: str = "INFO"
+ 

@@ -1,6 +1,6 @@
 import type {
-  Analysis, ApprovalDecision, CIInfo, ChatEvent, ChatThread, ContextChip, CostSummary, Draft, DraftPlace, ExistingComment,
-  ReviewEvent, ReviewPreview, ReviewState, Side, Trust,
+  Analysis, ApprovalDecision, CIInfo, ChatEvent, ChatThread, ContextChip, CostSummary, Coverage, Draft, DraftPlace,
+  ExistingComment, HunkInfo, ReviewEvent, ReviewPreview, ReviewState, Side, Trust, UndoResult, Verdict, VerdictResult,
 } from "./types";
 
 export class ApiError extends Error {
@@ -41,6 +41,16 @@ export interface SubmitResult extends Done { review_id: number; html_url: string
 export interface NewDraft {
   path: string; side: Side; line: number; start_line?: number | null; start_side?: Side | null; body: string;
   source: Draft["source"]; suggestion_id?: string | null;
+  origin_id?: string | null;  // a look_for stop's editor sets the stop id when it saves
+}
+
+/**
+ * The id POST /api/seen takes for a hunk, from its header "@@ -a,b +c,d @@": "RIGHT:<c>-<c+d-1>", or
+ * "LEFT:<a>-<a+b-1>" for a hunk that only deletes lines (d = 0). prr/coverage.py hunk_id() is the same rule.
+ */
+export function hunkId(h: Pick<HunkInfo, "old_start" | "old_lines" | "new_start" | "new_lines">): string {
+  if (h.new_lines > 0) return `RIGHT:${h.new_start}-${h.new_start + h.new_lines - 1}`;
+  return `LEFT:${h.old_start}-${h.old_start + Math.max(h.old_lines, 1) - 1}`;
 }
 
 export const api = {
@@ -76,6 +86,13 @@ export const api = {
     request<{ ok: boolean }>("POST", `/api/chat/approvals/${q(id)}`, { decision }),
   refreshCI: () => request<CIInfo>("POST", "/api/ci/refresh"),
   getTrust: () => request<Trust>("GET", "/api/trust"),
+  // guided review and coverage before submit
+  answerStop: (id: string, verdict: Verdict, openedAt?: string) =>
+    request<VerdictResult>("POST", `/api/stops/${q(id)}/verdict`, { verdict, opened_at: openedAt ?? null }),
+  undoAnswer: (id: string) => request<UndoResult>("DELETE", `/api/stops/${q(id)}/verdict`),
+  saveReviewBody: (body: string) => request<{ ok: boolean }>("PUT", "/api/review-body-draft", { body }),
+  markSeen: (path: string, hunks: string[]) => request<{ ok: boolean }>("POST", "/api/seen", { path, hunks }),
+  coverage: () => request<Coverage>("GET", "/api/coverage"),
 };
 
 /** POST a chat message and stream SSE `data: <json>` frames back to `onEvent`. */
