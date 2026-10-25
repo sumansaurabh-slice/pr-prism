@@ -13,6 +13,7 @@ import graphql from "refractor/graphql";
 import hcl from "refractor/hcl";
 import docker from "refractor/docker";
 import { api, hunkId } from "../api";
+import { answerLabel, findingAnswer, useFindingAnswer, type FindingAnswer } from "../answers";
 import { isSeen, markHunkSeen, SEEN_AFTER_MS } from "../coverage";
 import { registerFileNav, stepFile } from "../keyboard";
 import { InlineText, Markdown } from "../markdown";
@@ -245,16 +246,56 @@ function NoteCard({ note, index }: { note: Note; index: number }) {
   );
 }
 
+/** Your answer to a finding as a label (design D20). */
+export function AnswerLabel({ answer, small }: { answer: FindingAnswer; small?: boolean }) {
+  const l = answerLabel(answer);
+  if (!l) return null;
+  return (
+    <span className={`Label Label--${l.variant}${small ? " Label--small" : ""}`} title={l.title}>
+      {l.text}
+    </span>
+  );
+}
+
+/** Where a pending comment shows: on its diff line, or (not on a diff line) in its file's floating notes. */
+export function commentHref(d: Draft): string {
+  return d.anchored && !d.outdated ? fileHref(d.path, d.start_side ? d.line : (d.start_line ?? d.line), d.side) : fileHref(d.path);
+}
+
+/** "Open your comment": show your pending comment for a finding. In its file it is on the page; elsewhere, go there. */
+export function openComment(d: Draft) {
+  const card = document.querySelector(`.file-view [data-draft="${d.id}"]`);
+  if (card) {
+    flash(card);
+    card.querySelector<HTMLButtonElement>(".rc-actions .btn:not(.btn-invisible)")?.focus({ preventScroll: true });
+  } else if (d.outdated) {
+    useStore.getState().setDraftsOpen(true);
+  } else {
+    navigate(commentHref(d));
+  }
+}
+
 function FindingCard({ f }: { f: Finding }) {
   const addDraft = useStore((st) => st.addDraft);
   const dismiss = useStore((st) => st.dismissSuggestion);
+  const answer = useFindingAnswer(f);
+  const mine = answer.draft; // already in your review: open that comment instead of adding a second one
   const [editing, setEditing] = useState(false);
   const [body, setBody] = useState(f.comment_body);
-  const accept = (text: string) =>
-    void addDraft({
-      path: f.path, side: f.side, line: f.line, start_line: f.start_line, body: text,
-      source: "suggestion", suggestion_id: f.id,
-    });
+  const adding = useRef(false);
+  const accept = async (text: string) => {
+    if (adding.current) return; // a second click while the first is saving
+    adding.current = true;
+    try {
+      const d = await addDraft({
+        path: f.path, side: f.side, line: f.line, start_line: f.start_line, body: text,
+        source: "suggestion", suggestion_id: f.id,
+      });
+      if (d) setEditing(false);
+    } finally {
+      adding.current = false;
+    }
+  };
   const by = f.source.startsWith("rule:") ? "Blocker check" : "Claude";
   return (
     <div className={`review-comment finding sev-${f.severity}${f.low_confidence ? " low" : ""}`} data-finding={f.id}>
@@ -270,11 +311,15 @@ function FindingCard({ f }: { f: Finding }) {
             Also flagged by {b.replace(/\[bot\]$/, "")}
           </span>
         ))}
+        <AnswerLabel answer={answer} />
         <span className="rc-meta">{lineText(f.side, f.start_line ?? f.line, f.line)}</span>
       </div>
       <div className="rc-body">
-        {editing ? (
+        {editing && !mine ? (
           <textarea className="input comment-input" value={body} autoFocus onChange={(e) => setBody(e.target.value)} rows={8} />
+        ) : mine ? (
+          // In your review: your comment (on this line) says the rest.
+          <div className="finding-title">{f.title}</div>
         ) : (
           <>
             <div className="finding-title">{f.title}</div>
@@ -317,12 +362,16 @@ function FindingCard({ f }: { f: Finding }) {
         )}
       </div>
       <div className="rc-actions">
-        {editing ? (
+        {mine ? (
+          <button className="btn btn-sm" onClick={() => openComment(mine)}>
+            Open your comment
+          </button>
+        ) : editing ? (
           <>
             <button className="btn btn-sm" onClick={() => setEditing(false)}>
               Cancel
             </button>
-            <button className="btn btn-primary btn-sm" disabled={!body.trim()} onClick={() => accept(body)}>
+            <button className="btn btn-primary btn-sm" disabled={!body.trim()} onClick={() => void accept(body)}>
               Add to my review
             </button>
           </>
@@ -334,7 +383,7 @@ function FindingCard({ f }: { f: Finding }) {
             <button className="btn btn-sm" onClick={() => setEditing(true)}>
               Edit first
             </button>
-            <button className="btn btn-primary btn-sm" onClick={() => accept(f.comment_body)}>
+            <button className="btn btn-primary btn-sm" onClick={() => void accept(f.comment_body)}>
               Add to my review
             </button>
           </>
@@ -917,15 +966,12 @@ export function FileView({ path, line, side, full }: { path: string; line: numbe
       .sort((a, b) => (index.keyOrder.get(a.key ?? "") ?? 1e9) - (index.keyOrder.get(b.key ?? "") ?? 1e9));
   }, [notes, index]);
 
-  const acceptedIds = useMemo(
-    () => new Set(state.drafts.map((d) => d.suggestion_id).filter(Boolean) as string[]),
-    [state.drafts],
-  );
+  // A finding already in your review keeps its card, labelled "In your review" with "Open your comment" (design D20).
   const dismissed = useMemo(() => new Set(state.dismissed_suggestions), [state.dismissed_suggestions]);
   const [showLow, setShowLow] = useState(false);
   const fileSuggestions = useMemo(
-    () => (analysis?.findings ?? []).filter((s) => s.path === path && !acceptedIds.has(s.id)),
-    [analysis, path, acceptedIds],
+    () => (analysis?.findings ?? []).filter((s) => s.path === path),
+    [analysis, path],
   );
   const lowFindings = useMemo(
     () => fileSuggestions.filter((s) => s.low_confidence && !dismissed.has(s.id)),
@@ -1047,6 +1093,10 @@ export function FileView({ path, line, side, full }: { path: string; line: numbe
                 <div key={s.id} className="dismissed-item">
                   <SeverityLabel severity={s.severity} />
                   <span className="dismissed-text">{s.title}</span>
+                  <AnswerLabel
+                    answer={findingAnswer(s, analysis?.stops ?? [], state.stop_verdicts ?? {}, state.drafts)}
+                    small
+                  />
                   <button className="btn btn-sm" onClick={() => void restoreSuggestion(s.id)}>
                     Show again
                   </button>
