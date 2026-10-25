@@ -200,7 +200,9 @@ def _compose_prompt(text: str, chips: list[ChipIn]) -> str:
     blocks = []
     for c in chips:
         if c.start <= 0:
-            blocks.append(f"Context: the whole file `{c.path}` (read it as needed).")
+            note = c.text.strip()[:MAX_CONTEXT_CHARS]  # e.g. an Understand step: its diff and explanation
+            blocks.append(f"Context: the whole file `{c.path}` (read it as needed)."
+                          + (f" What the reviewer was looking at:\n```\n{note}\n```" if note else ""))
             continue
         where = "PR head (new code)" if c.side == "RIGHT" else "merge-base (old code)"
         rng = f"{c.start}-{c.end}" if c.end and c.end != c.start else f"{c.start}"

@@ -514,3 +514,12 @@ def test_the_prompt_follows_the_plain_language_rules():
     for rule in ("Explain, don't judge", "Never invent a reason", "why_missing", "why_source", "at most 3 sentences",
                  "at most 4"):
         assert rule in raw, rule
+
+
+def test_ask_about_a_step_without_lines_still_gives_the_chat_its_explanation():
+    """An Understand step's chip with no line range (a grouped step) keeps its diff and explanation in the prompt."""
+    from prr.server import ChipIn, _compose_prompt
+    step = ChipIn(path="src/a.py", text="Before: it read the cache.\nWhat changes: it reads the database.")
+    prompt = _compose_prompt("why?", [step])
+    assert "the whole file `src/a.py`" in prompt and "it reads the database" in prompt and prompt.endswith("why?")
+    assert _compose_prompt("x", [ChipIn(path="src/b.py")]) == "Context: the whole file `src/b.py` (read it as needed).\n\nx"
