@@ -22,7 +22,7 @@ import uuid
 from pathlib import Path
 from typing import Any, Callable
 
-from . import anchors, github, labels, policy
+from . import anchors, github, labels, policy, since
 from .config import Config
 from .drafts import claim_for_post, finish_post, new_draft, release
 from .gitgh import viewer_login
@@ -96,18 +96,24 @@ def tool_list(cfg: Config) -> list[dict]:
 
 
 def _record(pr_dir: Path, html_url: str, event: str, comments: int, review_id: Any = None, post_id: str = "",
-            posted: list[dict] | Callable[[], list[dict]] | None = None, author: str | None = None) -> str | None:
+            posted: list[dict] | Callable[[], list[dict]] | None = None, author: str | None = None,
+            review: bool = False) -> str | None:
     """Note the post in state.json. For a review with pending comments, also remove the ones it claimed (only those).
     `posted` is each comment that went to GitHub ({path, line, side, body, gh_comment_id, origin_id?}), or a function
     that returns them (when their GitHub ids must be read first: that waits until state.json is safe). Each becomes a
-    problem label for `prr eval`. Returns a warning when those labels couldn't be saved."""
+    problem label for `prr eval`. `review`: a submitted review (post_review), which moves "since your review" to this
+    commit; a lone comment doesn't. Returns a warning when those labels couldn't be saved."""
     def rows() -> list[dict]:
         pr = read_json(pr_dir / "context.json")["pr"]
         comments_posted = posted() if callable(posted) else posted or []
         return labels.for_posted(pr, comments_posted, commit_id=pr["head_sha"], author=author)
 
+    def reviewed() -> dict:
+        return since.on_review(pr_dir, read_json(pr_dir / "context.json"))
+
     return finish_post(StateStore(pr_dir), post_id, {"review_id": review_id, "html_url": html_url, "event": event,
-                                                     "comments": comments, "at": now_iso(), "source": "chat"}, rows)
+                                                     "comments": comments, "at": now_iso(), "source": "chat"}, rows,
+                       reviewed if review else None)
 
 
 def _author(res: dict) -> str | None:
@@ -192,7 +198,7 @@ def call_tool(pr_dir: Path, cfg: Config, name: str, args: dict) -> tuple[str, bo
         return labels.posted_drafts(sent, ids)
 
     warning = _record(pr_dir, res.get("html_url", ""), event, len(payload["comments"]), review_id=res.get("id"),
-                      post_id=post_id, posted=posted, author=_author(res))
+                      post_id=post_id, posted=posted, author=_author(res), review=True)
     kind = {"COMMENT": "comment", "APPROVE": "approval", "REQUEST_CHANGES": "request for changes"}[event]
     text = f"Posted the review ({kind}, {len(payload['comments'])} line comments) to GitHub: {res.get('html_url', '')}"
     if claim and claim.busy:

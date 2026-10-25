@@ -15,6 +15,7 @@ import mimetypes
 import os
 import shutil
 import sys
+import threading
 import time
 import uuid
 from http.cookies import SimpleCookie
@@ -26,7 +27,7 @@ from fastapi import FastAPI, HTTPException
 from fastapi.responses import Response, StreamingResponse
 from pydantic import BaseModel
 
-from . import archive, chat_tools, cost, github, labels, merge, policy
+from . import archive, chat_tools, cost, github, labels, merge, policy, since
 from .analyze import style_rules
 from .drafts import STARTUP_EXPIRY_S, claim_for_post, finish_post, is_posting, new_draft, postable, release, release_stale
 from .claude import ChatProcess, ClaudeError, run_structured, stream_chat
@@ -494,9 +495,9 @@ def create_app(pr_dir: Path, cfg: Config) -> FastAPI:
 
     # ---- publishing ----------------------------------------------------------------
 
-    def _current_head(pr: dict, fresh: bool) -> str:
+    def _current_head(pr: dict, fresh: bool, max_age: float = 30) -> str:
         # The preview runs on every keystroke (debounced), so the GitHub lookup is cached; submit re-checks.
-        if fresh or time.time() - cache.get("head_at", 0) > 30:
+        if fresh or time.time() - cache.get("head_at", 0) > max_age:
             try:
                 cache["head"] = github.current_head(pr["owner"], pr["repo"], pr["number"])
             except Exception as e:  # noqa: BLE001
@@ -553,7 +554,8 @@ def create_app(pr_dir: Path, cfg: Config) -> FastAPI:
                                      author=info["viewer"])
 
         # A PENDING review isn't published yet (it may be discarded on GitHub): `prr labels import` finds it once it is.
-        warning = finish_post(store, post_id, record, None if body.event == "PENDING" else posted)
+        warning = finish_post(store, post_id, record, None if body.event == "PENDING" else posted,
+                              reviewed=lambda: since.on_review(pr_dir, ctx()))  # "since your review" starts here
         cache.pop("threads_at", None)
         out = {"ok": True, "review_id": record["review_id"], "html_url": record["html_url"]}
         if warning:
@@ -865,6 +867,67 @@ def create_app(pr_dir: Path, cfg: Config) -> FastAPI:
 
         return StreamingResponse(events(), media_type="text/event-stream",
                                  headers={"cache-control": "no-store", "x-accel-buffering": "no"})
+
+    # ---- since your review (E4, prr/since.py) ------------------------------------------
+
+    reread_lock = threading.Lock()
+
+    def rereading() -> bool:
+        """A re-read started here is still going, or another analysis of this PR runs."""
+        proc = cache.get("reread")
+        return (proc is not None and proc.poll() is None) or since.analysis_running(pr_dir)
+
+    @app.get("/api/since-review")
+    def since_review() -> dict:
+        """What changed since the commit of your last submitted review, the stops that are new, and the status of
+        your earlier comments. No reviewed head, or the same head: no files (the app hides its toggle)."""
+        c, s = ctx(), store.load()
+        out = {**since.changes(pr_dir, c, s, cache.setdefault("fetch_tried", set())),
+               "comments": [], "comments_error": None, "new_stop_ids": []}
+        if not out["ok"] or not out["reviewed_head"] or out["reviewed_head"] == out["head"]:
+            return out
+        try:
+            comments = threads()["comments"]
+        except HTTPException as e:
+            comments, out["comments_error"] = [], str(e.detail)
+        try:
+            me = viewer()
+        except Exception:  # noqa: BLE001 — fall back to the comments PR Prism posted
+            me = None
+        yours = since.mine(comments, me, s.get("submitted") or [])
+        out["comments"] = since.comment_statuses(yours, out["files"], since.recheck_results(pr_dir, out["head"]),
+                                                 rereading())
+        out["new_stop_ids"] = [st["id"] for st in since.stops(analysis()) if since.is_new_stop(st, out["files"])]
+        return out
+
+    @app.get("/api/head")
+    def head_status() -> dict:
+        """The PR's head on GitHub (read at most once a minute) against the analyzed head, for the "New commits since
+        you opened this" banner, with the last run's time and cost for its "Re-read the PR" button."""
+        pr = ctx()["pr"]
+        out = {"analyzed_head": pr["head_sha"], "current_head": None, "head_changed": False, "running": rereading(),
+               "estimate": since.estimate(pr_dir), "error": None}
+        try:
+            current = _current_head(pr, fresh=False, max_age=60)
+        except HTTPException as e:
+            return {**out, "error": str(e.detail)}
+        return {**out, "current_head": current, "head_changed": current != pr["head_sha"]}
+
+    @app.post("/api/reanalyze")
+    def reanalyze() -> dict:
+        """"Re-read the PR": `prr fetch` then `prr analyze` in the background. The page keeps its view; the progress
+        banner follows the run through /api/analysis. 409 while an analysis runs."""
+        with reread_lock:
+            if rereading():
+                raise HTTPException(409, "The PR is already being read. Wait for it to finish.")
+            estimate = since.estimate(pr_dir)
+            try:
+                cache["reread"] = since.start_reread(pr_dir, ctx())
+            except OSError as e:
+                raise HTTPException(500, f"Couldn't start reading the PR: {e}") from e
+        for key in ("head_at", "threads_at"):  # read both again once the new commits are in
+            cache.pop(key, None)
+        return {"started": True, "estimate": estimate}
 
     # ---- SPA -------------------------------------------------------------------------
 

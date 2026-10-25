@@ -27,12 +27,12 @@ from .config import Config
 from .state import StateStore
 from .util import now_iso, read_json
 
-# state.json keys holding the reviewer's work: chat threads, pending comments, stop verdicts, reviewed stop
-# ids, submitted reviews, viewed marks, dismissed findings, seen hunks, the review body draft and cost totals.
-# A PR whose keys are all empty (and that has no cost ledger) is not archived. New kinds of work go here.
+# state.json keys holding the reviewer's work: chat threads, pending comments, stop verdicts, the reviewed commit
+# and its stop ids, submitted reviews, viewed marks, dismissed findings, seen hunks, the review body draft and cost
+# totals. A PR whose keys are all empty (and that has no cost ledger) is not archived. New kinds of work go here.
 WORK_FIELDS = (
-    "threads", "drafts", "stop_verdicts", "reviewed_stop_ids", "submitted", "reviewed", "dismissed_suggestions",
-    "seen_hunks", "review_body_draft",
+    "threads", "drafts", "stop_verdicts", "reviewed_head", "reviewed_stop_ids", "submitted", "reviewed",
+    "dismissed_suggestions", "seen_hunks", "review_body_draft",
 )  # spend lives in calls.jsonl (archived beside the state), not in state.json
 LEDGER = "calls.jsonl"
 _NAME = re.compile(r"^pr-(\d+)-(\d{8}T\d{6}Z)(?:-(\d+))?\.(json|calls\.jsonl)$")
