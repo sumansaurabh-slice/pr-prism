@@ -283,9 +283,9 @@ describe("the Overview since your review", () => {
       "your comments: 0 fixed, 0 still open, 0 unchanged, 1 checking…, 1 not checked",
     );
     expect(within(box).getByText("Checking…")).toBeInTheDocument();
-    expect(within(box).getByText("Not checked").closest(".Box-row")).toHaveTextContent(
-      "1 not checked (limit; raise `recheck_max`)",
-    );
+    const row = within(box).getByText("Not checked").closest(".Box-row") as HTMLElement;
+    expect(row).toHaveTextContent("1 not checked (limit; raise recheck_max)");
+    expect(within(row).getByText("recheck_max").tagName).toBe("CODE");
   });
 
   it("is not there with the toggle off", () => {

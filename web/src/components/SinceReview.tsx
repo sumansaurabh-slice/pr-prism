@@ -121,7 +121,11 @@ export function SinceReviewBox() {
               {c.path}
               {c.line ? `:${c.line}` : " (outdated)"}
             </a>
-            {c.note && <span className="color-muted small since-comment-note">{c.note}</span>}
+            {c.note && (
+              <span className="color-muted small since-comment-note">
+                <InlineText text={c.note} />
+              </span>
+            )}
           </div>
         );
       })}
