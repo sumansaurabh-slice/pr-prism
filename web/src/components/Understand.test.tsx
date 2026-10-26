@@ -223,6 +223,38 @@ describe("a step", () => {
   });
 });
 
+describe("Viewed: collapsing a file", () => {
+  afterEach(() => window.localStorage.clear());
+
+  it("collapses the file's diff, and the choice is kept in this browser", async () => {
+    const { container, unmount } = open(hashOf(step1.id));
+    await waitFor(() => expect(container.querySelector(".diff")).not.toBeNull());
+    const box = container.querySelector(".file-box") as HTMLElement;
+    fireEvent.click(within(box).getByRole("checkbox", { name: "Viewed" }));
+    expect(container.querySelector(".diff")).toBeNull();
+    expect(box).toHaveClass("collapsed");
+    expect(within(box).getByText(PATH.split("/").pop()!, { exact: false })).toBeInTheDocument();   // the header stays
+    unmount();
+
+    const again = open(hashOf(step1.id));                                    // a reload: still collapsed
+    expect(within(again.container.querySelector(".file-box") as HTMLElement).getByRole("checkbox", { name: "Viewed" }))
+      .toBeChecked();
+    expect(again.container.querySelector(".diff")).toBeNull();
+    fireEvent.click(screen.getByRole("checkbox", { name: "Viewed" }));     // uncheck: the diff is back
+    await waitFor(() => expect(again.container.querySelector(".diff")).not.toBeNull());
+  });
+
+  it("opens again when the file changes in a later commit", async () => {
+    window.location.hash = hashOf(step1.id);
+    const a = useStore.getState().analysis!;
+    window.localStorage.setItem(`prr.understand.viewed.${a.pr.owner}/${a.pr.repo}#${a.pr.number}`,
+                                JSON.stringify({ [PATH]: "an-older-blob" }));
+    const { container } = render(<Page />);
+    expect(screen.getByRole("checkbox", { name: "Viewed" })).not.toBeChecked();
+    await waitFor(() => expect(container.querySelector(".diff")).not.toBeNull());
+  });
+});
+
 describe("Got it, next and the keys", () => {
   it("Got it, next marks the step understood and goes to the next one", async () => {
     open(hashOf(step1.id));

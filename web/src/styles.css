@@ -3366,3 +3366,9 @@ tr.line-flash > td,
 .finding-row.answered-not .finding-row-title {
   color: var(--text-muted);
 }
+
+/* A file marked Viewed in the Understand walk: only its header shows. */
+.file-box.collapsed .file-header {
+  border-bottom: 0;
+  border-radius: var(--radius);
+}
