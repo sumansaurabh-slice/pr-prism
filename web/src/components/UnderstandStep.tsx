@@ -14,7 +14,8 @@ import { UNDERSTAND_END, fileHref, navigate, understandHref } from "../router";
 import { explainKey, fileMap, splitPath, useStore } from "../store";
 import type { StepExplanation, StepHunk, UnderstandLevel, UnderstandStep } from "../types";
 import {
-  LEVEL_TEXT, WHY_MISSING, askAboutStep, nextToRead, partText, progressText, stepTitle, type UnderstandModel,
+  LEVEL_TEXT, WHY_MISSING, askAboutStep, nextToRead, partText, progressText, stepTitle, useFileViewed,
+  type UnderstandModel,
 } from "../understand";
 import { languageOf, refractorAdapter } from "./FileView";
 import { lineOn, usePatch } from "./ReviewStop";
@@ -82,6 +83,7 @@ function StepDiff({ path, hunks, lookAt }: { path: string; hunks: StepHunk[] | n
     [marked],
   );
   const { dir, base } = splitPath(path);
+  const [viewed, setViewed] = useFileViewed(path);
 
   let body: ReactNode;
   if (error) body = <div className="blankslate">Could not load the change: {error}</div>;
@@ -116,7 +118,7 @@ function StepDiff({ path, hunks, lookAt }: { path: string; hunks: StepHunk[] | n
     );
   }
   return (
-    <div className="file-box">
+    <div className={`file-box${viewed ? " collapsed" : ""}`}>
       <div className="file-header">
         <div className="file-info">
           <span className="file-path" title={path}>
@@ -133,9 +135,13 @@ function StepDiff({ path, hunks, lookAt }: { path: string; hunks: StepHunk[] | n
           <a className="btn btn-sm" href={fileHref(path)}>
             Open in Files changed
           </a>
+          <label className={`viewed-toggle${viewed ? " checked" : ""}`} title="Collapse this file (kept in this browser)">
+            <input type="checkbox" checked={viewed} onChange={(e) => setViewed(e.target.checked)} />
+            Viewed
+          </label>
         </div>
       </div>
-      {body}
+      {!viewed && body}
     </div>
   );
 }

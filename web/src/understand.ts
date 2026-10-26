@@ -1,7 +1,7 @@
 // Understand this PR (prr/understand.py, docs/api.md "Understand"): the walk's order, progress and words. Pure
 // helpers, shared by the Understand tab, the Overview's plan box, the Understand view and the Review view's link.
-import { useMemo } from "react";
-import { explainKey, splitPath, useStore } from "./store";
+import { useCallback, useEffect, useMemo, useState } from "react";
+import { explainKey, fileMap, readLS, splitPath, useStore, writeLS } from "./store";
 import type { ContextChip, Side, StepExplanation, StepHunk, Stop, UnderstandLevel, UnderstandStep } from "./types";
 
 export const LEVEL_TEXT: Record<UnderstandLevel, string> = {
@@ -160,4 +160,38 @@ export function askAboutStep(step: UnderstandStep, number: number | null) {
   const level = st.understand?.level ?? "new";
   const e = st.explained[explainKey(step.id, level)];
   st.askClaude(stepChip(step, number, e?.status === "done" ? e.data : null));
+}
+
+// ------------------------------------------------------------------ "Viewed" files (collapsed diffs)
+
+function readViewed(key: string | null): Record<string, string> {
+  if (!key) return {};
+  try {
+    const v = JSON.parse(readLS(key) ?? "{}");
+    return v && typeof v === "object" ? (v as Record<string, string>) : {};
+  } catch {
+    return {};
+  }
+}
+
+/** "Viewed" on a file in the walk, like GitHub's: it collapses that file's diff. Kept in this browser, per PR, as
+ * path → the file's head blob, so a file that changes in a later commit opens again. */
+export function useFileViewed(path: string): [boolean, (on: boolean) => void] {
+  const analysis = useStore((s) => s.analysis);
+  const pr = analysis?.pr;
+  const key = pr ? `prr.understand.viewed.${pr.owner}/${pr.repo}#${pr.number}` : null;
+  const blob = fileMap(analysis).get(path)?.head_blob ?? "";
+  const [viewed, setViewedMap] = useState<Record<string, string>>(() => readViewed(key));
+  useEffect(() => setViewedMap(readViewed(key)), [key]);
+  const set = useCallback(
+    (on: boolean) => {
+      const next = readViewed(key);   // fresh: other files' boxes may have changed it
+      if (on) next[path] = blob;
+      else delete next[path];
+      if (key) writeLS(key, Object.keys(next).length ? JSON.stringify(next) : null);
+      setViewedMap(next);
+    },
+    [key, path, blob],
+  );
+  return [path in viewed && viewed[path] === blob, set];
 }
